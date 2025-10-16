@@ -25,7 +25,7 @@ RSpec.describe Hookd::Client do
       }
     end
 
-    context 'when successful' do
+    context 'when registering single hook (no count parameter)' do
       before do
         stub_request(:post, "#{server}/register")
           .with(headers: { 'Authorization' => "Bearer #{token}" })
@@ -39,6 +39,91 @@ RSpec.describe Hookd::Client do
         expect(hook.dns).to eq('abc123.hookd.example.com')
         expect(hook.http).to eq('http://abc123.hookd.example.com')
         expect(hook.https).to eq('https://abc123.hookd.example.com')
+      end
+    end
+
+    context 'when registering single hook (count: 1)' do
+      before do
+        stub_request(:post, "#{server}/register")
+          .with(
+            headers: { 'Authorization' => "Bearer #{token}", 'Content-Type' => 'application/json' },
+            body: { count: 1 }.to_json
+          )
+          .to_return(status: 200, body: hook_response.to_json, headers: { 'Content-Type' => 'application/json' })
+      end
+
+      it 'returns a Hook object' do
+        hook = client.register(count: 1)
+        expect(hook).to be_a(Hookd::Hook)
+        expect(hook.id).to eq('abc123')
+      end
+    end
+
+    context 'when registering multiple hooks' do
+      let(:multiple_hooks_response) do
+        {
+          'hooks' => [
+            {
+              'id' => 'abc123',
+              'dns' => 'abc123.hookd.example.com',
+              'http' => 'http://abc123.hookd.example.com',
+              'https' => 'https://abc123.hookd.example.com',
+              'created_at' => '2024-01-01T00:00:00Z'
+            },
+            {
+              'id' => 'def456',
+              'dns' => 'def456.hookd.example.com',
+              'http' => 'http://def456.hookd.example.com',
+              'https' => 'https://def456.hookd.example.com',
+              'created_at' => '2024-01-01T00:00:01Z'
+            },
+            {
+              'id' => 'ghi789',
+              'dns' => 'ghi789.hookd.example.com',
+              'http' => 'http://ghi789.hookd.example.com',
+              'https' => 'https://ghi789.hookd.example.com',
+              'created_at' => '2024-01-01T00:00:02Z'
+            }
+          ]
+        }
+      end
+
+      before do
+        stub_request(:post, "#{server}/register")
+          .with(
+            headers: { 'Authorization' => "Bearer #{token}", 'Content-Type' => 'application/json' },
+            body: { count: 3 }.to_json
+          )
+          .to_return(status: 200, body: multiple_hooks_response.to_json, headers: { 'Content-Type' => 'application/json' })
+      end
+
+      it 'returns an array of Hook objects' do
+        hooks = client.register(count: 3)
+        expect(hooks).to be_an(Array)
+        expect(hooks.size).to eq(3)
+
+        expect(hooks[0]).to be_a(Hookd::Hook)
+        expect(hooks[0].id).to eq('abc123')
+
+        expect(hooks[1]).to be_a(Hookd::Hook)
+        expect(hooks[1].id).to eq('def456')
+
+        expect(hooks[2]).to be_a(Hookd::Hook)
+        expect(hooks[2].id).to eq('ghi789')
+      end
+    end
+
+    context 'when count is invalid' do
+      it 'raises ArgumentError for zero' do
+        expect { client.register(count: 0) }.to raise_error(ArgumentError, /positive integer/)
+      end
+
+      it 'raises ArgumentError for negative' do
+        expect { client.register(count: -1) }.to raise_error(ArgumentError, /positive integer/)
+      end
+
+      it 'raises ArgumentError for non-integer' do
+        expect { client.register(count: 'five') }.to raise_error(ArgumentError, /positive integer/)
       end
     end
 
