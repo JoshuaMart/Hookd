@@ -63,18 +63,31 @@ The client requires two configuration parameters:
 
 Main client class for interacting with the Hookd server.
 
-##### `#register`
+##### `#register(count: nil)`
 
-Register a new hook and get DNS/HTTP endpoints.
+Register one or more hooks and get DNS/HTTP endpoints.
 
+**Single hook (default):**
 ```ruby
 hook = client.register
 # => #<Hookd::Hook id="abc123" dns="abc123.hookd.example.com" ...>
 ```
 
-Returns: `Hookd::Hook` object
+**Multiple hooks:**
+```ruby
+hooks = client.register(count: 5)
+# => [#<Hookd::Hook id="abc123" ...>, #<Hookd::Hook id="def456" ...>, ...]
+```
+
+Parameters:
+- `count` (Integer, optional) - Number of hooks to create (default: 1)
+
+Returns:
+- `Hookd::Hook` object when `count` is 1 or not specified
+- Array of `Hookd::Hook` objects when `count` > 1
 
 Raises:
+- `ArgumentError` - Invalid count parameter
 - `Hookd::AuthenticationError` - Authentication failed
 - `Hookd::ServerError` - Server error (5xx)
 - `Hookd::ConnectionError` - Connection failed

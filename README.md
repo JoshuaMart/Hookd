@@ -119,7 +119,7 @@ curl https://hookd.example.com/poll/HOOK_ID \
 
 ### Response Format
 
-**Register:**
+**Register (single hook):**
 ```json
 {
   "id": "abc123",
@@ -127,6 +127,33 @@ curl https://hookd.example.com/poll/HOOK_ID \
   "http": "http://abc123.hookd.example.com",
   "https": "https://abc123.hookd.example.com",
   "created_at": "2025-10-01T10:30:00Z"
+}
+```
+
+**Register (multiple hooks):**
+```bash
+curl -X POST https://hookd.example.com/register \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"count": 5}'
+```
+
+```json
+{
+  "hooks": [
+    {
+      "id": "abc123",
+      "dns": "abc123.hookd.example.com",
+      "http": "http://abc123.hookd.example.com",
+      "https": "https://abc123.hookd.example.com",
+      "created_at": "2025-10-01T10:30:00Z"
+    },
+    {
+      "id": "def456",
+      "dns": "def456.hookd.example.com",
+      ...
+    }
+  ]
 }
 ```
 

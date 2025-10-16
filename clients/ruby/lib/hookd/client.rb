@@ -15,14 +15,29 @@ module Hookd
       @uri = URI.parse(server)
     end
 
-    # Register a new hook
-    # @return [Hookd::Hook] the newly registered hook
+    # Register one or more hooks
+    # @param count [Integer, nil] number of hooks to register (default: 1)
+    # @return [Hookd::Hook, Array<Hookd::Hook>] single hook or array of hooks
     # @raise [Hookd::AuthenticationError] if authentication fails
     # @raise [Hookd::ServerError] if server returns 5xx
     # @raise [Hookd::ConnectionError] if connection fails
-    def register
-      response = post('/register')
-      Hook.from_hash(response)
+    # @raise [ArgumentError] if count is invalid
+    def register(count: nil)
+      body = count.nil? ? nil : { count: count }
+
+      if count && (!count.is_a?(Integer) || count < 1)
+        raise ArgumentError, 'count must be a positive integer'
+      end
+
+      response = post('/register', body)
+
+      # Single hook response (backward compatible)
+      return Hook.from_hash(response) if response.key?('id')
+
+      # Multiple hooks response
+      return [] if response['hooks'].nil? || response['hooks'].empty?
+
+      response['hooks'].map { |h| Hook.from_hash(h) }
     end
 
     # Poll for interactions on a hook
