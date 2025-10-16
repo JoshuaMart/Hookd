@@ -125,15 +125,15 @@ sudo systemctl status hookd
 
 #### POST /register
 
-Create a new hook.
+Create one or more hooks.
 
-**Request:**
+**Request (single hook):**
 ```bash
 curl -X POST https://hookd.domain.tld/register \
   -H "Authorization: Bearer YOUR_TOKEN"
 ```
 
-**Response:**
+**Response (single hook):**
 ```json
 {
   "id": "abc123",
@@ -143,6 +143,39 @@ curl -X POST https://hookd.domain.tld/register \
   "created_at": "2025-10-01T10:30:00Z"
 }
 ```
+
+**Request (multiple hooks):**
+```bash
+curl -X POST https://hookd.domain.tld/register \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"count": 2}'
+```
+
+**Response (multiple hooks):**
+```json
+{
+  "hooks": [
+    {
+      "id": "abc123",
+      "dns": "abc123.hookd.domain.tld",
+      "http": "http://abc123.hookd.domain.tld",
+      "https": "https://abc123.hookd.domain.tld",
+      "created_at": "2025-10-01T10:30:00Z"
+    },
+    {
+      "id": "def456",
+      "dns": "def456.hookd.domain.tld",
+      "http": "http://def456.hookd.domain.tld",
+      "https": "https://def456.hookd.domain.tld",
+      "created_at": "2025-10-01T10:30:01Z"
+    }
+  ]
+}
+```
+
+**Parameters:**
+- `count` (optional): Number of hooks to create (default: 1)
 
 #### GET /poll/:id
 
