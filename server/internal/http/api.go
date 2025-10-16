@@ -40,12 +40,45 @@ func (h *APIHandler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create new hook
-	hook := h.storage.CreateHook(h.domain)
+	// Parse request body (optional)
+	var req struct {
+		Count int `json:"count,omitempty"`
+	}
 
-	h.logger.Info("hook created", "id", hook.ID, "client", r.RemoteAddr)
+	// Only parse body if content-type is JSON and body exists
+	if r.ContentLength > 0 {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			// If body parsing fails, treat as count=1
+			req.Count = 1
+		}
+	}
 
-	respondJSON(w, http.StatusOK, hook)
+	// Default to 1 if count not specified or invalid
+	if req.Count < 1 {
+		req.Count = 1
+	}
+
+	// Single hook case
+	if req.Count == 1 {
+		hook := h.storage.CreateHook(h.domain)
+		h.logger.Info("hook created", "id", hook.ID, "client", r.RemoteAddr)
+		respondJSON(w, http.StatusOK, hook)
+		return
+	}
+
+	// Multiple hooks case
+	hooks := make([]interface{}, req.Count)
+	for i := 0; i < req.Count; i++ {
+		hook := h.storage.CreateHook(h.domain)
+		hooks[i] = hook
+		h.logger.Debug("hook created", "id", hook.ID, "index", i+1, "total", req.Count, "client", r.RemoteAddr)
+	}
+
+	h.logger.Info("hooks created", "count", req.Count, "client", r.RemoteAddr)
+
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"hooks": hooks,
+	})
 }
 
 // HandlePoll handles GET /poll/:id

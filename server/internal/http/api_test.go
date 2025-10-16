@@ -28,7 +28,7 @@ func TestAPIHandler_HandleRegister(t *testing.T) {
 
 	handler := NewAPIHandler(manager, evictor, "example.com", logger, idGen)
 
-	t.Run("success", func(t *testing.T) {
+	t.Run("success single hook (no body)", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/register", nil)
 		w := httptest.NewRecorder()
 
@@ -45,6 +45,123 @@ func TestAPIHandler_HandleRegister(t *testing.T) {
 
 		if !strings.Contains(response.DNS, "example.com") {
 			t.Errorf("expected DNS to contain example.com, got %s", response.DNS)
+		}
+	})
+
+	t.Run("success single hook (count=1)", func(t *testing.T) {
+		body := bytes.NewBufferString(`{"count": 1}`)
+		req := httptest.NewRequest(http.MethodPost, "/register", body)
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+
+		handler.HandleRegister(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Errorf("expected status 200, got %d", w.Code)
+		}
+
+		var response storage.Hook
+		if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+			t.Fatalf("failed to decode response: %v", err)
+		}
+
+		if !strings.Contains(response.DNS, "example.com") {
+			t.Errorf("expected DNS to contain example.com, got %s", response.DNS)
+		}
+	})
+
+	t.Run("success multiple hooks", func(t *testing.T) {
+		body := bytes.NewBufferString(`{"count": 5}`)
+		req := httptest.NewRequest(http.MethodPost, "/register", body)
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+
+		handler.HandleRegister(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Errorf("expected status 200, got %d", w.Code)
+		}
+
+		var response map[string]interface{}
+		if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+			t.Fatalf("failed to decode response: %v", err)
+		}
+
+		hooks, ok := response["hooks"].([]interface{})
+		if !ok {
+			t.Fatal("expected hooks array in response")
+		}
+
+		if len(hooks) != 5 {
+			t.Errorf("expected 5 hooks, got %d", len(hooks))
+		}
+
+		// Verify each hook has required fields
+		for i, h := range hooks {
+			hook := h.(map[string]interface{})
+			if _, ok := hook["id"]; !ok {
+				t.Errorf("hook %d missing id field", i)
+			}
+			if _, ok := hook["dns"]; !ok {
+				t.Errorf("hook %d missing dns field", i)
+			}
+		}
+	})
+
+	t.Run("invalid count (zero)", func(t *testing.T) {
+		body := bytes.NewBufferString(`{"count": 0}`)
+		req := httptest.NewRequest(http.MethodPost, "/register", body)
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+
+		handler.HandleRegister(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Errorf("expected status 200 (defaults to 1), got %d", w.Code)
+		}
+
+		// Should default to 1 hook
+		var response storage.Hook
+		if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+			t.Fatalf("failed to decode response: %v", err)
+		}
+	})
+
+	t.Run("invalid count (negative)", func(t *testing.T) {
+		body := bytes.NewBufferString(`{"count": -5}`)
+		req := httptest.NewRequest(http.MethodPost, "/register", body)
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+
+		handler.HandleRegister(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Errorf("expected status 200 (defaults to 1), got %d", w.Code)
+		}
+
+		// Should default to 1 hook
+		var response storage.Hook
+		if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+			t.Fatalf("failed to decode response: %v", err)
+		}
+	})
+
+	t.Run("invalid json body", func(t *testing.T) {
+		body := bytes.NewBufferString(`{invalid json}`)
+		req := httptest.NewRequest(http.MethodPost, "/register", body)
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+
+		handler.HandleRegister(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Errorf("expected status 200 (defaults to 1), got %d", w.Code)
+		}
+
+		// Should default to 1 hook when JSON parsing fails
+		var response storage.Hook
+		if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+			t.Fatalf("failed to decode response: %v", err)
 		}
 	})
 
