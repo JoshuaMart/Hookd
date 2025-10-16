@@ -28,7 +28,7 @@ RSpec.describe Hookd::Client do
     context 'when registering single hook (no count parameter)' do
       before do
         stub_request(:post, "#{server}/register")
-          .with(headers: { 'Authorization' => "Bearer #{token}" })
+          .with(headers: { 'X-API-Key' => token })
           .to_return(status: 200, body: hook_response.to_json, headers: { 'Content-Type' => 'application/json' })
       end
 
@@ -46,7 +46,7 @@ RSpec.describe Hookd::Client do
       before do
         stub_request(:post, "#{server}/register")
           .with(
-            headers: { 'Authorization' => "Bearer #{token}", 'Content-Type' => 'application/json' },
+            headers: { 'X-API-Key' => token, 'Content-Type' => 'application/json' },
             body: { count: 1 }.to_json
           )
           .to_return(status: 200, body: hook_response.to_json, headers: { 'Content-Type' => 'application/json' })
@@ -91,7 +91,7 @@ RSpec.describe Hookd::Client do
       before do
         stub_request(:post, "#{server}/register")
           .with(
-            headers: { 'Authorization' => "Bearer #{token}", 'Content-Type' => 'application/json' },
+            headers: { 'X-API-Key' => token, 'Content-Type' => 'application/json' },
             body: { count: 3 }.to_json
           )
           .to_return(status: 200, body: multiple_hooks_response.to_json, headers: { 'Content-Type' => 'application/json' })
@@ -130,7 +130,7 @@ RSpec.describe Hookd::Client do
     context 'when authentication fails' do
       before do
         stub_request(:post, "#{server}/register")
-          .with(headers: { 'Authorization' => "Bearer #{token}" })
+          .with(headers: { 'X-API-Key' => token })
           .to_return(status: 401, body: 'Unauthorized')
       end
 
@@ -142,7 +142,7 @@ RSpec.describe Hookd::Client do
     context 'when server error occurs' do
       before do
         stub_request(:post, "#{server}/register")
-          .with(headers: { 'Authorization' => "Bearer #{token}" })
+          .with(headers: { 'X-API-Key' => token })
           .to_return(status: 500, body: 'Internal Server Error')
       end
 
@@ -185,7 +185,7 @@ RSpec.describe Hookd::Client do
     context 'when successful with interactions' do
       before do
         stub_request(:get, "#{server}/poll/#{hook_id}")
-          .with(headers: { 'Authorization' => "Bearer #{token}" })
+          .with(headers: { 'X-API-Key' => token })
           .to_return(
             status: 200,
             body: { 'interactions' => interactions_response }.to_json,
@@ -215,7 +215,7 @@ RSpec.describe Hookd::Client do
     context 'when no interactions' do
       before do
         stub_request(:get, "#{server}/poll/#{hook_id}")
-          .with(headers: { 'Authorization' => "Bearer #{token}" })
+          .with(headers: { 'X-API-Key' => token })
           .to_return(status: 200, body: '{"interactions":[]}', headers: { 'Content-Type' => 'application/json' })
       end
 
@@ -228,7 +228,7 @@ RSpec.describe Hookd::Client do
     context 'when hook not found' do
       before do
         stub_request(:get, "#{server}/poll/#{hook_id}")
-          .with(headers: { 'Authorization' => "Bearer #{token}" })
+          .with(headers: { 'X-API-Key' => token })
           .to_return(status: 404, body: 'Hook not found')
       end
 
@@ -240,7 +240,7 @@ RSpec.describe Hookd::Client do
     context 'when authentication fails' do
       before do
         stub_request(:get, "#{server}/poll/#{hook_id}")
-          .with(headers: { 'Authorization' => "Bearer #{token}" })
+          .with(headers: { 'X-API-Key' => token })
           .to_return(status: 401, body: 'Unauthorized')
       end
 
@@ -262,7 +262,7 @@ RSpec.describe Hookd::Client do
     context 'when successful' do
       before do
         stub_request(:get, "#{server}/metrics")
-          .with(headers: { 'Authorization' => "Bearer #{token}" })
+          .with(headers: { 'X-API-Key' => token })
           .to_return(status: 200, body: metrics_response.to_json, headers: { 'Content-Type' => 'application/json' })
       end
 
@@ -277,7 +277,7 @@ RSpec.describe Hookd::Client do
     context 'when authentication fails' do
       before do
         stub_request(:get, "#{server}/metrics")
-          .with(headers: { 'Authorization' => "Bearer #{token}" })
+          .with(headers: { 'X-API-Key' => token })
           .to_return(status: 401, body: 'Unauthorized')
       end
 

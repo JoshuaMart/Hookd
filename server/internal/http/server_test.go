@@ -187,7 +187,7 @@ func TestServer_Endpoints(t *testing.T) {
 	// Test register endpoint with auth
 	t.Run("register with auth", func(t *testing.T) {
 		req, _ := http.NewRequest(http.MethodPost, "http://localhost:18888/register", nil)
-		req.Header.Set("Authorization", "Bearer test-token")
+		req.Header.Set("X-API-Key", "test-token")
 
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
@@ -327,7 +327,7 @@ func TestServer_MiddlewareChain(t *testing.T) {
 
 		// Valid poll
 		req, _ := http.NewRequest(http.MethodGet, "http://localhost:18889/poll/"+hook.ID, nil)
-		req.Header.Set("Authorization", "Bearer test-token")
+		req.Header.Set("X-API-Key", "test-token")
 
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {

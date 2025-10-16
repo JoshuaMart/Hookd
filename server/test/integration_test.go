@@ -16,6 +16,7 @@ import (
 
 	"github.com/miekg/dns"
 
+	"github.com/jomar/hookd/internal/acme"
 	"github.com/jomar/hookd/internal/config"
 	dnsserver "github.com/jomar/hookd/internal/dns"
 	"github.com/jomar/hookd/internal/eviction"
@@ -56,6 +57,7 @@ func setupTestServer(t *testing.T) *testServer {
 	storageManager := storage.NewMemoryManager(idGenerator)
 	logger := setupTestLogger()
 	evictor := eviction.NewEvictor(storageManager, cfg.Eviction, logger)
+	acmeProvider := acme.NewProvider(logger)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -67,6 +69,7 @@ func setupTestServer(t *testing.T) *testServer {
 		cfg.Server.Domain,
 		cfg.Server.DNS.Port,
 		storageManager,
+		acmeProvider,
 		logger,
 		idGenerator,
 	)
@@ -85,6 +88,7 @@ func setupTestServer(t *testing.T) *testServer {
 		cfg.Server,
 		storageManager,
 		evictor,
+		acmeProvider,
 		logger,
 		idGenerator,
 	)
@@ -311,7 +315,7 @@ func TestIntegration_Authentication(t *testing.T) {
 			req, _ := http.NewRequest("POST", url, nil)
 
 			if tt.token != "" {
-				req.Header.Set("Authorization", "Bearer "+tt.token)
+				req.Header.Set("X-API-Key", tt.token)
 			}
 
 			client := &http.Client{}
@@ -333,7 +337,7 @@ func TestIntegration_Authentication(t *testing.T) {
 func registerHook(port int, token string) (*api.Hook, error) {
 	url := fmt.Sprintf("http://localhost:%d/register", port)
 	req, _ := http.NewRequest("POST", url, nil)
-	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-API-Key", token)
 
 	client := &http.Client{}
 	resp, err := client.Do(req)
@@ -358,7 +362,7 @@ func registerHook(port int, token string) (*api.Hook, error) {
 func pollHook(port int, token, hookID string) ([]api.Interaction, error) {
 	url := fmt.Sprintf("http://localhost:%d/poll/%s", port, hookID)
 	req, _ := http.NewRequest("GET", url, nil)
-	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-API-Key", token)
 
 	client := &http.Client{}
 	resp, err := client.Do(req)
