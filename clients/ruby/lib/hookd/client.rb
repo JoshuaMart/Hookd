@@ -72,13 +72,13 @@ module Hookd
 
     def get(path)
       request = Net::HTTP::Get.new(path)
-      request['Authorization'] = "Bearer #{token}"
+      request['X-API-Key'] = token
       execute_request(request)
     end
 
     def post(path, body = nil)
       request = Net::HTTP::Post.new(path)
-      request['Authorization'] = "Bearer #{token}"
+      request['X-API-Key'] = token
       request['Content-Type'] = 'application/json'
       request.body = body.to_json if body
       execute_request(request)

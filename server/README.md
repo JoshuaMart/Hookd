@@ -130,7 +130,7 @@ Create one or more hooks.
 **Request (single hook):**
 ```bash
 curl -X POST https://hookd.domain.tld/register \
-  -H "Authorization: Bearer YOUR_TOKEN"
+  -H "X-API-Key: YOUR_TOKEN"
 ```
 
 **Response (single hook):**
@@ -147,7 +147,7 @@ curl -X POST https://hookd.domain.tld/register \
 **Request (multiple hooks):**
 ```bash
 curl -X POST https://hookd.domain.tld/register \
-  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "X-API-Key: YOUR_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"count": 2}'
 ```
@@ -184,7 +184,7 @@ Retrieve and delete interactions for a hook.
 **Request:**
 ```bash
 curl https://hookd.domain.tld/poll/abc123 \
-  -H "Authorization: Bearer YOUR_TOKEN"
+  -H "X-API-Key: YOUR_TOKEN"
 ```
 
 **Response:**
@@ -264,7 +264,7 @@ curl https://hookd.domain.tld/metrics
 ```bash
 # 1. Register a hook
 RESPONSE=$(curl -s -X POST https://hookd.domain.tld/register \
-  -H "Authorization: Bearer YOUR_TOKEN")
+  -H "X-API-Key: YOUR_TOKEN")
 
 HOOK_ID=$(echo $RESPONSE | jq -r '.id')
 HOOK_DNS=$(echo $RESPONSE | jq -r '.dns')
@@ -281,7 +281,7 @@ curl -X POST https://$HOOK_ID.hookd.domain.tld/callback \
 
 # 4. Poll interactions
 curl -s https://hookd.domain.tld/poll/$HOOK_ID \
-  -H "Authorization: Bearer YOUR_TOKEN" | jq
+  -H "X-API-Key: YOUR_TOKEN" | jq
 ```
 
 ## CLI Options

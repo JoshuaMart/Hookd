@@ -18,9 +18,9 @@ func TestAuthMiddleware(t *testing.T) {
 
 	middleware := AuthMiddleware(token, logger)
 
-	t.Run("valid token", func(t *testing.T) {
+	t.Run("valid api key", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
-		req.Header.Set("Authorization", "Bearer secret-token")
+		req.Header.Set("X-API-Key", "secret-token")
 		w := httptest.NewRecorder()
 
 		middleware(handler).ServeHTTP(w, req)
@@ -34,7 +34,7 @@ func TestAuthMiddleware(t *testing.T) {
 		}
 	})
 
-	t.Run("missing authorization header", func(t *testing.T) {
+	t.Run("missing api key header", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		w := httptest.NewRecorder()
 
@@ -45,21 +45,9 @@ func TestAuthMiddleware(t *testing.T) {
 		}
 	})
 
-	t.Run("invalid format - no Bearer", func(t *testing.T) {
+	t.Run("invalid api key", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
-		req.Header.Set("Authorization", "secret-token")
-		w := httptest.NewRecorder()
-
-		middleware(handler).ServeHTTP(w, req)
-
-		if w.Code != http.StatusUnauthorized {
-			t.Errorf("expected status 401, got %d", w.Code)
-		}
-	})
-
-	t.Run("invalid token", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
-		req.Header.Set("Authorization", "Bearer wrong-token")
+		req.Header.Set("X-API-Key", "wrong-token")
 		w := httptest.NewRecorder()
 
 		middleware(handler).ServeHTTP(w, req)

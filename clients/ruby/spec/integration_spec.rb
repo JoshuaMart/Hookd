@@ -30,11 +30,11 @@ RSpec.describe 'Hookd Integration' do
 
     before do
       stub_request(:post, "#{server}/register")
-        .with(headers: { 'Authorization' => "Bearer #{token}" })
+        .with(headers: { 'X-API-Key' => token })
         .to_return(status: 200, body: hook_response.to_json, headers: { 'Content-Type' => 'application/json' })
 
       stub_request(:get, "#{server}/poll/test123")
-        .with(headers: { 'Authorization' => "Bearer #{token}" })
+        .with(headers: { 'X-API-Key' => token })
         .to_return(status: 200, body: { 'interactions' => interactions_response }.to_json,
                    headers: { 'Content-Type' => 'application/json' })
     end

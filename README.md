@@ -100,11 +100,11 @@ gem install hookd-client
 ```bash
 # Register hook
 curl -X POST https://hookd.example.com/register \
-  -H "Authorization: Bearer YOUR_TOKEN"
+  -H "X-API-Key: YOUR_TOKEN"
 
 # Poll interactions
 curl https://hookd.example.com/poll/HOOK_ID \
-  -H "Authorization: Bearer YOUR_TOKEN"
+  -H "X-API-Key: YOUR_TOKEN"
 ```
 
 ## API Reference
@@ -133,7 +133,7 @@ curl https://hookd.example.com/poll/HOOK_ID \
 **Register (multiple hooks):**
 ```bash
 curl -X POST https://hookd.example.com/register \
-  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "X-API-Key: YOUR_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"count": 5}'
 ```
