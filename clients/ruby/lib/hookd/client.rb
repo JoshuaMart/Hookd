@@ -118,14 +118,17 @@ module Hookd
       return {} if results.nil? || !results.is_a?(Hash)
 
       results.transform_values do |result|
-        next result if result['error']
-
-        interactions = result['interactions']
         {
-          interactions: interactions&.map { |i| Interaction.from_hash(i) } || [],
+          interactions: result['error'] ? [] : map_interactions(result['interactions']),
           error: result['error']
         }
       end
+    end
+
+    def map_interactions(interactions)
+      return [] if interactions.nil?
+
+      interactions.map { |i| Interaction.from_hash(i) }
     end
 
     def handle_response(response)

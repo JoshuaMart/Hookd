@@ -393,7 +393,9 @@ RSpec.describe Hookd::Client do
       it 'returns error for non-existent hook' do
         results = client.poll_batch(['nonexistent', hook_id1])
 
-        expect(results['nonexistent']['error']).to eq('Hook not found')
+        expect(results['nonexistent'][:error]).to eq('Hook not found')
+        expect(results['nonexistent'][:interactions]).to be_an(Array)
+        expect(results['nonexistent'][:interactions]).to be_empty
         expect(results[hook_id1][:interactions]).to be_an(Array)
       end
     end
