@@ -38,6 +38,12 @@ type MemoryStats struct {
 	GCRuns      uint32 `json:"gc_runs"`       // Number of completed GC cycles
 }
 
+// PollResult represents the result of polling a single hook
+type PollResult struct {
+	Interactions []*Interaction `json:"interactions"`
+	Error        string         `json:"error,omitempty"`
+}
+
 // DNSInteraction creates a DNS interaction
 func DNSInteraction(id, sourceIP, qname, qtype string) *Interaction {
 	return &Interaction{
