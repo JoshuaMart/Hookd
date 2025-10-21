@@ -1,8 +1,7 @@
 # frozen_string_literal: true
 
-require 'net/http'
+require 'httpx'
 require 'json'
-require 'uri'
 
 module Hookd
   # HTTP client for interacting with Hookd server
@@ -12,7 +11,13 @@ module Hookd
     def initialize(server:, token:)
       @server = server
       @token = token
-      @uri = URI.parse(server)
+      @http = HTTPX.with(
+        headers: { 'X-API-Key' => token },
+        timeout: {
+          connect_timeout: 10,
+          read_timeout: 30
+        }
+      )
     end
 
     # Register one or more hooks
@@ -25,9 +30,7 @@ module Hookd
     def register(count: nil)
       body = count.nil? ? nil : { count: count }
 
-      if count && (!count.is_a?(Integer) || count < 1)
-        raise ArgumentError, 'count must be a positive integer'
-      end
+      raise ArgumentError, 'count must be a positive integer' if count && (!count.is_a?(Integer) || count < 1)
 
       response = post('/register', body)
 
@@ -71,43 +74,43 @@ module Hookd
     private
 
     def get(path)
-      request = Net::HTTP::Get.new(path)
-      request['X-API-Key'] = token
-      execute_request(request)
+      url = "#{@server}#{path}"
+      response = @http.get(url)
+      handle_response(response)
     end
 
     def post(path, body = nil)
-      request = Net::HTTP::Post.new(path)
-      request['X-API-Key'] = token
-      request['Content-Type'] = 'application/json'
-      request.body = body.to_json if body
-      execute_request(request)
+      url = "#{@server}#{path}"
+      options = { headers: { 'Content-Type' => 'application/json' } }
+      options[:json] = body if body
+
+      response = @http.post(url, **options)
+      handle_response(response)
     end
 
-    def execute_request(request)
-      http = Net::HTTP.new(@uri.host, @uri.port)
-      http.use_ssl = @uri.scheme == 'https'
-      http.open_timeout = 10
-      http.read_timeout = 30
-
-      response = http.request(request)
-
-      case response.code.to_i
-      when 200, 201
-        raise Error, 'Empty response body from server' if response.body.nil? || response.body.empty?
-
-        JSON.parse(response.body)
-      when 401
-        raise AuthenticationError, "Authentication failed: #{response.body}"
-      when 404
-        raise NotFoundError, "Resource not found: #{response.body}"
-      when 500..599
-        raise ServerError, "Server error (#{response.code}): #{response.body}"
-      else
-        raise Error, "Unexpected response (#{response.code}): #{response.body}"
+    def handle_response(response)
+      # HTTPX returns HTTPX::ErrorResponse for connection/timeout errors
+      if response.is_a?(HTTPX::ErrorResponse)
+        error = response.error
+        raise ConnectionError, "Connection failed: #{error.message}"
       end
-    rescue SocketError, Errno::ECONNREFUSED, Net::OpenTimeout, Net::ReadTimeout => e
-      raise ConnectionError, "Connection failed: #{e.message}"
+
+      body = response.body.to_s
+
+      case response.status
+      when 200, 201
+        raise Error, 'Empty response body from server' if body.nil? || body.empty?
+
+        JSON.parse(body)
+      when 401
+        raise AuthenticationError, "Authentication failed: #{body}"
+      when 404
+        raise NotFoundError, "Resource not found: #{body}"
+      when 500..599
+        raise ServerError, "Server error (#{response.status}): #{body}"
+      else
+        raise Error, "Unexpected response (#{response.status}): #{body}"
+      end
     rescue JSON::ParserError => e
       raise Error, "Invalid JSON response: #{e.message}"
     end

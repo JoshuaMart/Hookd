@@ -7,6 +7,7 @@ end
 
 require 'hookd'
 require 'webmock/rspec'
+require 'httpx/adapters/webmock'
 
 RSpec.configure do |config|
   config.expect_with :rspec do |expectations|
