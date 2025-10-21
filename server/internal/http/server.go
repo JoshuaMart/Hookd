@@ -52,6 +52,7 @@ func (s *Server) Start(ctx context.Context) error {
 	// API endpoints (with auth)
 	authMW := AuthMiddleware(s.config.API.AuthToken, s.logger)
 	mux.Handle("/register", authMW(http.HandlerFunc(apiHandler.HandleRegister)))
+	mux.Handle("/poll", authMW(http.HandlerFunc(apiHandler.HandlePollBatch)))
 	mux.Handle("/poll/", authMW(http.HandlerFunc(apiHandler.HandlePoll)))
 
 	// Metrics endpoint (no auth)

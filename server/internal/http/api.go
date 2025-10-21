@@ -81,6 +81,45 @@ func (h *APIHandler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// HandlePollBatch handles POST /poll (batch polling)
+func (h *APIHandler) HandlePollBatch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		respondJSON(w, http.StatusMethodNotAllowed, map[string]string{
+			"error": "Method not allowed",
+		})
+		return
+	}
+
+	// Parse request body as array of hook IDs
+	var hookIDs []string
+
+	if err := json.NewDecoder(r.Body).Decode(&hookIDs); err != nil {
+		respondJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "Invalid request body",
+		})
+		return
+	}
+
+	// Validate request
+	if len(hookIDs) == 0 {
+		respondJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "hook_ids cannot be empty",
+		})
+		return
+	}
+
+	// Poll interactions for all hooks
+	results := h.storage.PollInteractionsBatch(hookIDs)
+
+	h.logger.Info("batch interactions polled",
+		"hook_count", len(hookIDs),
+		"client", r.RemoteAddr)
+
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"results": results,
+	})
+}
+
 // HandlePoll handles GET /poll/:id
 func (h *APIHandler) HandlePoll(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {

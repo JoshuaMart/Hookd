@@ -62,6 +62,27 @@ module Hookd
       raise Error, "Invalid response format: #{e.message}"
     end
 
+    # Poll for interactions on multiple hooks (batch)
+    # @param hook_ids [Array<String>] the hook IDs to poll
+    # @return [Hash<String, Hash>] hash mapping hook_id to results
+    #   Results format: { "hook_id" => { interactions: [...], error: "..." } }
+    # @raise [Hookd::AuthenticationError] if authentication fails
+    # @raise [Hookd::ServerError] if server returns 5xx
+    # @raise [Hookd::ConnectionError] if connection fails
+    # @raise [ArgumentError] if hook_ids is invalid
+    def poll_batch(hook_ids)
+      validate_hook_ids(hook_ids)
+
+      url = "#{@server}/poll"
+      options = { headers: { 'Content-Type' => 'application/json' }, json: hook_ids }
+      response = @http.post(url, **options)
+      response_data = handle_response(response)
+
+      transform_batch_results(response_data['results'])
+    rescue NoMethodError => e
+      raise Error, "Invalid response format: #{e.message}"
+    end
+
     # Get server metrics (requires authentication)
     # @return [Hash] metrics data
     # @raise [Hookd::AuthenticationError] if authentication fails
@@ -86,6 +107,25 @@ module Hookd
 
       response = @http.post(url, **options)
       handle_response(response)
+    end
+
+    def validate_hook_ids(hook_ids)
+      raise ArgumentError, 'hook_ids must be an array' unless hook_ids.is_a?(Array)
+      raise ArgumentError, 'hook_ids cannot be empty' if hook_ids.empty?
+    end
+
+    def transform_batch_results(results)
+      return {} if results.nil? || !results.is_a?(Hash)
+
+      results.transform_values do |result|
+        next result if result['error']
+
+        interactions = result['interactions']
+        {
+          interactions: interactions&.map { |i| Interaction.from_hash(i) } || [],
+          error: result['error']
+        }
+      end
     end
 
     def handle_response(response)

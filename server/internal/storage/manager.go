@@ -20,6 +20,9 @@ type Manager interface {
 	// PollInteractions retrieves and deletes interactions for a hook
 	PollInteractions(hookID string) ([]*Interaction, error)
 
+	// PollInteractionsBatch retrieves and deletes interactions for multiple hooks
+	PollInteractionsBatch(hookIDs []string) map[string]*PollResult
+
 	// GetAllHooks returns all registered hooks
 	GetAllHooks() []*Hook
 
@@ -122,6 +125,48 @@ func (m *MemoryManager) PollInteractions(hookID string) ([]*Interaction, error) 
 	m.interactions[hookID] = make([]*Interaction, 0)
 
 	return result, nil
+}
+
+// PollInteractionsBatch retrieves and deletes interactions for multiple hooks
+func (m *MemoryManager) PollInteractionsBatch(hookIDs []string) map[string]*PollResult {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	results := make(map[string]*PollResult, len(hookIDs))
+
+	for _, hookID := range hookIDs {
+		// Check if hook exists
+		if _, exists := m.hooks[hookID]; !exists {
+			results[hookID] = &PollResult{
+				Error: "Hook not found",
+			}
+			continue
+		}
+
+		// Get interactions
+		interactions, exists := m.interactions[hookID]
+		if !exists || len(interactions) == 0 {
+			results[hookID] = &PollResult{
+				Interactions: make([]*Interaction, 0),
+			}
+			if exists {
+				m.interactions[hookID] = make([]*Interaction, 0)
+			}
+			continue
+		}
+
+		// Return a copy and clear the slice
+		result := make([]*Interaction, len(interactions))
+		copy(result, interactions)
+
+		m.interactions[hookID] = make([]*Interaction, 0)
+
+		results[hookID] = &PollResult{
+			Interactions: result,
+		}
+	}
+
+	return results
 }
 
 // GetAllHooks returns all registered hooks

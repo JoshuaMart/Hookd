@@ -564,3 +564,179 @@ func TestCaptureHandler_LargeBody(t *testing.T) {
 		t.Fatalf("expected 1 interaction, got %d", len(interactions))
 	}
 }
+
+func TestAPIHandler_HandlePollBatch(t *testing.T) {
+	idCounter := 0
+	idGen := func() string {
+		idCounter++
+		return "test-id-" + string(rune('a'+idCounter-1))
+	}
+	manager := storage.NewMemoryManager(idGen)
+	evictorCfg := config.EvictionConfig{
+		CleanupInterval: 60,
+		InteractionTTL:  3600,
+		MaxPerHook:      100,
+		MaxMemoryMB:     100,
+	}
+	evictor := eviction.NewEvictor(manager, evictorCfg, slog.Default())
+	logger := slog.Default()
+
+	handler := NewAPIHandler(manager, evictor, "example.com", logger, idGen)
+
+	// Create multiple hooks
+	hook1 := manager.CreateHook("example.com")
+	hook2 := manager.CreateHook("example.com")
+	hook3 := manager.CreateHook("example.com")
+
+	// Add interactions to hook1
+	manager.AddInteraction(hook1.ID, storage.DNSInteraction(idGen(), "1.2.3.4", "test.example.com", "A"))
+	manager.AddInteraction(hook1.ID, storage.HTTPInteraction(idGen(), "5.6.7.8", "GET", "/test", nil, ""))
+
+	// Add interactions to hook2
+	manager.AddInteraction(hook2.ID, storage.DNSInteraction(idGen(), "9.10.11.12", "test2.example.com", "AAAA"))
+
+	// hook3 has no interactions
+
+	t.Run("success with multiple hooks", func(t *testing.T) {
+		hookIDs := []string{hook1.ID, hook2.ID, hook3.ID}
+		body, _ := json.Marshal(hookIDs)
+		req := httptest.NewRequest(http.MethodPost, "/poll", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+
+		handler.HandlePollBatch(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Errorf("expected status 200, got %d", w.Code)
+		}
+
+		var response map[string]interface{}
+		if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+			t.Fatalf("failed to decode response: %v", err)
+		}
+
+		results, ok := response["results"].(map[string]interface{})
+		if !ok {
+			t.Fatal("expected results map in response")
+		}
+
+		// Check hook1 results (should have 2 interactions)
+		hook1Result, ok := results[hook1.ID].(map[string]interface{})
+		if !ok {
+			t.Fatal("expected hook1 result")
+		}
+		hook1Interactions, ok := hook1Result["interactions"].([]interface{})
+		if !ok {
+			t.Fatal("expected interactions array for hook1")
+		}
+		if len(hook1Interactions) != 2 {
+			t.Errorf("expected 2 interactions for hook1, got %d", len(hook1Interactions))
+		}
+
+		// Check hook2 results (should have 1 interaction)
+		hook2Result, ok := results[hook2.ID].(map[string]interface{})
+		if !ok {
+			t.Fatal("expected hook2 result")
+		}
+		hook2Interactions, ok := hook2Result["interactions"].([]interface{})
+		if !ok {
+			t.Fatal("expected interactions array for hook2")
+		}
+		if len(hook2Interactions) != 1 {
+			t.Errorf("expected 1 interaction for hook2, got %d", len(hook2Interactions))
+		}
+
+		// Check hook3 results (should have 0 interactions)
+		hook3Result, ok := results[hook3.ID].(map[string]interface{})
+		if !ok {
+			t.Fatal("expected hook3 result")
+		}
+		hook3Interactions, ok := hook3Result["interactions"].([]interface{})
+		if !ok {
+			// Debug: print the actual result
+			t.Logf("hook3Result: %+v", hook3Result)
+			t.Logf("hook3 interactions value: %v (type: %T)", hook3Result["interactions"], hook3Result["interactions"])
+			t.Fatal("expected interactions array for hook3")
+		}
+		if len(hook3Interactions) != 0 {
+			t.Errorf("expected 0 interactions for hook3, got %d", len(hook3Interactions))
+		}
+
+		// Verify interactions were deleted (atomic poll)
+		remaining1, _ := manager.PollInteractions(hook1.ID)
+		if len(remaining1) != 0 {
+			t.Errorf("expected hook1 interactions to be cleared, got %d", len(remaining1))
+		}
+	})
+
+	t.Run("success with non-existent hook", func(t *testing.T) {
+		hookIDs := []string{"nonexistent", hook1.ID}
+		body, _ := json.Marshal(hookIDs)
+		req := httptest.NewRequest(http.MethodPost, "/poll", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+
+		handler.HandlePollBatch(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Errorf("expected status 200, got %d", w.Code)
+		}
+
+		var response map[string]interface{}
+		if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+			t.Fatalf("failed to decode response: %v", err)
+		}
+
+		results, ok := response["results"].(map[string]interface{})
+		if !ok {
+			t.Fatal("expected results map in response")
+		}
+
+		// Check nonexistent hook has error
+		nonexistentResult, ok := results["nonexistent"].(map[string]interface{})
+		if !ok {
+			t.Fatal("expected nonexistent hook result")
+		}
+		errorMsg, ok := nonexistentResult["error"].(string)
+		if !ok || errorMsg != "Hook not found" {
+			t.Errorf("expected 'Hook not found' error, got %v", nonexistentResult)
+		}
+	})
+
+	t.Run("empty hook_ids array", func(t *testing.T) {
+		hookIDs := []string{}
+		body, _ := json.Marshal(hookIDs)
+		req := httptest.NewRequest(http.MethodPost, "/poll", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+
+		handler.HandlePollBatch(w, req)
+
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("expected status 400, got %d", w.Code)
+		}
+	})
+
+	t.Run("invalid json body", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/poll", bytes.NewBufferString("{invalid json}"))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+
+		handler.HandlePollBatch(w, req)
+
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("expected status 400, got %d", w.Code)
+		}
+	})
+
+	t.Run("method not allowed", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/poll", nil)
+		w := httptest.NewRecorder()
+
+		handler.HandlePollBatch(w, req)
+
+		if w.Code != http.StatusMethodNotAllowed {
+			t.Errorf("expected status 405, got %d", w.Code)
+		}
+	})
+}
