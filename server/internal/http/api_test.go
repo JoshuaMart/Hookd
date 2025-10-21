@@ -598,10 +598,8 @@ func TestAPIHandler_HandlePollBatch(t *testing.T) {
 	// hook3 has no interactions
 
 	t.Run("success with multiple hooks", func(t *testing.T) {
-		reqBody := map[string]interface{}{
-			"hook_ids": []string{hook1.ID, hook2.ID, hook3.ID},
-		}
-		body, _ := json.Marshal(reqBody)
+		hookIDs := []string{hook1.ID, hook2.ID, hook3.ID}
+		body, _ := json.Marshal(hookIDs)
 		req := httptest.NewRequest(http.MethodPost, "/poll", bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
@@ -672,10 +670,8 @@ func TestAPIHandler_HandlePollBatch(t *testing.T) {
 	})
 
 	t.Run("success with non-existent hook", func(t *testing.T) {
-		reqBody := map[string]interface{}{
-			"hook_ids": []string{"nonexistent", hook1.ID},
-		}
-		body, _ := json.Marshal(reqBody)
+		hookIDs := []string{"nonexistent", hook1.ID}
+		body, _ := json.Marshal(hookIDs)
 		req := httptest.NewRequest(http.MethodPost, "/poll", bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
@@ -708,10 +704,8 @@ func TestAPIHandler_HandlePollBatch(t *testing.T) {
 	})
 
 	t.Run("empty hook_ids array", func(t *testing.T) {
-		reqBody := map[string]interface{}{
-			"hook_ids": []string{},
-		}
-		body, _ := json.Marshal(reqBody)
+		hookIDs := []string{}
+		body, _ := json.Marshal(hookIDs)
 		req := httptest.NewRequest(http.MethodPost, "/poll", bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()

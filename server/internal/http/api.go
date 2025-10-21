@@ -90,12 +90,10 @@ func (h *APIHandler) HandlePollBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse request body
-	var req struct {
-		HookIDs []string `json:"hook_ids"`
-	}
+	// Parse request body as array of hook IDs
+	var hookIDs []string
 
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&hookIDs); err != nil {
 		respondJSON(w, http.StatusBadRequest, map[string]string{
 			"error": "Invalid request body",
 		})
@@ -103,7 +101,7 @@ func (h *APIHandler) HandlePollBatch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate request
-	if len(req.HookIDs) == 0 {
+	if len(hookIDs) == 0 {
 		respondJSON(w, http.StatusBadRequest, map[string]string{
 			"error": "hook_ids cannot be empty",
 		})
@@ -111,10 +109,10 @@ func (h *APIHandler) HandlePollBatch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Poll interactions for all hooks
-	results := h.storage.PollInteractionsBatch(req.HookIDs)
+	results := h.storage.PollInteractionsBatch(hookIDs)
 
 	h.logger.Info("batch interactions polled",
-		"hook_count", len(req.HookIDs),
+		"hook_count", len(hookIDs),
 		"client", r.RemoteAddr)
 
 	respondJSON(w, http.StatusOK, map[string]interface{}{
