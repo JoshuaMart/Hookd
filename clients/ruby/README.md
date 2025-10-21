@@ -72,9 +72,6 @@ hook_ids = hooks.map(&:id)
 puts "Created hooks: #{hook_ids.join(', ')}"
 
 # Simulate some interactions...
-# (make DNS queries, HTTP requests, etc.)
-
-# Simulate some interactions
 puts "\nSimulating HTTP requests..."
 hooks.each do |hook|
   Typhoeus.get(hook.http)
