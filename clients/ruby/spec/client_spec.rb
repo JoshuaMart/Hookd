@@ -289,15 +289,15 @@ RSpec.describe Hookd::Client do
   end
 
   describe '#poll_batch' do
-    let(:hook_id_1) { 'abc123' }
-    let(:hook_id_2) { 'def456' }
-    let(:hook_id_3) { 'ghi789' }
+    let(:hook_id1) { 'abc123' }
+    let(:hook_id2) { 'def456' }
+    let(:hook_id3) { 'ghi789' }
 
     context 'when successful with multiple hooks' do
       let(:response_body) do
         {
           'results' => {
-            hook_id_1 => {
+            hook_id1 => {
               'interactions' => [
                 {
                   'id' => 'int_1',
@@ -315,7 +315,7 @@ RSpec.describe Hookd::Client do
                 }
               ]
             },
-            hook_id_2 => {
+            hook_id2 => {
               'interactions' => [
                 {
                   'id' => 'int_3',
@@ -326,7 +326,7 @@ RSpec.describe Hookd::Client do
                 }
               ]
             },
-            hook_id_3 => {
+            hook_id3 => {
               'interactions' => []
             }
           }
@@ -337,33 +337,33 @@ RSpec.describe Hookd::Client do
         stub_request(:post, "#{server}/poll")
           .with(
             headers: { 'X-API-Key' => token, 'Content-Type' => 'application/json' },
-            body: [hook_id_1, hook_id_2, hook_id_3].to_json
+            body: [hook_id1, hook_id2, hook_id3].to_json
           )
           .to_return(status: 200, body: response_body.to_json, headers: { 'Content-Type' => 'application/json' })
       end
 
       it 'returns hash with results for each hook' do
-        results = client.poll_batch([hook_id_1, hook_id_2, hook_id_3])
+        results = client.poll_batch([hook_id1, hook_id2, hook_id3])
 
         expect(results).to be_a(Hash)
-        expect(results.keys).to contain_exactly(hook_id_1, hook_id_2, hook_id_3)
+        expect(results.keys).to contain_exactly(hook_id1, hook_id2, hook_id3)
 
-        # Check hook_id_1 (2 interactions)
-        expect(results[hook_id_1][:interactions]).to be_an(Array)
-        expect(results[hook_id_1][:interactions].length).to eq(2)
-        expect(results[hook_id_1][:interactions].first).to be_a(Hookd::Interaction)
-        expect(results[hook_id_1][:interactions].first.type).to eq('dns')
-        expect(results[hook_id_1][:interactions].last.type).to eq('http')
+        # Check hook_id1 (2 interactions)
+        expect(results[hook_id1][:interactions]).to be_an(Array)
+        expect(results[hook_id1][:interactions].length).to eq(2)
+        expect(results[hook_id1][:interactions].first).to be_a(Hookd::Interaction)
+        expect(results[hook_id1][:interactions].first.type).to eq('dns')
+        expect(results[hook_id1][:interactions].last.type).to eq('http')
 
-        # Check hook_id_2 (1 interaction)
-        expect(results[hook_id_2][:interactions]).to be_an(Array)
-        expect(results[hook_id_2][:interactions].length).to eq(1)
-        expect(results[hook_id_2][:interactions].first).to be_a(Hookd::Interaction)
-        expect(results[hook_id_2][:interactions].first.type).to eq('dns')
+        # Check hook_id2 (1 interaction)
+        expect(results[hook_id2][:interactions]).to be_an(Array)
+        expect(results[hook_id2][:interactions].length).to eq(1)
+        expect(results[hook_id2][:interactions].first).to be_a(Hookd::Interaction)
+        expect(results[hook_id2][:interactions].first.type).to eq('dns')
 
-        # Check hook_id_3 (0 interactions)
-        expect(results[hook_id_3][:interactions]).to be_an(Array)
-        expect(results[hook_id_3][:interactions]).to be_empty
+        # Check hook_id3 (0 interactions)
+        expect(results[hook_id3][:interactions]).to be_an(Array)
+        expect(results[hook_id3][:interactions]).to be_empty
       end
     end
 
@@ -374,7 +374,7 @@ RSpec.describe Hookd::Client do
             'nonexistent' => {
               'error' => 'Hook not found'
             },
-            hook_id_1 => {
+            hook_id1 => {
               'interactions' => []
             }
           }
@@ -385,16 +385,16 @@ RSpec.describe Hookd::Client do
         stub_request(:post, "#{server}/poll")
           .with(
             headers: { 'X-API-Key' => token, 'Content-Type' => 'application/json' },
-            body: ['nonexistent', hook_id_1].to_json
+            body: ['nonexistent', hook_id1].to_json
           )
           .to_return(status: 200, body: response_body.to_json, headers: { 'Content-Type' => 'application/json' })
       end
 
       it 'returns error for non-existent hook' do
-        results = client.poll_batch(['nonexistent', hook_id_1])
+        results = client.poll_batch(['nonexistent', hook_id1])
 
         expect(results['nonexistent']['error']).to eq('Hook not found')
-        expect(results[hook_id_1][:interactions]).to be_an(Array)
+        expect(results[hook_id1][:interactions]).to be_an(Array)
       end
     end
 
@@ -415,13 +415,13 @@ RSpec.describe Hookd::Client do
         stub_request(:post, "#{server}/poll")
           .with(
             headers: { 'X-API-Key' => token, 'Content-Type' => 'application/json' },
-            body: [hook_id_1].to_json
+            body: [hook_id1].to_json
           )
           .to_return(status: 401, body: 'Unauthorized')
       end
 
       it 'raises AuthenticationError' do
-        expect { client.poll_batch([hook_id_1]) }.to raise_error(Hookd::AuthenticationError)
+        expect { client.poll_batch([hook_id1]) }.to raise_error(Hookd::AuthenticationError)
       end
     end
   end
