@@ -22,5 +22,5 @@ Gem::Specification.new do |spec|
   spec.require_paths = ['lib']
 
   # Runtime dependencies
-  # (none - uses only Ruby stdlib)
+  spec.add_dependency 'httpx', '~> 1.0'
 end

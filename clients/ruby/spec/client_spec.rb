@@ -94,7 +94,8 @@ RSpec.describe Hookd::Client do
             headers: { 'X-API-Key' => token, 'Content-Type' => 'application/json' },
             body: { count: 3 }.to_json
           )
-          .to_return(status: 200, body: multiple_hooks_response.to_json, headers: { 'Content-Type' => 'application/json' })
+          .to_return(status: 200, body: multiple_hooks_response.to_json,
+                     headers: { 'Content-Type' => 'application/json' })
       end
 
       it 'returns an array of Hook objects' do
