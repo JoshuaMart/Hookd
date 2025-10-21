@@ -287,4 +287,142 @@ RSpec.describe Hookd::Client do
       end
     end
   end
+
+  describe '#poll_batch' do
+    let(:hook_id_1) { 'abc123' }
+    let(:hook_id_2) { 'def456' }
+    let(:hook_id_3) { 'ghi789' }
+
+    context 'when successful with multiple hooks' do
+      let(:response_body) do
+        {
+          'results' => {
+            hook_id_1 => {
+              'interactions' => [
+                {
+                  'id' => 'int_1',
+                  'type' => 'dns',
+                  'timestamp' => '2024-01-01T00:00:00Z',
+                  'source_ip' => '1.2.3.4',
+                  'data' => { 'qname' => 'test.example.com', 'qtype' => 'A' }
+                },
+                {
+                  'id' => 'int_2',
+                  'type' => 'http',
+                  'timestamp' => '2024-01-01T00:01:00Z',
+                  'source_ip' => '5.6.7.8',
+                  'data' => { 'method' => 'GET', 'path' => '/test' }
+                }
+              ]
+            },
+            hook_id_2 => {
+              'interactions' => [
+                {
+                  'id' => 'int_3',
+                  'type' => 'dns',
+                  'timestamp' => '2024-01-01T00:02:00Z',
+                  'source_ip' => '9.10.11.12',
+                  'data' => { 'qname' => 'test2.example.com', 'qtype' => 'AAAA' }
+                }
+              ]
+            },
+            hook_id_3 => {
+              'interactions' => []
+            }
+          }
+        }
+      end
+
+      before do
+        stub_request(:post, "#{server}/poll")
+          .with(
+            headers: { 'X-API-Key' => token, 'Content-Type' => 'application/json' },
+            body: [hook_id_1, hook_id_2, hook_id_3].to_json
+          )
+          .to_return(status: 200, body: response_body.to_json, headers: { 'Content-Type' => 'application/json' })
+      end
+
+      it 'returns hash with results for each hook' do
+        results = client.poll_batch([hook_id_1, hook_id_2, hook_id_3])
+
+        expect(results).to be_a(Hash)
+        expect(results.keys).to contain_exactly(hook_id_1, hook_id_2, hook_id_3)
+
+        # Check hook_id_1 (2 interactions)
+        expect(results[hook_id_1][:interactions]).to be_an(Array)
+        expect(results[hook_id_1][:interactions].length).to eq(2)
+        expect(results[hook_id_1][:interactions].first).to be_a(Hookd::Interaction)
+        expect(results[hook_id_1][:interactions].first.type).to eq('dns')
+        expect(results[hook_id_1][:interactions].last.type).to eq('http')
+
+        # Check hook_id_2 (1 interaction)
+        expect(results[hook_id_2][:interactions]).to be_an(Array)
+        expect(results[hook_id_2][:interactions].length).to eq(1)
+        expect(results[hook_id_2][:interactions].first).to be_a(Hookd::Interaction)
+        expect(results[hook_id_2][:interactions].first.type).to eq('dns')
+
+        # Check hook_id_3 (0 interactions)
+        expect(results[hook_id_3][:interactions]).to be_an(Array)
+        expect(results[hook_id_3][:interactions]).to be_empty
+      end
+    end
+
+    context 'when hook not found' do
+      let(:response_body) do
+        {
+          'results' => {
+            'nonexistent' => {
+              'error' => 'Hook not found'
+            },
+            hook_id_1 => {
+              'interactions' => []
+            }
+          }
+        }
+      end
+
+      before do
+        stub_request(:post, "#{server}/poll")
+          .with(
+            headers: { 'X-API-Key' => token, 'Content-Type' => 'application/json' },
+            body: ['nonexistent', hook_id_1].to_json
+          )
+          .to_return(status: 200, body: response_body.to_json, headers: { 'Content-Type' => 'application/json' })
+      end
+
+      it 'returns error for non-existent hook' do
+        results = client.poll_batch(['nonexistent', hook_id_1])
+
+        expect(results['nonexistent']['error']).to eq('Hook not found')
+        expect(results[hook_id_1][:interactions]).to be_an(Array)
+      end
+    end
+
+    context 'when hook_ids is empty' do
+      it 'raises ArgumentError' do
+        expect { client.poll_batch([]) }.to raise_error(ArgumentError, 'hook_ids cannot be empty')
+      end
+    end
+
+    context 'when hook_ids is not an array' do
+      it 'raises ArgumentError' do
+        expect { client.poll_batch('not-an-array') }.to raise_error(ArgumentError, 'hook_ids must be an array')
+      end
+    end
+
+    context 'when authentication fails' do
+      before do
+        stub_request(:post, "#{server}/poll")
+          .with(
+            headers: { 'X-API-Key' => token, 'Content-Type' => 'application/json' },
+            body: [hook_id_1].to_json
+          )
+          .to_return(status: 401, body: 'Unauthorized')
+      end
+
+      it 'raises AuthenticationError' do
+        expect { client.poll_batch([hook_id_1]) }.to raise_error(Hookd::AuthenticationError)
+      end
+    end
+  end
 end
