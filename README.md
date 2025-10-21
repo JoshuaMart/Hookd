@@ -113,9 +113,10 @@ curl https://hookd.example.com/poll/HOOK_ID \
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/register` | POST | Create a new hook with DNS/HTTP endpoints |
-| `/poll/:id` | GET | Retrieve and delete interactions for a hook |
-| `/metrics` | GET | Get server statistics (public) |
+| `/register` | POST | Create one or more hooks with DNS/HTTP endpoints |
+| `/poll/:id` | GET | Retrieve and delete interactions for a single hook |
+| `/poll`     | POST | Batch poll multiple hooks in one request |
+| `/metrics`  | GET | Get server statistics (public) |
 
 ### Response Format
 
@@ -157,7 +158,7 @@ curl -X POST https://hookd.example.com/register \
 }
 ```
 
-**Poll:**
+**Poll (single hook):**
 ```json
 {
   "interactions": [
@@ -184,6 +185,41 @@ curl -X POST https://hookd.example.com/register \
       }
     }
   ]
+}
+```
+
+**Poll (batch - multiple hooks):**
+```bash
+curl -X POST https://hookd.example.com/poll \
+  -H "X-API-Key: YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '["abc123", "def456", "ghi789"]'
+```
+
+```json
+{
+  "results": {
+    "abc123": {
+      "interactions": [
+        {
+          "id": "int_xyz",
+          "type": "dns",
+          "timestamp": "2025-10-01T10:31:00Z",
+          "source_ip": "1.2.3.4",
+          "data": {
+            "qname": "abc123.hookd.example.com",
+            "qtype": "A"
+          }
+        }
+      ]
+    },
+    "def456": {
+      "interactions": []
+    },
+    "ghi789": {
+      "error": "Hook not found"
+    }
+  }
 }
 ```
 

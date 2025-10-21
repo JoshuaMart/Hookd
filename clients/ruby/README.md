@@ -39,13 +39,67 @@ puts "HTTPS endpoint: #{hook.https}"
 # Make a request to the HTTP endpoint to simulate an interaction
 Typhoeus.get(hook.http)
 
-# Poll for interactions
+# Poll for interactions (single hook)
 interactions = client.poll(hook.id)
 interactions.each do |interaction|
   if interaction.dns?
     puts "DNS query: #{interaction.data}"
   elsif interaction.http?
     puts "HTTP request: #{interaction.data}"
+  end
+end
+```
+
+### Batch Polling Example
+
+When working with multiple hooks, use `poll_batch` for better performance:
+
+```ruby
+require 'hookd'
+require 'typhoeus'
+
+# Initialize the client
+client = Hookd::Client.new(
+  server: "https://hookd.example.com",
+  token: ENV['HOOKD_TOKEN']
+)
+
+# Register multiple hooks
+puts "Registering 5 hooks..."
+hooks = client.register(count: 5)
+
+hook_ids = hooks.map(&:id)
+puts "Created hooks: #{hook_ids.join(', ')}"
+
+# Simulate some interactions...
+# (make DNS queries, HTTP requests, etc.)
+
+# Simulate some interactions
+puts "\nSimulating HTTP requests..."
+hooks.each do |hook|
+  Typhoeus.get(hook.http)
+  puts "  ✓ GET #{hook.http}"
+end
+
+# Batch poll all hooks at once (1 HTTP request instead of 5)
+puts "Batch polling #{hook_ids.size} hooks..."
+results = client.poll_batch(hook_ids)
+
+# Display results
+results.each do |hook_id, result|
+  if result[:error]
+    puts "❌ Hook #{hook_id}: #{result[:error]}"
+  else
+    interactions = result[:interactions]
+    puts "✅ Hook #{hook_id}: #{interactions.size} interaction(s)"
+
+    interactions.each do |interaction|
+      if interaction.dns?
+        puts "   - DNS: #{interaction.data['qname']} (#{interaction.data['qtype']})"
+      elsif interaction.http?
+        puts "   - HTTP: #{interaction.data['method']} #{interaction.data['path']}"
+      end
+    end
   end
 end
 ```
@@ -94,7 +148,7 @@ Raises:
 
 ##### `#poll(hook_id)`
 
-Poll for interactions captured by a hook.
+Poll for interactions captured by a single hook.
 
 ```ruby
 interactions = client.poll("abc123")
@@ -111,6 +165,55 @@ Raises:
 - `Hookd::NotFoundError` - Hook not found
 - `Hookd::ServerError` - Server error (5xx)
 - `Hookd::ConnectionError` - Connection failed
+
+##### `#poll_batch(hook_ids)`
+
+**Batch poll** - Poll for interactions from multiple hooks in a single request.
+
+```ruby
+# Register multiple hooks
+hooks = client.register(count: 3)
+hook_ids = hooks.map(&:id)
+
+# Batch poll all hooks at once (1 HTTP request instead of 3)
+results = client.poll_batch(hook_ids)
+# => {
+#   "abc123" => { interactions: [...], error: nil },
+#   "def456" => { interactions: [...], error: nil },
+#   "ghi789" => { interactions: [], error: nil }
+# }
+
+# Process results
+results.each do |hook_id, result|
+  if result[:error]
+    puts "Error for #{hook_id}: #{result[:error]}"
+  else
+    puts "Hook #{hook_id}: #{result[:interactions].size} interactions"
+    result[:interactions].each do |interaction|
+      puts "  - #{interaction.type}: #{interaction.data}"
+    end
+  end
+end
+```
+
+Parameters:
+- `hook_ids` (Array<String>) - Array of hook IDs to poll
+
+Returns: Hash mapping hook IDs to results
+- Each result contains:
+  - `interactions` (Array<Hookd::Interaction>) - Array of interactions
+  - `error` (String, nil) - Error message if hook not found
+
+Raises:
+- `ArgumentError` - Invalid hook_ids (not an array or empty)
+- `Hookd::AuthenticationError` - Authentication failed
+- `Hookd::ServerError` - Server error (5xx)
+- `Hookd::ConnectionError` - Connection failed
+
+**Benefits:**
+- **Performance**: Reduced latency with single HTTP request
+- **Efficiency**: Automatic connection reuse with HTTPX
+- **Atomic**: Consistent snapshot of all hooks
 
 ##### `#metrics`
 

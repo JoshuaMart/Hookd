@@ -179,7 +179,7 @@ curl -X POST https://hookd.domain.tld/register \
 
 #### GET /poll/:id
 
-Retrieve and delete interactions for a hook.
+Retrieve and delete interactions for a single hook.
 
 **Request:**
 ```bash
@@ -216,6 +216,46 @@ curl https://hookd.domain.tld/poll/abc123 \
       }
     }
   ]
+}
+```
+
+#### POST /poll
+
+**Batch poll** - Retrieve and delete interactions for multiple hooks in a single request.
+
+**Request:**
+```bash
+curl -X POST https://hookd.domain.tld/poll \
+  -H "X-API-Key: YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '["abc123", "def456", "ghi789"]'
+```
+
+**Response:**
+```json
+{
+  "results": {
+    "abc123": {
+      "interactions": [
+        {
+          "id": "int_xyz789",
+          "type": "dns",
+          "timestamp": "2025-10-01T10:31:15Z",
+          "source_ip": "1.2.3.4",
+          "data": {
+            "qname": "abc123.hookd.domain.tld",
+            "qtype": "A"
+          }
+        }
+      ]
+    },
+    "def456": {
+      "interactions": []
+    },
+    "ghi789": {
+      "error": "Hook not found"
+    }
+  }
 }
 ```
 
