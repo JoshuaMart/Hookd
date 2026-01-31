@@ -1,7 +1,7 @@
 PATH
   remote: .
   specs:
-    hookd-client (1.2.1)
+    hookd-client (1.2.2)
       httpx (~> 1.0)
 
 GEM
