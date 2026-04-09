@@ -1,0 +1,329 @@
+// Package hookd provides a Go client for the Hookd interaction logging server.
+package hookd
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"time"
+)
+
+const Version = "1.0.0"
+
+// Client communicates with a Hookd server.
+type Client struct {
+	server     string
+	token      string
+	httpClient *http.Client
+}
+
+// Hook represents a registered hook with its endpoints.
+type Hook struct {
+	ID        string `json:"id"`
+	DNS       string `json:"dns"`
+	HTTP      string `json:"http"`
+	HTTPS     string `json:"https"`
+	CreatedAt string `json:"created_at"`
+}
+
+// Interaction represents a DNS or HTTP interaction captured by a hook.
+type Interaction struct {
+	Type      string         `json:"type"`
+	Timestamp string         `json:"timestamp"`
+	SourceIP  string         `json:"source_ip"`
+	Data      map[string]any `json:"data"`
+}
+
+// IsDNS returns true if the interaction is a DNS interaction.
+func (i *Interaction) IsDNS() bool { return i.Type == "dns" }
+
+// IsHTTP returns true if the interaction is an HTTP interaction.
+func (i *Interaction) IsHTTP() bool { return i.Type == "http" }
+
+// BatchResult holds the poll result for a single hook in a batch poll.
+type BatchResult struct {
+	Interactions []Interaction
+	Error        string
+}
+
+// Metrics holds server metrics data.
+type Metrics map[string]any
+
+// Error types
+
+// Error is the base error type for Hookd client errors.
+type Error struct {
+	Message    string
+	StatusCode int
+}
+
+func (e *Error) Error() string { return e.Message }
+
+// AuthenticationError indicates a 401 response.
+type AuthenticationError struct {
+	Message    string
+	StatusCode int
+}
+
+func (e *AuthenticationError) Error() string { return e.Message }
+
+// NotFoundError indicates a 404 response.
+type NotFoundError struct {
+	Message    string
+	StatusCode int
+}
+
+func (e *NotFoundError) Error() string { return e.Message }
+
+// ServerError indicates a 5xx response.
+type ServerError struct {
+	Message    string
+	StatusCode int
+}
+
+func (e *ServerError) Error() string { return e.Message }
+
+// ConnectionError indicates a network or timeout failure.
+type ConnectionError struct {
+	Message    string
+	StatusCode int
+}
+
+func (e *ConnectionError) Error() string { return e.Message }
+
+// NewClient creates a new Hookd client.
+func NewClient(server, token string) *Client {
+	return &Client{
+		server: server,
+		token:  token,
+		httpClient: &http.Client{
+			Timeout: 30 * time.Second,
+			Transport: &http.Transport{
+				ResponseHeaderTimeout: 10 * time.Second,
+			},
+		},
+	}
+}
+
+// Register creates one or more hooks on the server.
+// If count is 0 or 1, a single Hook is returned.
+// If count > 1, a slice of Hook is returned.
+func (c *Client) Register(count int) ([]Hook, error) {
+	if count < 0 {
+		return nil, fmt.Errorf("count must be a positive integer")
+	}
+
+	var body any
+	if count > 1 {
+		body = map[string]int{"count": count}
+	}
+
+	data, err := c.post("/register", body)
+	if err != nil {
+		return nil, err
+	}
+
+	// Multiple hooks response
+	if raw, ok := data["hooks"]; ok {
+		rawHooks, ok := raw.([]any)
+		if !ok {
+			return nil, &Error{Message: "invalid hooks response format"}
+		}
+		hooks := make([]Hook, 0, len(rawHooks))
+		for _, rh := range rawHooks {
+			h, err := parseHook(rh)
+			if err != nil {
+				return nil, err
+			}
+			hooks = append(hooks, h)
+		}
+		return hooks, nil
+	}
+
+	// Single hook response
+	h, err := parseHook(data)
+	if err != nil {
+		return nil, err
+	}
+	return []Hook{h}, nil
+}
+
+// Poll retrieves interactions for a single hook.
+func (c *Client) Poll(hookID string) ([]Interaction, error) {
+	data, err := c.get("/poll/" + hookID)
+	if err != nil {
+		return nil, err
+	}
+
+	raw, ok := data["interactions"]
+	if !ok {
+		return []Interaction{}, nil
+	}
+
+	return parseInteractions(raw)
+}
+
+// PollBatch retrieves interactions for multiple hooks in a single request.
+func (c *Client) PollBatch(hookIDs []string) (map[string]BatchResult, error) {
+	if len(hookIDs) == 0 {
+		return nil, fmt.Errorf("hook_ids must be a non-empty array")
+	}
+
+	data, err := c.post("/poll", hookIDs)
+	if err != nil {
+		return nil, err
+	}
+
+	rawResults, ok := data["results"]
+	if !ok {
+		return nil, &Error{Message: "invalid batch poll response format"}
+	}
+
+	resultsMap, ok := rawResults.(map[string]any)
+	if !ok {
+		return nil, &Error{Message: "invalid batch poll results format"}
+	}
+
+	results := make(map[string]BatchResult, len(resultsMap))
+	for id, raw := range resultsMap {
+		entry, ok := raw.(map[string]any)
+		if !ok {
+			results[id] = BatchResult{Error: "invalid result format"}
+			continue
+		}
+
+		br := BatchResult{}
+		if errMsg, ok := entry["error"].(string); ok {
+			br.Error = errMsg
+		}
+		if rawInts, ok := entry["interactions"]; ok {
+			ints, err := parseInteractions(rawInts)
+			if err == nil {
+				br.Interactions = ints
+			}
+		}
+		if br.Interactions == nil {
+			br.Interactions = []Interaction{}
+		}
+		results[id] = br
+	}
+
+	return results, nil
+}
+
+// Metrics retrieves server metrics.
+func (c *Client) Metrics() (Metrics, error) {
+	return c.get("/metrics")
+}
+
+// HTTP helpers
+
+func (c *Client) get(path string) (map[string]any, error) {
+	req, err := http.NewRequest(http.MethodGet, c.server+path, nil)
+	if err != nil {
+		return nil, &ConnectionError{Message: fmt.Sprintf("failed to create request: %v", err)}
+	}
+	req.Header.Set("X-API-Key", c.token)
+
+	return c.doRequest(req)
+}
+
+func (c *Client) post(path string, body any) (map[string]any, error) {
+	var bodyReader io.Reader
+	if body != nil {
+		jsonBody, err := json.Marshal(body)
+		if err != nil {
+			return nil, &Error{Message: fmt.Sprintf("failed to marshal request body: %v", err)}
+		}
+		bodyReader = bytes.NewReader(jsonBody)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, c.server+path, bodyReader)
+	if err != nil {
+		return nil, &ConnectionError{Message: fmt.Sprintf("failed to create request: %v", err)}
+	}
+	req.Header.Set("X-API-Key", c.token)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+
+	return c.doRequest(req)
+}
+
+func (c *Client) doRequest(req *http.Request) (map[string]any, error) {
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, &ConnectionError{Message: fmt.Sprintf("connection error: %v", err)}
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, &ConnectionError{Message: fmt.Sprintf("failed to read response: %v", err)}
+	}
+
+	switch {
+	case resp.StatusCode == 401:
+		return nil, &AuthenticationError{Message: "authentication failed", StatusCode: 401}
+	case resp.StatusCode == 404:
+		return nil, &NotFoundError{Message: "resource not found", StatusCode: 404}
+	case resp.StatusCode >= 500:
+		return nil, &ServerError{Message: fmt.Sprintf("server error: %d", resp.StatusCode), StatusCode: resp.StatusCode}
+	case resp.StatusCode < 200 || resp.StatusCode >= 300:
+		return nil, &Error{Message: fmt.Sprintf("unexpected status: %d", resp.StatusCode), StatusCode: resp.StatusCode}
+	}
+
+	if len(respBody) == 0 {
+		return nil, &Error{Message: "empty response body"}
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return nil, &Error{Message: fmt.Sprintf("invalid JSON response: %v", err)}
+	}
+
+	return result, nil
+}
+
+// Parsing helpers
+
+func parseHook(raw any) (Hook, error) {
+	m, ok := raw.(map[string]any)
+	if !ok {
+		return Hook{}, &Error{Message: "invalid hook format"}
+	}
+
+	b, err := json.Marshal(m)
+	if err != nil {
+		return Hook{}, &Error{Message: "failed to parse hook"}
+	}
+
+	var h Hook
+	if err := json.Unmarshal(b, &h); err != nil {
+		return Hook{}, &Error{Message: "failed to parse hook"}
+	}
+	return h, nil
+}
+
+func parseInteractions(raw any) ([]Interaction, error) {
+	arr, ok := raw.([]any)
+	if !ok {
+		return nil, &Error{Message: "invalid interactions format"}
+	}
+
+	interactions := make([]Interaction, 0, len(arr))
+	for _, item := range arr {
+		b, err := json.Marshal(item)
+		if err != nil {
+			continue
+		}
+		var i Interaction
+		if err := json.Unmarshal(b, &i); err != nil {
+			continue
+		}
+		interactions = append(interactions, i)
+	}
+	return interactions, nil
+}

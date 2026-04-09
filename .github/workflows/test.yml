@@ -34,6 +34,25 @@ jobs:
           strip-prefix: github.com/jomar/hookd/
           add-prefix: server/
 
+  test-go-client:
+    name: Test Go Client
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache: true
+
+      - name: Run tests
+        working-directory: ./clients/go
+        run: |
+          go test -v ./...
+
   test-ruby:
     name: Test Ruby Client
     runs-on: ubuntu-latest
