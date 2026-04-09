@@ -1,6 +1,6 @@
 module github.com/jomar/hookd
 
-go 1.25
+go 1.26
 
 require (
 	github.com/caddyserver/certmagic v0.25.1

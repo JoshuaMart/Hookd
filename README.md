@@ -4,7 +4,7 @@
     <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-_red.svg"></a>
     <a href="https://qlty.sh/gh/JoshuaMart/projects/Hookd"><img src="https://qlty.sh/badges/34ecedd0-170b-4fa5-8388-663432d25c6f/maintainability.svg" /></a>
     <a href="https://qlty.sh/gh/JoshuaMart/projects/Hookd"><img src="https://qlty.sh/badges/34ecedd0-170b-4fa5-8388-663432d25c6f/coverage.svg" /></a>
-    <img src="https://img.shields.io/badge/golang-1.24-blue?logo=go">
+    <img src="https://img.shields.io/badge/golang-1.26-blue?logo=go">
 </p>
 
 Lightweight interaction server for capturing out-of-band DNS and HTTP callbacks. Register ephemeral hooks, inject their endpoints into targets, and poll back to check for interactions — ideal for security testing, webhook debugging, and external service monitoring.
