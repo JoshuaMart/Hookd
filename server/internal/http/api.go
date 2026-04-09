@@ -58,6 +58,12 @@ func (h *APIHandler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 		req.Count = 1
 	}
 
+	const maxHooks = 100
+	if req.Count > maxHooks {
+		respondError(w, http.StatusBadRequest, "count must not exceed 100")
+		return
+	}
+
 	// Single hook case
 	if req.Count == 1 {
 		hook := h.storage.CreateHook(h.domain)
