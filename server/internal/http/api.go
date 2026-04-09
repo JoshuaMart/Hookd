@@ -60,7 +60,7 @@ func (h *APIHandler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 
 	const maxHooks = 100
 	if req.Count > maxHooks {
-		respondError(w, http.StatusBadRequest, "count must not exceed 100")
+		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "count must not exceed 100"})
 		return
 	}
 
