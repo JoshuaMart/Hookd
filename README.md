@@ -151,9 +151,29 @@ curl -X POST https://hookd.example.com/register \
 
 </details>
 
+#### Long-lived hooks & metadata
+
+Pass an optional `ttl` above the ephemeral `hook_ttl` to register a **long-lived
+hook** — persisted to disk so it survives restarts. This is ideal for stored-XSS
+style detection, where a payload may fire days after injection. Optional
+`metadata` is stored with the hook and echoed back when polled, so a fired hook
+can be correlated to its injection point.
+
+```bash
+curl -X POST https://hookd.example.com/register \
+  -H "X-API-Key: YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"ttl": "7d", "metadata": {"target": "acme", "field": "profile.bio"}}'
+```
+
+`ttl` accepts a Go duration (`168h`) or a day count (`7d`), capped at
+`long_lived.max_ttl`. Omit `ttl` (or keep it at/below `hook_ttl`) for an ordinary
+ephemeral, in-memory hook.
+
 ### `GET /poll/:id`
 
-Retrieve and clear all interactions for a hook.
+Retrieve and clear all interactions for a hook. For a hook registered with
+metadata, the response also echoes it.
 
 ```bash
 curl https://hookd.example.com/poll/abc123 \
@@ -204,6 +224,41 @@ curl -X POST https://hookd.example.com/poll \
   -H "Content-Type: application/json" \
   -d '["abc123", "def456"]'
 ```
+
+### `GET /activity`
+
+List the **long-lived** hooks that currently have pending interactions — so you
+can discover which of your many long-lived hooks have fired without polling each
+one. Drain the details with `GET /poll/:id`. The list is derived from state:
+a hook drops off once polled.
+
+```bash
+curl https://hookd.example.com/activity \
+  -H "X-API-Key: YOUR_TOKEN"
+```
+
+<details>
+<summary>Response example</summary>
+
+```json
+{
+  "hooks": [
+    {
+      "hook": {
+        "id": "abc123",
+        "dns": "abc123.hookd.example.com",
+        "created_at": "2025-10-01T10:30:00Z",
+        "expires_at": "2025-10-08T10:30:00Z",
+        "metadata": {"target": "acme", "field": "profile.bio"}
+      },
+      "pending_count": 3,
+      "last_interaction_at": "2025-10-03T14:12:00Z"
+    }
+  ]
+}
+```
+
+</details>
 
 ### `GET /metrics`
 

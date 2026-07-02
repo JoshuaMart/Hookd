@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -27,7 +28,7 @@ import (
 
 type testServer struct {
 	cfg         *config.Config
-	storage     storage.Manager
+	storage     *storage.CompositeManager
 	evictor     *eviction.Evictor
 	dnsServer   *dnsserver.Server
 	httpServer  *httpserver.Server
@@ -36,7 +37,9 @@ type testServer struct {
 	idGenerator func() string
 }
 
-func setupTestServer(t *testing.T) *testServer {
+// defaultTestConfig returns a config wired for the local test ports, with the
+// long-lived store persisted under dbPath.
+func defaultTestConfig(dbPath string) *config.Config {
 	cfg := config.DefaultConfig()
 	cfg.Server.Domain = "hookd.test.local"
 	cfg.Server.DNS.Enabled = true
@@ -47,15 +50,27 @@ func setupTestServer(t *testing.T) *testServer {
 	cfg.Eviction.InteractionTTL = 1 * time.Hour
 	cfg.Eviction.MaxPerHook = 100
 	cfg.Eviction.CleanupInterval = 1 * time.Second
+	cfg.LongLived.DBPath = dbPath
+	return cfg
+}
 
-	idCounter := 0
-	idGenerator := func() string {
-		idCounter++
-		return fmt.Sprintf("test%d", idCounter)
-	}
-
-	storageManager := storage.NewMemoryManager(idGenerator)
+// startServer builds the storage stack and starts the DNS/HTTP servers for cfg.
+// The long-lived store persists to cfg.LongLived.DBPath, so calling this twice
+// with the same path (and a fresh in-memory store) simulates a restart.
+func startServer(t *testing.T, cfg *config.Config, idGenerator func() string) *testServer {
 	logger := setupTestLogger()
+
+	memoryManager := storage.NewMemoryManager(idGenerator)
+	var longLived *storage.SQLiteManager
+	if cfg.LongLived.Enabled {
+		var err error
+		longLived, err = storage.NewSQLiteManager(cfg.LongLived.DBPath, idGenerator, cfg.LongLived.MaxInteractionBodyBytes, logger)
+		if err != nil {
+			t.Fatalf("failed to open long-lived store: %v", err)
+		}
+	}
+	storageManager := storage.NewCompositeManager(memoryManager, longLived, cfg.Eviction.HookTTL)
+
 	evictor := eviction.NewEvictor(storageManager, cfg.Eviction, logger)
 	acmeProvider := acme.NewProvider(logger)
 
@@ -86,6 +101,7 @@ func setupTestServer(t *testing.T) *testServer {
 	// Start HTTP server
 	httpServer := httpserver.NewServer(
 		cfg.Server,
+		cfg.LongLived,
 		storageManager,
 		evictor,
 		acmeProvider,
@@ -114,8 +130,21 @@ func setupTestServer(t *testing.T) *testServer {
 	}
 }
 
+func setupTestServer(t *testing.T) *testServer {
+	idCounter := 0
+	idGenerator := func() string {
+		idCounter++
+		return fmt.Sprintf("test%d", idCounter)
+	}
+	cfg := defaultTestConfig(filepath.Join(t.TempDir(), "longlived.db"))
+	return startServer(t, cfg, idGenerator)
+}
+
 func (ts *testServer) cleanup() {
 	ts.cancel()
+	if ts.storage != nil {
+		ts.storage.Close()
+	}
 	time.Sleep(100 * time.Millisecond)
 }
 
@@ -271,9 +300,13 @@ func TestIntegration_Metrics(t *testing.T) {
 		t.Fatalf("failed to decode metrics: %v", err)
 	}
 
-	hooksActive, ok := metrics["hooks_active"].(float64)
+	hooks, ok := metrics["hooks"].(map[string]interface{})
 	if !ok {
-		t.Error("expected hooks_active in metrics")
+		t.Fatal("expected hooks section in metrics")
+	}
+	hooksActive, ok := hooks["active"].(float64)
+	if !ok {
+		t.Error("expected hooks.active in metrics")
 	}
 
 	if int(hooksActive) != 1 {
@@ -281,6 +314,70 @@ func TestIntegration_Metrics(t *testing.T) {
 	}
 
 	t.Logf("Metrics: %+v", metrics)
+}
+
+func TestIntegration_LongLivedSurvivesRestart(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "longlived.db")
+	idCounter := 0
+	idGenerator := func() string {
+		idCounter++
+		return fmt.Sprintf("test%d", idCounter)
+	}
+
+	// First lifecycle: register a long-lived hook, then shut down.
+	ts1 := startServer(t, defaultTestConfig(dbPath), idGenerator)
+	hook, err := registerLongLived(ts1.cfg.Server.HTTP.Port, ts1.cfg.Server.API.AuthToken, "720h",
+		map[string]any{"field": "profile.bio"})
+	if err != nil {
+		t.Fatalf("failed to register long-lived hook: %v", err)
+	}
+	if hook.ExpiresAt.IsZero() {
+		t.Error("expected long-lived hook to have an expiry")
+	}
+	ts1.cleanup()
+
+	// Second lifecycle: fresh in-memory store, the SAME database, on different
+	// ports (avoids reusing a port the first instance just released).
+	cfg2 := defaultTestConfig(dbPath)
+	cfg2.Server.DNS.Port = 15354
+	cfg2.Server.HTTP.Port = 18081
+	ts2 := startServer(t, cfg2, idGenerator)
+	defer ts2.cleanup()
+
+	// The stored-XSS payload fires only now, after the restart. A purely
+	// in-memory server would have forgotten the hook and dropped this silently.
+	queryDomain := hook.ID + "." + cfg2.Server.Domain + "."
+	if err := performDNSQuery(cfg2.Server.DNS.Port, queryDomain); err != nil {
+		t.Fatalf("failed to perform DNS query: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	// It shows up in the activity list...
+	activity, err := getActivity(cfg2.Server.HTTP.Port, cfg2.Server.API.AuthToken)
+	if err != nil {
+		t.Fatalf("failed to get activity: %v", err)
+	}
+	if len(activity) != 1 || activity[0].Hook.ID != hook.ID {
+		t.Fatalf("expected activity to list the surviving hook, got %+v", activity)
+	}
+	if activity[0].Hook.Metadata["field"] != "profile.bio" {
+		t.Errorf("expected metadata preserved across restart, got %v", activity[0].Hook.Metadata)
+	}
+
+	// ...and draining it returns the captured interaction plus its metadata.
+	resp, err := pollFull(cfg2.Server.HTTP.Port, cfg2.Server.API.AuthToken, hook.ID)
+	if err != nil {
+		t.Fatalf("failed to poll: %v", err)
+	}
+	if len(resp.Interactions) != 1 {
+		t.Fatalf("expected 1 interaction after restart, got %d", len(resp.Interactions))
+	}
+	if resp.Interactions[0].Type != "dns" {
+		t.Errorf("expected dns interaction, got %s", resp.Interactions[0].Type)
+	}
+	if resp.Metadata["field"] != "profile.bio" {
+		t.Errorf("expected metadata echoed on poll, got %v", resp.Metadata)
+	}
 }
 
 func TestIntegration_Authentication(t *testing.T) {
@@ -382,6 +479,80 @@ func pollHook(port int, token, hookID string) ([]api.Interaction, error) {
 	}
 
 	return result.Interactions, nil
+}
+
+func registerLongLived(port int, token, ttl string, metadata map[string]any) (*api.Hook, error) {
+	body, _ := json.Marshal(api.RegisterRequest{TTL: ttl, Metadata: metadata})
+	url := fmt.Sprintf("http://localhost:%d/register", port)
+	req, _ := http.NewRequest("POST", url, bytes.NewReader(body))
+	req.Header.Set("X-API-Key", token)
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(b))
+	}
+
+	var hook api.Hook
+	if err := json.NewDecoder(resp.Body).Decode(&hook); err != nil {
+		return nil, err
+	}
+	return &hook, nil
+}
+
+func getActivity(port int, token string) ([]api.HookActivity, error) {
+	url := fmt.Sprintf("http://localhost:%d/activity", port)
+	req, _ := http.NewRequest("GET", url, nil)
+	req.Header.Set("X-API-Key", token)
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(b))
+	}
+
+	var result api.ActivityResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+	return result.Hooks, nil
+}
+
+func pollFull(port int, token, hookID string) (*api.PollResponse, error) {
+	url := fmt.Sprintf("http://localhost:%d/poll/%s", port, hookID)
+	req, _ := http.NewRequest("GET", url, nil)
+	req.Header.Set("X-API-Key", token)
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("unexpected status %d: %s", resp.StatusCode, string(b))
+	}
+
+	var result api.PollResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+	return &result, nil
 }
 
 func performDNSQuery(port int, domain string) error {

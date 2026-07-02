@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-const Version = "1.0.0"
+const Version = "1.1.0"
 
 // Client communicates with a Hookd server.
 type Client struct {
@@ -19,13 +19,34 @@ type Client struct {
 	httpClient *http.Client
 }
 
-// Hook represents a registered hook with its endpoints.
+// Hook represents a registered hook with its endpoints. ExpiresAt and Metadata
+// are populated for long-lived hooks (registered with a TTL) and left empty
+// otherwise.
 type Hook struct {
-	ID        string `json:"id"`
-	DNS       string `json:"dns"`
-	HTTP      string `json:"http"`
-	HTTPS     string `json:"https"`
-	CreatedAt string `json:"created_at"`
+	ID        string         `json:"id"`
+	DNS       string         `json:"dns"`
+	HTTP      string         `json:"http"`
+	HTTPS     string         `json:"https"`
+	CreatedAt string         `json:"created_at"`
+	ExpiresAt string         `json:"expires_at,omitempty"`
+	Metadata  map[string]any `json:"metadata,omitempty"`
+}
+
+// RegisterOptions configures hook registration. A TTL above the server's
+// ephemeral hook_ttl (e.g. "168h" or "7d") registers a durable long-lived hook
+// that survives restarts; omit it for an ephemeral hook. Metadata is stored
+// with the hook and echoed back when it is polled.
+type RegisterOptions struct {
+	Count    int
+	TTL      string
+	Metadata map[string]any
+}
+
+// HookActivity summarises a long-lived hook that has pending interactions.
+type HookActivity struct {
+	Hook              Hook   `json:"hook"`
+	PendingCount      int    `json:"pending_count"`
+	LastInteractionAt string `json:"last_interaction_at"`
 }
 
 // Interaction represents a DNS or HTTP interaction captured by a hook.
@@ -107,17 +128,33 @@ func NewClient(server, token string) *Client {
 	}
 }
 
-// Register creates one or more hooks on the server.
+// Register creates one or more ephemeral hooks on the server.
 // If count is 0 or 1, a single Hook is returned.
 // If count > 1, a slice of Hook is returned.
 func (c *Client) Register(count int) ([]Hook, error) {
-	if count < 0 {
+	return c.RegisterHooks(RegisterOptions{Count: count})
+}
+
+// RegisterHooks creates one or more hooks with the given options, allowing a TTL
+// (for long-lived hooks) and metadata to be attached.
+func (c *Client) RegisterHooks(opts RegisterOptions) ([]Hook, error) {
+	if opts.Count < 0 {
 		return nil, fmt.Errorf("count must be a positive integer")
 	}
 
+	fields := map[string]any{}
+	if opts.Count > 1 {
+		fields["count"] = opts.Count
+	}
+	if opts.TTL != "" {
+		fields["ttl"] = opts.TTL
+	}
+	if opts.Metadata != nil {
+		fields["metadata"] = opts.Metadata
+	}
 	var body any
-	if count > 1 {
-		body = map[string]int{"count": count}
+	if len(fields) > 0 {
+		body = fields
 	}
 
 	data, err := c.post("/register", body)
@@ -216,6 +253,40 @@ func (c *Client) PollBatch(hookIDs []string) (map[string]BatchResult, error) {
 // Metrics retrieves server metrics.
 func (c *Client) Metrics() (Metrics, error) {
 	return c.get("/metrics")
+}
+
+// Activity lists the long-lived hooks that currently have pending interactions,
+// so callers can discover which of their long-lived hooks fired without polling
+// each one. Drain the details with Poll. Returns an empty slice when none have
+// fired (or the server has long-lived hooks disabled).
+func (c *Client) Activity() ([]HookActivity, error) {
+	data, err := c.get("/activity")
+	if err != nil {
+		return nil, err
+	}
+
+	raw, ok := data["hooks"]
+	if !ok {
+		return []HookActivity{}, nil
+	}
+	arr, ok := raw.([]any)
+	if !ok {
+		return nil, &Error{Message: "invalid activity response format"}
+	}
+
+	activity := make([]HookActivity, 0, len(arr))
+	for _, item := range arr {
+		b, err := json.Marshal(item)
+		if err != nil {
+			continue
+		}
+		var a HookActivity
+		if err := json.Unmarshal(b, &a); err != nil {
+			continue
+		}
+		activity = append(activity, a)
+	}
+	return activity, nil
 }
 
 // HTTP helpers

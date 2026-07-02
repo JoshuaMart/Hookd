@@ -29,6 +29,12 @@ var configKeys = []string{
 	"observability.metrics_enabled",
 	"observability.log_level",
 	"observability.log_format",
+	"long_lived.enabled",
+	"long_lived.max_ttl",
+	"long_lived.max_hooks",
+	"long_lived.max_interaction_body_bytes",
+	"long_lived.max_metadata_bytes",
+	"long_lived.db_path",
 }
 
 // Load loads configuration from file, environment, and CLI flags.

@@ -77,8 +77,32 @@ func main() {
 		return generateID()
 	}
 
-	// Create storage manager
-	storageManager := storage.NewMemoryManager(idGenerator)
+	// Create storage manager: ephemeral hooks live in memory; when enabled,
+	// long-lived hooks are persisted to SQLite so they survive restarts.
+	memoryManager := storage.NewMemoryManager(idGenerator)
+	var longLived *storage.SQLiteManager
+	if cfg.LongLived.Enabled {
+		longLived, err = storage.NewSQLiteManager(
+			cfg.LongLived.DBPath,
+			idGenerator,
+			cfg.LongLived.MaxInteractionBodyBytes,
+			logger,
+		)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error opening long-lived store: %v\n", err)
+			os.Exit(1)
+		}
+		logger.Info("long-lived store enabled",
+			"db_path", cfg.LongLived.DBPath,
+			"max_hooks", cfg.LongLived.MaxHooks,
+			"max_ttl", cfg.LongLived.MaxTTL)
+	}
+	storageManager := storage.NewCompositeManager(memoryManager, longLived, cfg.Eviction.HookTTL)
+	defer func() {
+		if err := storageManager.Close(); err != nil {
+			logger.Error("failed to close storage", "error", err)
+		}
+	}()
 
 	// Create ACME provider for DNS-01 challenges
 	acmeProvider := acme.NewProvider(logger)
@@ -119,6 +143,7 @@ func main() {
 	// Start HTTP/HTTPS server
 	httpServer := http.NewServer(
 		cfg.Server,
+		cfg.LongLived,
 		storageManager,
 		evictor,
 		acmeProvider,

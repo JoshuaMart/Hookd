@@ -288,6 +288,88 @@ RSpec.describe Hookd::Client do
     end
   end
 
+  describe '#register long-lived' do
+    let(:long_lived_response) do
+      {
+        'id' => 'abc123',
+        'dns' => 'abc123.hookd.example.com',
+        'http' => 'http://abc123.hookd.example.com',
+        'https' => 'https://abc123.hookd.example.com',
+        'created_at' => '2025-10-01T10:30:00Z',
+        'expires_at' => '2025-10-08T10:30:00Z',
+        'metadata' => { 'field' => 'profile.bio' }
+      }
+    end
+
+    before do
+      stub_request(:post, "#{server}/register")
+        .with(
+          headers: { 'X-API-Key' => token, 'Content-Type' => 'application/json' },
+          body: { ttl: '7d', metadata: { field: 'profile.bio' } }.to_json
+        )
+        .to_return(status: 200, body: long_lived_response.to_json, headers: { 'Content-Type' => 'application/json' })
+    end
+
+    it 'sends ttl and metadata and exposes them on the hook' do
+      hook = client.register(ttl: '7d', metadata: { field: 'profile.bio' })
+      expect(hook).to be_a(Hookd::Hook)
+      expect(hook.expires_at).to eq('2025-10-08T10:30:00Z')
+      expect(hook.metadata).to eq({ 'field' => 'profile.bio' })
+    end
+  end
+
+  describe '#activity' do
+    let(:activity_response) do
+      {
+        'hooks' => [
+          {
+            'hook' => {
+              'id' => 'abc123',
+              'dns' => 'abc123.hookd.example.com',
+              'http' => 'http://abc123.hookd.example.com',
+              'https' => 'https://abc123.hookd.example.com',
+              'created_at' => '2025-10-01T10:30:00Z',
+              'expires_at' => '2025-10-08T10:30:00Z',
+              'metadata' => { 'n' => '1' }
+            },
+            'pending_count' => 3,
+            'last_interaction_at' => '2025-10-03T14:12:00Z'
+          }
+        ]
+      }
+    end
+
+    context 'when hooks have fired' do
+      before do
+        stub_request(:get, "#{server}/activity")
+          .with(headers: { 'X-API-Key' => token })
+          .to_return(status: 200, body: activity_response.to_json, headers: { 'Content-Type' => 'application/json' })
+      end
+
+      it 'returns HookActivity objects' do
+        activity = client.activity
+        expect(activity.length).to eq(1)
+        expect(activity.first).to be_a(Hookd::HookActivity)
+        expect(activity.first.hook).to be_a(Hookd::Hook)
+        expect(activity.first.hook.id).to eq('abc123')
+        expect(activity.first.pending_count).to eq(3)
+        expect(activity.first.last_interaction_at).to eq('2025-10-03T14:12:00Z')
+      end
+    end
+
+    context 'when nothing has fired' do
+      before do
+        stub_request(:get, "#{server}/activity")
+          .with(headers: { 'X-API-Key' => token })
+          .to_return(status: 200, body: { 'hooks' => [] }.to_json, headers: { 'Content-Type' => 'application/json' })
+      end
+
+      it 'returns an empty array' do
+        expect(client.activity).to eq([])
+      end
+    end
+  end
+
   describe '#poll_batch' do
     let(:hook_id1) { 'abc123' }
     let(:hook_id2) { 'def456' }

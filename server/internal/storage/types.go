@@ -6,11 +6,40 @@ import (
 
 // Hook represents a registered hook
 type Hook struct {
-	ID        string    `json:"id"`
-	DNS       string    `json:"dns"`
-	HTTP      string    `json:"http"`
-	HTTPS     string    `json:"https"`
-	CreatedAt time.Time `json:"created_at"`
+	ID        string         `json:"id"`
+	DNS       string         `json:"dns"`
+	HTTP      string         `json:"http"`
+	HTTPS     string         `json:"https"`
+	CreatedAt time.Time      `json:"created_at"`
+	ExpiresAt time.Time      `json:"expires_at"`
+	Metadata  map[string]any `json:"metadata,omitempty"`
+}
+
+// CreateOptions carries the per-hook parameters supplied at registration time.
+// A zero TTL means "no explicit expiry" (the hook is never removed by the
+// hook-TTL eviction pass); callers that want a hook to expire must set it.
+type CreateOptions struct {
+	TTL      time.Duration
+	Metadata map[string]any
+}
+
+// newHook builds a Hook from an id, domain and options. It is shared by every
+// storage backend so the DNS/URL layout and the TTL-to-ExpiresAt rule live in
+// exactly one place.
+func newHook(id, domain string, opts CreateOptions) *Hook {
+	now := time.Now().UTC()
+	hook := &Hook{
+		ID:        id,
+		DNS:       id + "." + domain,
+		HTTP:      "http://" + id + "." + domain,
+		HTTPS:     "https://" + id + "." + domain,
+		CreatedAt: now,
+		Metadata:  opts.Metadata,
+	}
+	if opts.TTL > 0 {
+		hook.ExpiresAt = now.Add(opts.TTL)
+	}
+	return hook
 }
 
 // InteractionType represents the type of interaction
@@ -42,6 +71,15 @@ type MemoryStats struct {
 type PollResult struct {
 	Interactions []*Interaction `json:"interactions"`
 	Error        string         `json:"error,omitempty"`
+}
+
+// HookActivity summarises a long-lived hook that has pending interactions. It
+// powers the activity endpoint, which lets a client discover which of its many
+// long-lived hooks have fired without polling each one individually.
+type HookActivity struct {
+	Hook              *Hook     `json:"hook"`
+	PendingCount      int       `json:"pending_count"`
+	LastInteractionAt time.Time `json:"last_interaction_at"`
 }
 
 // DNSInteraction creates a DNS interaction

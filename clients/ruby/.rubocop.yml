@@ -15,3 +15,13 @@ Metrics/MethodLength:
 Metrics/BlockLength:
   Exclude:
     - "spec/**/*_spec.rb"
+
+# Keyword arguments are self-documenting, so don't count them toward the
+# parameter-list limit (e.g. Hook's field-per-column constructor).
+Metrics/ParameterLists:
+  CountKeywordArgs: false
+
+# The client mirrors the server's API surface (one method per endpoint), so it
+# grows with the API; a modestly higher class-length limit fits that shape.
+Metrics/ClassLength:
+  Max: 130

@@ -26,7 +26,7 @@ func TestAPIHandler_HandleRegister(t *testing.T) {
 	evictor := eviction.NewEvictor(manager, evictorCfg, slog.Default())
 	logger := slog.Default()
 
-	handler := NewAPIHandler(manager, evictor, "example.com", logger, idGen)
+	handler := NewAPIHandler(manager, evictor, "example.com", config.LongLivedConfig{}, logger, idGen)
 
 	t.Run("success single hook (no body)", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/register", nil)
@@ -189,10 +189,10 @@ func TestAPIHandler_HandlePoll(t *testing.T) {
 	evictor := eviction.NewEvictor(manager, evictorCfg, slog.Default())
 	logger := slog.Default()
 
-	handler := NewAPIHandler(manager, evictor, "example.com", logger, idGen)
+	handler := NewAPIHandler(manager, evictor, "example.com", config.LongLivedConfig{}, logger, idGen)
 
 	// Create a hook first
-	hook := manager.CreateHook("example.com")
+	hook := manager.CreateHook("example.com", storage.CreateOptions{})
 
 	t.Run("success with no interactions", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/poll/"+hook.ID, nil)
@@ -286,7 +286,7 @@ func TestAPIHandler_HandleMetrics(t *testing.T) {
 	evictor := eviction.NewEvictor(manager, evictorCfg, slog.Default())
 	logger := slog.Default()
 
-	handler := NewAPIHandler(manager, evictor, "example.com", logger, idGen)
+	handler := NewAPIHandler(manager, evictor, "example.com", config.LongLivedConfig{}, logger, idGen)
 
 	t.Run("success", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
@@ -373,7 +373,7 @@ func TestCaptureHandler_ServeHTTP(t *testing.T) {
 	handler := NewCaptureHandler(manager, "example.com", logger, idGen)
 
 	// Create a hook first
-	hook := manager.CreateHook("example.com")
+	hook := manager.CreateHook("example.com", storage.CreateOptions{})
 
 	t.Run("capture http interaction", func(t *testing.T) {
 		body := bytes.NewBufferString(`{"test": "data"}`)
@@ -502,7 +502,7 @@ func TestAPIHandler_HandlePoll_EdgeCases(t *testing.T) {
 	evictor := eviction.NewEvictor(manager, evictorCfg, slog.Default())
 	logger := slog.Default()
 
-	handler := NewAPIHandler(manager, evictor, "example.com", logger, idGen)
+	handler := NewAPIHandler(manager, evictor, "example.com", config.LongLivedConfig{}, logger, idGen)
 
 	t.Run("empty path segments", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/poll//", nil)
@@ -522,7 +522,7 @@ func TestCaptureHandler_LargeBody(t *testing.T) {
 	logger := slog.Default()
 
 	handler := NewCaptureHandler(manager, "example.com", logger, idGen)
-	hook := manager.CreateHook("example.com")
+	hook := manager.CreateHook("example.com", storage.CreateOptions{})
 
 	// Create large body (11MB - over 10MB limit)
 	largeBody := bytes.Repeat([]byte("x"), 11*1024*1024)
@@ -560,12 +560,12 @@ func TestAPIHandler_HandlePollBatch(t *testing.T) {
 	evictor := eviction.NewEvictor(manager, evictorCfg, slog.Default())
 	logger := slog.Default()
 
-	handler := NewAPIHandler(manager, evictor, "example.com", logger, idGen)
+	handler := NewAPIHandler(manager, evictor, "example.com", config.LongLivedConfig{}, logger, idGen)
 
 	// Create multiple hooks
-	hook1 := manager.CreateHook("example.com")
-	hook2 := manager.CreateHook("example.com")
-	hook3 := manager.CreateHook("example.com")
+	hook1 := manager.CreateHook("example.com", storage.CreateOptions{})
+	hook2 := manager.CreateHook("example.com", storage.CreateOptions{})
+	hook3 := manager.CreateHook("example.com", storage.CreateOptions{})
 
 	// Add interactions to hook1
 	manager.AddInteraction(hook1.ID, storage.DNSInteraction(idGen(), "1.2.3.4", "test.example.com", "A"))

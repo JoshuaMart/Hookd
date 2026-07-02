@@ -55,15 +55,34 @@ server:
 
 eviction:
   interaction_ttl: "1h"      # TTL for interactions
-  hook_ttl: "24h"            # TTL for hooks
+  hook_ttl: "24h"            # TTL for hooks (ephemeral threshold)
   max_per_hook: 1000         # Max interactions per hook
   max_memory_mb: 1800        # Memory limit
+
+long_lived:
+  enabled: true                       # Persist long-lived hooks to SQLite
+  max_ttl: "720h"                     # Absolute cap on a long-lived ttl
+  max_hooks: 500                      # Max long-lived hooks (429 past this)
+  max_interaction_body_bytes: 65536   # Persisted body truncation
+  max_metadata_bytes: 8192            # Max per-hook metadata size
+  db_path: "/var/lib/hookd/longlived.db"
 
 observability:
   metrics_enabled: true
   log_level: "info"
   log_format: "json"
 ```
+
+### Ephemeral vs long-lived hooks
+
+By default hooks are **ephemeral**: kept in memory and evicted after
+`eviction.hook_ttl`. A registration whose `ttl` exceeds `hook_ttl` is a
+**long-lived** hook, persisted to the SQLite database at `long_lived.db_path` so
+it survives restarts — the right model for stored-XSS detection, where a payload
+may fire days after injection and an in-memory-only server would drop the
+interaction silently after a restart. Long-lived hooks are bounded by
+`long_lived.max_ttl` and `long_lived.max_hooks`; discover which ones have fired
+with `GET /activity`, then drain them with `GET /poll/:id`.
 
 ### DNS Setup
 
@@ -176,10 +195,44 @@ curl -X POST https://hookd.domain.tld/register \
 
 **Parameters:**
 - `count` (optional): Number of hooks to create (default: 1)
+- `ttl` (optional): Lifetime as a Go duration (`168h`) or day count (`7d`). A
+  value above `eviction.hook_ttl` registers a durable **long-lived** hook
+  (persisted, survives restarts), capped at `long_lived.max_ttl`. Omit for an
+  ephemeral hook.
+- `metadata` (optional): Arbitrary JSON object stored with the hook and echoed
+  back on poll. Capped at `long_lived.max_metadata_bytes`.
+
+Long-lived responses include a non-zero `expires_at` and echo `metadata`.
+Registering past `long_lived.max_hooks` returns HTTP 429.
+
+#### GET /activity
+
+List the long-lived hooks that currently have pending interactions, so you can
+discover which fired without polling each one. Authenticated; mutates nothing.
+
+**Request:**
+```bash
+curl https://hookd.domain.tld/activity \
+  -H "X-API-Key: YOUR_TOKEN"
+```
+
+**Response:**
+```json
+{
+  "hooks": [
+    {
+      "hook": { "id": "abc123", "expires_at": "2025-10-08T10:30:00Z", "metadata": {"field": "profile.bio"} },
+      "pending_count": 3,
+      "last_interaction_at": "2025-10-03T14:12:00Z"
+    }
+  ]
+}
+```
 
 #### GET /poll/:id
 
-Retrieve and delete interactions for a single hook.
+Retrieve and delete interactions for a single hook. For a hook registered with
+metadata, the response also echoes it under `metadata`.
 
 **Request:**
 ```bash
@@ -396,15 +449,22 @@ GOOS=darwin GOARCH=amd64 go build -o hookd-darwin-amd64 cmd/hookd/main.go
 - **DNS Server**: Captures DNS queries on port 53 (UDP/TCP)
 - **HTTP/HTTPS Server**: Captures HTTP requests with wildcard vhost
 - **API Server**: REST API for hook management
-- **Storage Manager**: In-memory storage with thread-safe operations
+- **Storage Manager**: Composite storage — in-memory for ephemeral hooks, SQLite
+  for durable long-lived hooks — routed transparently by TTL and hook ID
 - **Eviction System**: Multi-strategy eviction (TTL, limit, memory pressure)
 
 ### Eviction Strategies
 
-1. **Interactions TTL-based**: Automatically removes interactions older than configured TTL
-2. **Hook TTL-based**: Removes hooks older than configured hook TTL (based on creation time)
-3. **Per-hook limit**: Enforces max interactions per hook (FIFO)
-4. **Memory pressure**: Emergency eviction when memory usage is high
+Each strategy is pushed down into the store that owns the data, so the SQLite
+store evicts with indexed SQL rather than loading everything into memory.
+
+1. **Interactions TTL-based**: Removes ephemeral interactions older than the
+   configured TTL. Long-lived interactions are retained until polled or their
+   hook expires.
+2. **Hook TTL-based**: Removes hooks whose `expires_at` has passed (both stores).
+3. **Per-hook limit**: Enforces max interactions per hook (oldest dropped first).
+4. **Memory pressure**: Emergency eviction of the oldest in-memory hooks when
+   heap usage is high (long-lived data lives on disk and is unaffected).
    - Triggers at 90% of max_memory_mb (based on heap memory in use)
    - Deletes oldest hooks (by creation time) until memory drops to 80%
    - Forces garbage collection for accurate measurements

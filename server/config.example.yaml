@@ -51,6 +51,31 @@ eviction:
   # Interval for cleanup of expired interactions
   cleanup_interval: "10s"
 
+long_lived:
+  # Durable, long-lived hooks are persisted to SQLite so they survive restarts.
+  # A registration whose ttl exceeds eviction.hook_ttl is treated as long-lived;
+  # omit ttl (or keep it <= hook_ttl) for ordinary ephemeral, in-memory hooks.
+  # Ideal for stored-XSS style detection, where a payload may fire days later.
+  enabled: true
+
+  # Absolute cap on a long-lived hook's ttl (must be greater than hook_ttl).
+  # Supported formats: 1h, 24h, 168h, 720h
+  max_ttl: "720h"
+
+  # Maximum number of long-lived hooks stored at once (bounds memory and disk).
+  # Registrations past this limit are rejected with HTTP 429.
+  max_hooks: 500
+
+  # Persisted HTTP bodies are truncated to this many bytes (they can accumulate
+  # for weeks, so full multi-megabyte bodies are not kept on disk).
+  max_interaction_body_bytes: 65536
+
+  # Maximum size of the metadata attached to a hook, in bytes.
+  max_metadata_bytes: 8192
+
+  # Path to the SQLite database file.
+  db_path: "/var/lib/hookd/longlived.db"
+
 observability:
   # Enable /metrics endpoint
   metrics_enabled: true

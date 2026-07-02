@@ -90,7 +90,7 @@ func TestServer_HandleDNSRequest_TypeA(t *testing.T) {
 	server, _ := NewServer("example.com", 5353, manager, acmeProvider, logger, idGen)
 
 	// Create a hook
-	hook := manager.CreateHook("example.com")
+	hook := manager.CreateHook("example.com", storage.CreateOptions{})
 
 	// Create DNS query for A record
 	m := new(dns.Msg)

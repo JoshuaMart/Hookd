@@ -4,11 +4,13 @@ import "time"
 
 // Hook represents a registered hook (public API type)
 type Hook struct {
-	ID        string    `json:"id"`
-	DNS       string    `json:"dns"`
-	HTTP      string    `json:"http"`
-	HTTPS     string    `json:"https"`
-	CreatedAt time.Time `json:"created_at"`
+	ID        string         `json:"id"`
+	DNS       string         `json:"dns"`
+	HTTP      string         `json:"http"`
+	HTTPS     string         `json:"https"`
+	CreatedAt time.Time      `json:"created_at"`
+	ExpiresAt time.Time      `json:"expires_at"`
+	Metadata  map[string]any `json:"metadata,omitempty"`
 }
 
 // Interaction represents a captured interaction (public API type)
@@ -22,7 +24,8 @@ type Interaction struct {
 
 // PollResponse represents the response from /poll/:id
 type PollResponse struct {
-	Interactions []Interaction `json:"interactions"`
+	Interactions []Interaction  `json:"interactions"`
+	Metadata     map[string]any `json:"metadata,omitempty"`
 }
 
 // ErrorResponse represents an error response
@@ -30,9 +33,26 @@ type ErrorResponse struct {
 	Error string `json:"error"`
 }
 
-// RegisterRequest represents the request body for /register
+// RegisterRequest represents the request body for /register. TTL is optional: a
+// value above the ephemeral hook TTL (e.g. "168h" or "7d") registers a durable
+// long-lived hook; omit it for an ephemeral hook. Metadata is stored with the
+// hook and echoed back when it is polled.
 type RegisterRequest struct {
-	Count int `json:"count,omitempty"`
+	Count    int            `json:"count,omitempty"`
+	TTL      string         `json:"ttl,omitempty"`
+	Metadata map[string]any `json:"metadata,omitempty"`
+}
+
+// HookActivity summarises a long-lived hook that has pending interactions.
+type HookActivity struct {
+	Hook              Hook      `json:"hook"`
+	PendingCount      int       `json:"pending_count"`
+	LastInteractionAt time.Time `json:"last_interaction_at"`
+}
+
+// ActivityResponse represents the response from /activity.
+type ActivityResponse struct {
+	Hooks []HookActivity `json:"hooks"`
 }
 
 // RegisterResponse represents the response from /register
