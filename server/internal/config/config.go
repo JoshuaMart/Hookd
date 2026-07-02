@@ -12,6 +12,7 @@ type Config struct {
 	Server        ServerConfig        `mapstructure:"server"`
 	Eviction      EvictionConfig      `mapstructure:"eviction"`
 	Observability ObservabilityConfig `mapstructure:"observability"`
+	LongLived     LongLivedConfig     `mapstructure:"long_lived"`
 }
 
 // ServerConfig holds server-related configuration
@@ -56,6 +57,19 @@ type EvictionConfig struct {
 	CleanupInterval time.Duration `mapstructure:"cleanup_interval"`
 }
 
+// LongLivedConfig holds configuration for durable, long-lived hooks. These are
+// persisted to a SQLite database so they survive restarts — the ephemeral,
+// in-memory hooks are unaffected. A registration whose TTL exceeds the ephemeral
+// hook TTL (eviction.hook_ttl) is treated as long-lived.
+type LongLivedConfig struct {
+	Enabled                 bool          `mapstructure:"enabled"`
+	MaxTTL                  time.Duration `mapstructure:"max_ttl"`
+	MaxHooks                int           `mapstructure:"max_hooks"`
+	MaxInteractionBodyBytes int           `mapstructure:"max_interaction_body_bytes"`
+	MaxMetadataBytes        int           `mapstructure:"max_metadata_bytes"`
+	DBPath                  string        `mapstructure:"db_path"`
+}
+
 // ObservabilityConfig holds observability configuration
 type ObservabilityConfig struct {
 	MetricsEnabled bool   `mapstructure:"metrics_enabled"`
@@ -96,6 +110,14 @@ func DefaultConfig() *Config {
 			MetricsEnabled: true,
 			LogLevel:       "info",
 			LogFormat:      "json",
+		},
+		LongLived: LongLivedConfig{
+			Enabled:                 true,
+			MaxTTL:                  720 * time.Hour, // 30 days
+			MaxHooks:                500,
+			MaxInteractionBodyBytes: 65536, // 64 KiB
+			MaxMetadataBytes:        8192,  // 8 KiB
+			DBPath:                  "/var/lib/hookd/longlived.db",
 		},
 	}
 }
@@ -150,6 +172,26 @@ func (c *Config) Validate() error {
 	validLogFormats := map[string]bool{"json": true, "text": true}
 	if !validLogFormats[c.Observability.LogFormat] {
 		return fmt.Errorf("observability.log_format must be one of: json, text")
+	}
+
+	if c.LongLived.Enabled {
+		// A long-lived hook is one whose TTL exceeds the ephemeral hook TTL, so
+		// the cap must leave room above it, otherwise nothing could ever qualify.
+		if c.LongLived.MaxTTL <= c.Eviction.HookTTL {
+			return fmt.Errorf("long_lived.max_ttl must be greater than eviction.hook_ttl")
+		}
+		if c.LongLived.MaxHooks <= 0 {
+			return fmt.Errorf("long_lived.max_hooks must be positive")
+		}
+		if c.LongLived.MaxInteractionBodyBytes <= 0 {
+			return fmt.Errorf("long_lived.max_interaction_body_bytes must be positive")
+		}
+		if c.LongLived.MaxMetadataBytes <= 0 {
+			return fmt.Errorf("long_lived.max_metadata_bytes must be positive")
+		}
+		if c.LongLived.DBPath == "" {
+			return fmt.Errorf("long_lived.db_path is required when long_lived is enabled")
+		}
 	}
 
 	return nil

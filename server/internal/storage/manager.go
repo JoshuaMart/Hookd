@@ -52,6 +52,18 @@ type MemoryEvictionResult struct {
 	InteractionsEvicted int
 }
 
+// LongLivedManager is implemented by managers that support durable long-lived
+// hooks. It is an optional capability: callers type-assert a Manager to it and
+// degrade gracefully (no long-lived support) when the assertion fails.
+type LongLivedManager interface {
+	// LongLivedActivity returns the long-lived hooks that currently have pending
+	// interactions, so a client can discover which ones fired.
+	LongLivedActivity() []HookActivity
+
+	// LongLivedCount returns the number of long-lived hooks currently stored.
+	LongLivedCount() int
+}
+
 // Stats represents storage statistics
 type Stats struct {
 	HooksActive       int

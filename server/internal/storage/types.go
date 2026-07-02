@@ -54,6 +54,15 @@ type PollResult struct {
 	Error        string         `json:"error,omitempty"`
 }
 
+// HookActivity summarises a long-lived hook that has pending interactions. It
+// powers the activity endpoint, which lets a client discover which of its many
+// long-lived hooks have fired without polling each one individually.
+type HookActivity struct {
+	Hook              *Hook     `json:"hook"`
+	PendingCount      int       `json:"pending_count"`
+	LastInteractionAt time.Time `json:"last_interaction_at"`
+}
+
 // DNSInteraction creates a DNS interaction
 func DNSInteraction(id, sourceIP, qname, qtype string) *Interaction {
 	return &Interaction{

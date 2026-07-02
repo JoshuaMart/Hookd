@@ -98,6 +98,36 @@ func TestConfig_Validate(t *testing.T) {
 			},
 			wantErr: true,
 		},
+		{
+			name: "long_lived max_ttl not above hook_ttl",
+			modify: func(c *Config) {
+				c.LongLived.MaxTTL = c.Eviction.HookTTL
+			},
+			wantErr: true,
+		},
+		{
+			name: "long_lived zero max_hooks",
+			modify: func(c *Config) {
+				c.LongLived.MaxHooks = 0
+			},
+			wantErr: true,
+		},
+		{
+			name: "long_lived empty db_path",
+			modify: func(c *Config) {
+				c.LongLived.DBPath = ""
+			},
+			wantErr: true,
+		},
+		{
+			name: "long_lived disabled skips validation",
+			modify: func(c *Config) {
+				c.LongLived.Enabled = false
+				c.LongLived.MaxHooks = 0
+				c.LongLived.DBPath = ""
+			},
+			wantErr: false,
+		},
 	}
 
 	for _, tt := range tests {
