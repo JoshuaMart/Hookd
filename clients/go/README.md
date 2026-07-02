@@ -95,6 +95,36 @@ for hookID, result := range results {
 }
 ```
 
+### Long-lived Hooks Example
+
+For asynchronous detection (e.g. stored XSS), register a **long-lived** hook with
+a `TTL` above the server's ephemeral `hook_ttl`. It is persisted and survives
+restarts. Attach `Metadata` to correlate a fired hook back to its injection
+point, then use `Activity` to discover which hooks fired without polling each.
+
+```go
+// Register a durable hook that lives for 7 days, tagged with where it was injected
+hooks, err := client.RegisterHooks(hookd.RegisterOptions{
+    TTL:      "7d", // or a Go duration like "168h"
+    Metadata: map[string]any{"target": "acme", "field": "profile.bio"},
+})
+if err != nil {
+    panic(err)
+}
+fmt.Printf("Hook %s expires at %s\n", hooks[0].ID, hooks[0].ExpiresAt)
+
+// ... later, discover which long-lived hooks have fired ...
+activity, err := client.Activity()
+if err != nil {
+    panic(err)
+}
+for _, a := range activity {
+    fmt.Printf("Hook %s fired %d time(s), meta=%v\n", a.Hook.ID, a.PendingCount, a.Hook.Metadata)
+    interactions, _ := client.Poll(a.Hook.ID) // drain the details
+    _ = interactions
+}
+```
+
 ### Configuration
 
 The client requires two parameters:
@@ -129,6 +159,25 @@ Parameters:
 - `count` - Number of hooks to create (0 or 1 for single, >1 for multiple)
 
 Returns: Slice of `Hook` objects
+
+#### `(*Client) RegisterHooks(opts RegisterOptions) ([]Hook, error)`
+
+Register hooks with options: `Count`, `TTL` (a Go duration like `"168h"` or a day
+count like `"7d"` — a value above the server's `hook_ttl` creates a durable
+long-lived hook), and `Metadata` (stored with the hook, echoed on poll).
+
+```go
+hooks, _ := client.RegisterHooks(hookd.RegisterOptions{TTL: "7d", Metadata: map[string]any{"k": "v"}})
+```
+
+#### `(*Client) Activity() ([]HookActivity, error)`
+
+List the long-lived hooks that currently have pending interactions. Returns an
+empty slice when none have fired (or long-lived hooks are disabled server-side).
+
+```go
+activity, _ := client.Activity()
+```
 
 #### `(*Client) Poll(hookID string) ([]Interaction, error)`
 
@@ -173,6 +222,16 @@ fmt.Printf("Total hooks: %v\n", metrics["total_hooks"])
 | `HTTP`      | string | HTTP endpoint        |
 | `HTTPS`     | string | HTTPS endpoint       |
 | `CreatedAt` | string | Creation timestamp   |
+| `ExpiresAt` | string | Expiry timestamp (long-lived hooks) |
+| `Metadata`  | map[string]any | Metadata attached at registration |
+
+#### `HookActivity`
+
+| Field               | Type   | Description                          |
+|---------------------|--------|--------------------------------------|
+| `Hook`              | Hook   | The long-lived hook that fired       |
+| `PendingCount`      | int    | Number of interactions awaiting poll |
+| `LastInteractionAt` | string | Timestamp of the most recent one     |
 
 #### `Interaction`
 

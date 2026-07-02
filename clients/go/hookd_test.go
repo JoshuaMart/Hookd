@@ -106,6 +106,97 @@ func TestRegisterNegativeCount(t *testing.T) {
 	}
 }
 
+func TestRegisterHooksLongLived(t *testing.T) {
+	server, client := setupServer(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if body["ttl"] != "7d" {
+			t.Errorf("expected ttl 7d in body, got %v", body["ttl"])
+		}
+		meta, ok := body["metadata"].(map[string]any)
+		if !ok || meta["field"] != "bio" {
+			t.Errorf("expected metadata in body, got %v", body["metadata"])
+		}
+		writeJSON(t, w, map[string]any{
+			"id":         "abc",
+			"dns":        "abc.hookd.example.com",
+			"created_at": "2025-10-01T10:30:00Z",
+			"expires_at": "2025-10-08T10:30:00Z",
+			"metadata":   map[string]any{"field": "bio"},
+		})
+	})
+	defer server.Close()
+
+	hooks, err := client.RegisterHooks(RegisterOptions{TTL: "7d", Metadata: map[string]any{"field": "bio"}})
+	if err != nil {
+		t.Fatalf("RegisterHooks: %v", err)
+	}
+	if len(hooks) != 1 {
+		t.Fatalf("expected 1 hook, got %d", len(hooks))
+	}
+	if hooks[0].ExpiresAt == "" {
+		t.Error("expected ExpiresAt to be populated")
+	}
+	if hooks[0].Metadata["field"] != "bio" {
+		t.Errorf("expected metadata on hook, got %v", hooks[0].Metadata)
+	}
+}
+
+func TestActivity(t *testing.T) {
+	server, client := setupServer(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("expected GET, got %s", r.Method)
+		}
+		if r.URL.Path != "/activity" {
+			t.Errorf("expected /activity, got %s", r.URL.Path)
+		}
+		writeJSON(t, w, map[string]any{
+			"hooks": []any{
+				map[string]any{
+					"hook":                map[string]any{"id": "abc", "metadata": map[string]any{"n": "1"}},
+					"pending_count":       3,
+					"last_interaction_at": "2025-10-03T14:12:00Z",
+				},
+			},
+		})
+	})
+	defer server.Close()
+
+	activity, err := client.Activity()
+	if err != nil {
+		t.Fatalf("Activity: %v", err)
+	}
+	if len(activity) != 1 {
+		t.Fatalf("expected 1 active hook, got %d", len(activity))
+	}
+	if activity[0].Hook.ID != "abc" {
+		t.Errorf("expected hook id abc, got %s", activity[0].Hook.ID)
+	}
+	if activity[0].PendingCount != 3 {
+		t.Errorf("expected pending count 3, got %d", activity[0].PendingCount)
+	}
+	if activity[0].Hook.Metadata["n"] != "1" {
+		t.Errorf("expected hook metadata, got %v", activity[0].Hook.Metadata)
+	}
+}
+
+func TestActivityEmpty(t *testing.T) {
+	server, client := setupServer(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]any{"hooks": []any{}})
+	})
+	defer server.Close()
+
+	activity, err := client.Activity()
+	if err != nil {
+		t.Fatalf("Activity: %v", err)
+	}
+	if len(activity) != 0 {
+		t.Errorf("expected empty activity, got %d", len(activity))
+	}
+}
+
 func TestPoll(t *testing.T) {
 	server, client := setupServer(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {

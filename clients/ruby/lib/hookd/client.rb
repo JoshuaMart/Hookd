@@ -22,25 +22,20 @@ module Hookd
 
     # Register one or more hooks
     # @param count [Integer, nil] number of hooks to register (default: 1)
+    # @param ttl [String, nil] lifetime as a Go duration ("168h") or day count
+    #   ("7d"); a value above the server's ephemeral hook_ttl registers a durable
+    #   long-lived hook. Omit for an ephemeral hook.
+    # @param metadata [Hash, nil] arbitrary data stored with the hook and echoed
+    #   back on poll
     # @return [Hookd::Hook, Array<Hookd::Hook>] single hook or array of hooks
     # @raise [Hookd::AuthenticationError] if authentication fails
     # @raise [Hookd::ServerError] if server returns 5xx
     # @raise [Hookd::ConnectionError] if connection fails
     # @raise [ArgumentError] if count is invalid
-    def register(count: nil)
-      body = count.nil? ? nil : { count: count }
-
+    def register(count: nil, ttl: nil, metadata: nil)
       raise ArgumentError, 'count must be a positive integer' if count && (!count.is_a?(Integer) || count < 1)
 
-      response = post('/register', body)
-
-      # Single hook response (backward compatible)
-      return Hook.from_hash(response) if response.key?('id')
-
-      # Multiple hooks response
-      return [] if response['hooks'].nil? || response['hooks'].empty?
-
-      response['hooks'].map { |h| Hook.from_hash(h) }
+      parse_register_response(post('/register', register_body(count, ttl, metadata)))
     end
 
     # Poll for interactions on a hook
@@ -92,7 +87,44 @@ module Hookd
       get('/metrics')
     end
 
+    # List long-lived hooks that currently have pending interactions, so you can
+    # discover which of your long-lived hooks fired without polling each one.
+    # Drain the details with #poll. Returns an empty array when none have fired
+    # (or the server has long-lived hooks disabled).
+    # @return [Array<Hookd::HookActivity>]
+    # @raise [Hookd::AuthenticationError] if authentication fails
+    # @raise [Hookd::ServerError] if server returns 5xx
+    # @raise [Hookd::ConnectionError] if connection fails
+    def activity
+      response = get('/activity')
+
+      hooks = response['hooks']
+      return [] if hooks.nil? || hooks.empty? || !hooks.is_a?(Array)
+
+      hooks.map { |h| HookActivity.from_hash(h) }
+    rescue NoMethodError => e
+      raise Error, "Invalid response format: #{e.message}"
+    end
+
     private
+
+    def register_body(count, ttl, metadata)
+      body = {}
+      body[:count] = count unless count.nil?
+      body[:ttl] = ttl unless ttl.nil?
+      body[:metadata] = metadata unless metadata.nil?
+      body.empty? ? nil : body
+    end
+
+    def parse_register_response(response)
+      # Single hook response (backward compatible)
+      return Hook.from_hash(response) if response.key?('id')
+
+      # Multiple hooks response
+      return [] if response['hooks'].nil? || response['hooks'].empty?
+
+      response['hooks'].map { |h| Hook.from_hash(h) }
+    end
 
     def get(path)
       url = "#{@server}#{path}"

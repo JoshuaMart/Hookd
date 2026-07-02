@@ -130,8 +130,20 @@ hooks = client.register(count: 5)
 # => [#<Hookd::Hook id="abc123" ...>, #<Hookd::Hook id="def456" ...>, ...]
 ```
 
+**Long-lived hook (survives restarts, for stored-XSS style detection):**
+```ruby
+hook = client.register(ttl: '7d', metadata: { target: 'acme', field: 'profile.bio' })
+# => #<Hookd::Hook id="abc123" ...>
+hook.expires_at # => "2025-10-08T10:30:00Z"
+hook.metadata   # => {"target"=>"acme", "field"=>"profile.bio"}
+```
+
 Parameters:
 - `count` (Integer, optional) - Number of hooks to create (default: 1)
+- `ttl` (String, optional) - Lifetime as a Go duration (`"168h"`) or day count
+  (`"7d"`); a value above the server's ephemeral `hook_ttl` registers a durable
+  long-lived hook. Omit for an ephemeral hook.
+- `metadata` (Hash, optional) - Stored with the hook and echoed back on poll
 
 Returns:
 - `Hookd::Hook` object when `count` is 1 or not specified
@@ -142,6 +154,21 @@ Raises:
 - `Hookd::AuthenticationError` - Authentication failed
 - `Hookd::ServerError` - Server error (5xx)
 - `Hookd::ConnectionError` - Connection failed
+
+##### `#activity`
+
+List the long-lived hooks that currently have pending interactions, so you can
+discover which fired without polling each one; drain the details with `#poll`.
+
+```ruby
+client.activity.each do |a|
+  puts "#{a.hook.id} fired #{a.pending_count} time(s), meta=#{a.hook.metadata}"
+  client.poll(a.hook.id)
+end
+# => [#<Hookd::HookActivity hook=abc123 pending=3>, ...]
+```
+
+Returns: Array of `Hookd::HookActivity` (empty when none fired or long-lived is disabled)
 
 ##### `#poll(hook_id)`
 
@@ -233,6 +260,17 @@ Attributes:
 - `http` (String) - HTTP endpoint
 - `https` (String) - HTTPS endpoint
 - `created_at` (String) - Creation timestamp
+- `expires_at` (String, nil) - Expiry timestamp (long-lived hooks)
+- `metadata` (Hash, nil) - Metadata attached at registration
+
+#### `Hookd::HookActivity`
+
+Represents a long-lived hook that has pending interactions (returned by `#activity`).
+
+Attributes:
+- `hook` (`Hookd::Hook`) - The long-lived hook that fired
+- `pending_count` (Integer) - Number of interactions awaiting poll
+- `last_interaction_at` (String) - Timestamp of the most recent interaction
 
 #### `Hookd::Interaction`
 
