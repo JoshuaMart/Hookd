@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"runtime"
+	"sort"
 	"sync/atomic"
 	"time"
 
@@ -17,6 +18,11 @@ type Evictor struct {
 	config  config.EvictionConfig
 	logger  *slog.Logger
 	metrics counters
+
+	// forceGC and heapInUseMB are injectable so the memory-eviction logic can
+	// be tested deterministically without depending on the real Go heap.
+	forceGC     func()
+	heapInUseMB func() int
 }
 
 // counters holds the live eviction counters. The eviction goroutine writes
@@ -40,10 +46,20 @@ type Metrics struct {
 // NewEvictor creates a new evictor
 func NewEvictor(storage storage.Manager, cfg config.EvictionConfig, logger *slog.Logger) *Evictor {
 	return &Evictor{
-		storage: storage,
-		config:  cfg,
-		logger:  logger,
+		storage:     storage,
+		config:      cfg,
+		logger:      logger,
+		forceGC:     runtime.GC,
+		heapInUseMB: readHeapInUseMB,
 	}
+}
+
+// readHeapInUseMB reports the heap currently in use, in megabytes. It reads
+// runtime memory stats without forcing a garbage collection.
+func readHeapInUseMB() int {
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+	return int(m.HeapInuse / (1024 * 1024))
 }
 
 // Start starts the eviction loop
@@ -161,20 +177,35 @@ func (e *Evictor) evictByLimit() {
 	}
 }
 
-// evictByMemory performs emergency eviction when approaching memory limit
+// evictByMemory performs emergency eviction when approaching the memory limit.
 func (e *Evictor) evictByMemory() {
-	// Force GC to get accurate memory reading
-	runtime.GC()
-
-	stats := e.storage.Stats()
-
-	// Check if we're approaching the limit (90% threshold)
 	threshold := int(float64(e.config.MaxMemoryMB) * 0.9)
 
-	if stats.Memory.HeapInuseMB < threshold {
+	// Fast path: read heap usage without forcing a GC. This runs on every
+	// cleanup tick, and forcing a stop-the-world GC each time (when there is
+	// almost never any pressure) would be wasteful.
+	if e.heapInUseMB() < threshold {
 		return
 	}
 
+	// A high HeapInuse reading may just be uncollected garbage. Force a GC and
+	// re-measure so we only evict on genuine, post-collection pressure.
+	e.forceGC()
+	if e.heapInUseMB() < threshold {
+		return
+	}
+
+	hooks := e.storage.GetAllHooks()
+	if len(hooks) == 0 {
+		return
+	}
+
+	// Oldest first.
+	sort.Slice(hooks, func(i, j int) bool {
+		return hooks[i].CreatedAt.Before(hooks[j].CreatedAt)
+	})
+
+	stats := e.storage.Stats()
 	e.logger.Warn("memory pressure detected",
 		"heap_inuse_mb", stats.Memory.HeapInuseMB,
 		"alloc_mb", stats.Memory.AllocMB,
@@ -182,65 +213,41 @@ func (e *Evictor) evictByMemory() {
 		"threshold_mb", threshold,
 		"max_mb", e.config.MaxMemoryMB)
 
-	// Evict oldest hooks until we're below 80% of limit
+	// Evict oldest hooks until we drop below 80% of the limit.
 	target := int(float64(e.config.MaxMemoryMB) * 0.8)
+	allInteractions := e.storage.GetAllInteractions()
+
 	totalEvicted := 0
 	hooksEvicted := 0
 
-	// Get all hooks sorted by creation time (oldest first)
-	hooks := e.storage.GetAllHooks()
-	if len(hooks) == 0 {
-		return
-	}
+	// HeapInuse only drops after a GC, so re-measuring makes sense only in
+	// batches: each batch boundary forces one GC and checks a fresh reading.
+	// This bounds both the number of forced GCs and how far we can over-evict.
+	const batchSize = 10
 
-	// Sort hooks by CreatedAt (oldest first)
-	sortedHooks := make([]*storage.Hook, len(hooks))
-	copy(sortedHooks, hooks)
-
-	// Simple bubble sort (sufficient for small datasets)
-	for i := 0; i < len(sortedHooks)-1; i++ {
-		for j := 0; j < len(sortedHooks)-i-1; j++ {
-			if sortedHooks[j].CreatedAt.After(sortedHooks[j+1].CreatedAt) {
-				sortedHooks[j], sortedHooks[j+1] = sortedHooks[j+1], sortedHooks[j]
+	for _, hook := range hooks {
+		if hooksEvicted%batchSize == 0 {
+			e.forceGC()
+			if e.heapInUseMB() < target {
+				break
 			}
 		}
-	}
 
-	// Get all interactions once (optimization to avoid repeated calls)
-	allInteractions := e.storage.GetAllInteractions()
-
-	// Delete oldest hooks until memory is below target
-	for _, hook := range sortedHooks {
-		if stats.Memory.HeapInuseMB < target {
-			break
-		}
-
-		// Get interaction count for this hook
-		interactionCount := len(allInteractions[hook.ID])
-
+		totalEvicted += len(allInteractions[hook.ID])
 		e.storage.DeleteHook(hook.ID)
-		totalEvicted += interactionCount
 		hooksEvicted++
-
-		// Recalculate stats every 10 hooks for better performance
-		if hooksEvicted%10 == 0 {
-			runtime.GC()
-			stats = e.storage.Stats()
-		}
 	}
-
-	// Final stats check
-	runtime.GC()
-	stats = e.storage.Stats()
 
 	if totalEvicted > 0 {
 		e.metrics.evictionsMemory.Add(int64(totalEvicted))
+		e.forceGC()
+		finalStats := e.storage.Stats()
 		e.logger.Warn("memory eviction completed",
 			"evicted_interactions", totalEvicted,
 			"evicted_hooks", hooksEvicted,
-			"new_heap_inuse_mb", stats.Memory.HeapInuseMB,
-			"new_alloc_mb", stats.Memory.AllocMB,
-			"gc_runs", stats.Memory.GCRuns)
+			"new_heap_inuse_mb", finalStats.Memory.HeapInuseMB,
+			"new_alloc_mb", finalStats.Memory.AllocMB,
+			"gc_runs", finalStats.Memory.GCRuns)
 	}
 }
 
