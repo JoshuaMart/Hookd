@@ -142,6 +142,35 @@ func TestProvider_DeleteRecords(t *testing.T) {
 	}
 }
 
+func TestRecordStore_DeleteRecords_Multiple(t *testing.T) {
+	rec1 := libdns.RR{Type: "TXT", Name: "rec1", Data: "value1", TTL: 300 * time.Second}
+	rec2 := libdns.RR{Type: "TXT", Name: "rec2", Data: "value2", TTL: 300 * time.Second}
+	rec3 := libdns.RR{Type: "TXT", Name: "rec3", Data: "value3", TTL: 300 * time.Second}
+	rec4 := libdns.RR{Type: "TXT", Name: "rec4", Data: "value4", TTL: 300 * time.Second}
+
+	store := &RecordStore{
+		entries: []libdns.Record{rec1, rec2, rec3, rec4},
+	}
+
+	// Delete two adjacent records at once - this is the case that broke
+	// when the slice was mutated during iteration.
+	toDelete := []libdns.Record{rec2, rec3}
+	deleted := store.deleteRecords(toDelete)
+
+	if len(deleted) != 2 {
+		t.Fatalf("expected 2 deleted records, got %d", len(deleted))
+	}
+
+	if len(store.entries) != 2 {
+		t.Fatalf("expected 2 remaining records, got %d", len(store.entries))
+	}
+
+	if store.entries[0].RR().Name != "rec1" || store.entries[1].RR().Name != "rec4" {
+		t.Errorf("expected remaining records rec1 and rec4, got %s and %s",
+			store.entries[0].RR().Name, store.entries[1].RR().Name)
+	}
+}
+
 func TestProvider_DeleteRecords_EmptyZone(t *testing.T) {
 	logger := slog.Default()
 	provider := NewProvider(logger)

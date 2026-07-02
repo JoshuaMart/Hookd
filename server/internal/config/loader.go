@@ -8,10 +8,45 @@ import (
 	"github.com/spf13/viper"
 )
 
-// Load loads configuration from file, environment, and CLI flags
+// configKeys lists every configuration key, so environment variables can be
+// bound explicitly. AutomaticEnv alone does not make nested keys visible to
+// Unmarshal, so each key must be bound for env overrides to take effect.
+var configKeys = []string{
+	"server.domain",
+	"server.dns.enabled",
+	"server.dns.port",
+	"server.http.port",
+	"server.https.enabled",
+	"server.https.port",
+	"server.https.autocert",
+	"server.https.cache_dir",
+	"server.api.auth_token",
+	"eviction.interaction_ttl",
+	"eviction.hook_ttl",
+	"eviction.max_per_hook",
+	"eviction.max_memory_mb",
+	"eviction.cleanup_interval",
+	"observability.metrics_enabled",
+	"observability.log_level",
+	"observability.log_format",
+}
+
+// Load loads configuration from file, environment, and CLI flags.
+// Precedence, from lowest to highest: defaults < file < environment < flags.
 func Load(configPath string) (*Config, error) {
 	// Start with defaults
 	cfg := DefaultConfig()
+
+	// Set up environment variable overrides (HOOKD_SERVER_DOMAIN, etc.)
+	// This must happen before Unmarshal so bound env values are applied.
+	viper.SetEnvPrefix("HOOKD")
+	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+	viper.AutomaticEnv()
+	for _, key := range configKeys {
+		if err := viper.BindEnv(key); err != nil {
+			return nil, fmt.Errorf("failed to bind env for %s: %w", key, err)
+		}
+	}
 
 	// Load from YAML file if provided
 	if configPath != "" {
@@ -19,16 +54,13 @@ func Load(configPath string) (*Config, error) {
 		if err := viper.ReadInConfig(); err != nil {
 			return nil, fmt.Errorf("failed to read config file: %w", err)
 		}
-
-		if err := viper.Unmarshal(cfg); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal config: %w", err)
-		}
 	}
 
-	// Environment variables override (HOOKD_SERVER_DOMAIN, etc.)
-	viper.SetEnvPrefix("HOOKD")
-	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
-	viper.AutomaticEnv()
+	// Unmarshal file + environment values over the defaults. Keys absent from
+	// both viper's config and the environment are left at their default value.
+	if err := viper.Unmarshal(cfg); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
+	}
 
 	// Apply CLI flags (highest priority)
 	applyFlags(cfg)

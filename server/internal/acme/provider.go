@@ -42,14 +42,22 @@ func compareRecords(a, b libdns.Record) bool {
 
 func (r *RecordStore) deleteRecords(recs []libdns.Record) []libdns.Record {
 	var deletedRecords []libdns.Record
-	for i, entry := range r.entries {
+	remaining := make([]libdns.Record, 0, len(r.entries))
+	for _, entry := range r.entries {
+		matched := false
 		for _, record := range recs {
 			if compareRecords(entry, record) {
-				deletedRecords = append(deletedRecords, record)
-				r.entries = append(r.entries[:i], r.entries[i+1:]...)
+				matched = true
+				break
 			}
 		}
+		if matched {
+			deletedRecords = append(deletedRecords, entry)
+		} else {
+			remaining = append(remaining, entry)
+		}
 	}
+	r.entries = remaining
 	return deletedRecords
 }
 

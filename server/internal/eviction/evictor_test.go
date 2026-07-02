@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -41,8 +42,8 @@ func TestEvictor_EvictByTTL(t *testing.T) {
 		t.Errorf("expected 0 interactions after TTL eviction, got %d", stats.InteractionsTotal)
 	}
 
-	if evictor.metrics.EvictionsTTL != 1 {
-		t.Errorf("expected 1 TTL eviction, got %d", evictor.metrics.EvictionsTTL)
+	if got := evictor.GetMetrics().EvictionsTTL; got != 1 {
+		t.Errorf("expected 1 TTL eviction, got %d", got)
 	}
 }
 
@@ -77,8 +78,8 @@ func TestEvictor_EvictByLimit(t *testing.T) {
 		t.Errorf("expected 5 interactions after limit eviction, got %d", stats.InteractionsTotal)
 	}
 
-	if evictor.metrics.EvictionsLimit != 5 {
-		t.Errorf("expected 5 limit evictions, got %d", evictor.metrics.EvictionsLimit)
+	if got := evictor.GetMetrics().EvictionsLimit; got != 5 {
+		t.Errorf("expected 5 limit evictions, got %d", got)
 	}
 }
 
@@ -185,7 +186,7 @@ func TestEvictor_EvictByMemory(t *testing.T) {
 	}
 
 	// Memory evictions should have been recorded
-	if evictor.metrics.EvictionsMemory == 0 {
+	if evictor.GetMetrics().EvictionsMemory == 0 {
 		t.Error("expected memory evictions to be recorded")
 	}
 }
@@ -222,8 +223,56 @@ func TestEvictor_EvictByMemory_BelowThreshold(t *testing.T) {
 		t.Errorf("expected 1 interaction, got %d", stats.InteractionsTotal)
 	}
 
-	if evictor.metrics.EvictionsMemory != 0 {
-		t.Errorf("expected 0 memory evictions, got %d", evictor.metrics.EvictionsMemory)
+	if got := evictor.GetMetrics().EvictionsMemory; got != 0 {
+		t.Errorf("expected 0 memory evictions, got %d", got)
+	}
+}
+
+// TestEvictor_MetricsConcurrentAccess exercises eviction (writes to the
+// counters) and GetMetrics (reads) concurrently. It exists to catch the data
+// race that occurred when the counters were plain int64s; run with -race.
+func TestEvictor_MetricsConcurrentAccess(t *testing.T) {
+	idGen := func() string { return "test-id" }
+	manager := storage.NewMemoryManager(idGen)
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	cfg := config.EvictionConfig{
+		InteractionTTL:  1 * time.Nanosecond, // everything is immediately expired
+		HookTTL:         1 * time.Hour,
+		MaxPerHook:      1,
+		MaxMemoryMB:     1800,
+		CleanupInterval: 10 * time.Second,
+	}
+
+	evictor := NewEvictor(manager, cfg, logger)
+
+	hook := manager.CreateHook("example.com")
+
+	var wg sync.WaitGroup
+
+	// Writer: repeatedly add interactions and evict them.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 1000; i++ {
+			manager.AddInteraction(hook.ID, storage.DNSInteraction("id", "1.2.3.4", "q", "A"))
+			evictor.evictByTTL()
+		}
+	}()
+
+	// Reader: repeatedly snapshot the metrics.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 1000; i++ {
+			_ = evictor.GetMetrics()
+		}
+	}()
+
+	wg.Wait()
+
+	if got := evictor.GetMetrics().EvictionsTTL; got == 0 {
+		t.Error("expected some TTL evictions to have been recorded")
 	}
 }
 
@@ -247,7 +296,7 @@ func TestEvictor_EvictByMemory_NoHooks(t *testing.T) {
 	evictor.evictByMemory()
 
 	// Should not panic or error
-	if evictor.metrics.EvictionsMemory != 0 {
-		t.Errorf("expected 0 memory evictions with no hooks, got %d", evictor.metrics.EvictionsMemory)
+	if got := evictor.GetMetrics().EvictionsMemory; got != 0 {
+		t.Errorf("expected 0 memory evictions with no hooks, got %d", got)
 	}
 }

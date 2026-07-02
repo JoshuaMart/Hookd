@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
@@ -69,6 +70,74 @@ server:
 
 	if cfg.Server.API.AuthToken != "test-token" {
 		t.Errorf("expected auth token test-token, got %s", cfg.Server.API.AuthToken)
+	}
+}
+
+func TestLoad_EnvOverride(t *testing.T) {
+	viper.Reset()
+
+	t.Setenv("HOOKD_SERVER_DOMAIN", "env.example.com")
+	t.Setenv("HOOKD_SERVER_DNS_PORT", "5354")
+	t.Setenv("HOOKD_EVICTION_INTERACTION_TTL", "30m")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+
+	if cfg.Server.Domain != "env.example.com" {
+		t.Errorf("expected domain env.example.com, got %s", cfg.Server.Domain)
+	}
+
+	// Nested key override.
+	if cfg.Server.DNS.Port != 5354 {
+		t.Errorf("expected DNS port 5354, got %d", cfg.Server.DNS.Port)
+	}
+
+	// Duration parsing via env.
+	if cfg.Eviction.InteractionTTL != 30*time.Minute {
+		t.Errorf("expected interaction TTL 30m, got %s", cfg.Eviction.InteractionTTL)
+	}
+
+	// Unset keys must keep their defaults.
+	if cfg.Server.HTTP.Port != 80 {
+		t.Errorf("expected default HTTP port 80, got %d", cfg.Server.HTTP.Port)
+	}
+	if cfg.Eviction.MaxPerHook != 1000 {
+		t.Errorf("expected default max_per_hook 1000, got %d", cfg.Eviction.MaxPerHook)
+	}
+}
+
+func TestLoad_EnvOverridesFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+
+	configContent := `
+server:
+  domain: "file.example.com"
+  dns:
+    port: 5353
+`
+	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+		t.Fatalf("failed to write config file: %v", err)
+	}
+
+	viper.Reset()
+	t.Setenv("HOOKD_SERVER_DOMAIN", "env.example.com")
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+
+	// Env must win over file.
+	if cfg.Server.Domain != "env.example.com" {
+		t.Errorf("expected env to override file domain, got %s", cfg.Server.Domain)
+	}
+
+	// File value with no env override must still apply.
+	if cfg.Server.DNS.Port != 5353 {
+		t.Errorf("expected DNS port 5353 from file, got %d", cfg.Server.DNS.Port)
 	}
 }
 

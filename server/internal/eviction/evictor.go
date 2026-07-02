@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"runtime"
+	"sync/atomic"
 	"time"
 
 	"github.com/jomar/hookd/internal/config"
@@ -15,10 +16,20 @@ type Evictor struct {
 	storage storage.Manager
 	config  config.EvictionConfig
 	logger  *slog.Logger
-	metrics *Metrics
+	metrics counters
 }
 
-// Metrics tracks eviction statistics
+// counters holds the live eviction counters. The eviction goroutine writes
+// them while the /metrics handler reads them concurrently, so they must be
+// accessed atomically.
+type counters struct {
+	evictionsTTL     atomic.Int64
+	evictionsLimit   atomic.Int64
+	evictionsMemory  atomic.Int64
+	evictionsHookTTL atomic.Int64
+}
+
+// Metrics is an immutable snapshot of the eviction counters.
 type Metrics struct {
 	EvictionsTTL     int64
 	EvictionsLimit   int64
@@ -32,7 +43,6 @@ func NewEvictor(storage storage.Manager, cfg config.EvictionConfig, logger *slog
 		storage: storage,
 		config:  cfg,
 		logger:  logger,
-		metrics: &Metrics{},
 	}
 }
 
@@ -98,7 +108,7 @@ func (e *Evictor) evictByTTL() {
 	}
 
 	if totalEvicted > 0 {
-		e.metrics.EvictionsTTL += int64(totalEvicted)
+		e.metrics.evictionsTTL.Add(int64(totalEvicted))
 		e.logger.Debug("ttl eviction completed", "evicted", totalEvicted)
 	}
 }
@@ -119,7 +129,7 @@ func (e *Evictor) evictByHookTTL() {
 	}
 
 	if totalEvicted > 0 {
-		e.metrics.EvictionsHookTTL += int64(totalEvicted)
+		e.metrics.evictionsHookTTL.Add(int64(totalEvicted))
 		e.logger.Info("hook ttl eviction completed", "evicted_hooks", totalEvicted)
 	}
 }
@@ -146,7 +156,7 @@ func (e *Evictor) evictByLimit() {
 	}
 
 	if totalEvicted > 0 {
-		e.metrics.EvictionsLimit += int64(totalEvicted)
+		e.metrics.evictionsLimit.Add(int64(totalEvicted))
 		e.logger.Debug("limit eviction completed", "evicted", totalEvicted)
 	}
 }
@@ -224,7 +234,7 @@ func (e *Evictor) evictByMemory() {
 	stats = e.storage.Stats()
 
 	if totalEvicted > 0 {
-		e.metrics.EvictionsMemory += int64(totalEvicted)
+		e.metrics.evictionsMemory.Add(int64(totalEvicted))
 		e.logger.Warn("memory eviction completed",
 			"evicted_interactions", totalEvicted,
 			"evicted_hooks", hooksEvicted,
@@ -234,7 +244,12 @@ func (e *Evictor) evictByMemory() {
 	}
 }
 
-// GetMetrics returns eviction metrics
+// GetMetrics returns a snapshot of the eviction metrics
 func (e *Evictor) GetMetrics() Metrics {
-	return *e.metrics
+	return Metrics{
+		EvictionsTTL:     e.metrics.evictionsTTL.Load(),
+		EvictionsLimit:   e.metrics.evictionsLimit.Load(),
+		EvictionsMemory:  e.metrics.evictionsMemory.Load(),
+		EvictionsHookTTL: e.metrics.evictionsHookTTL.Load(),
+	}
 }
