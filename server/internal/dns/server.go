@@ -11,6 +11,7 @@ import (
 	"github.com/miekg/dns"
 
 	"github.com/jomar/hookd/internal/acme"
+	"github.com/jomar/hookd/internal/netutil"
 	"github.com/jomar/hookd/internal/storage"
 )
 
@@ -124,7 +125,7 @@ func (s *Server) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 		hookID := s.extractHookID(q.Name)
 		if hookID != "" {
 			// Log interaction
-			sourceIP := extractIP(w.RemoteAddr().String())
+			sourceIP := netutil.ExtractIP(w.RemoteAddr().String())
 			interaction := storage.DNSInteraction(
 				s.idGenerator(),
 				sourceIP,
@@ -132,9 +133,7 @@ func (s *Server) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 				dns.TypeToString[q.Qtype],
 			)
 
-			if err := s.storage.AddInteraction(hookID, interaction); err != nil {
-				s.logger.Error("failed to store dns interaction", "error", err)
-			}
+			s.storage.AddInteraction(hookID, interaction)
 		}
 
 		// Respond based on query type
@@ -293,12 +292,9 @@ func (s *Server) extractHookID(qname string) string {
 	// Extract the subdomain part
 	subdomain := strings.TrimSuffix(qname, suffix)
 
-	// Handle multi-level subdomains (take the first part)
+	// Handle multi-level subdomains (take the first part). strings.Split always
+	// returns at least one element, so parts[0] is safe.
 	parts := strings.Split(subdomain, ".")
-	if len(parts) == 0 {
-		return ""
-	}
-
 	return parts[0]
 }
 
@@ -312,13 +308,4 @@ func getOutboundIP() (string, error) {
 
 	localAddr := conn.LocalAddr().(*net.UDPAddr)
 	return localAddr.IP.String(), nil
-}
-
-// extractIP extracts the IP address from a remote address string
-func extractIP(remoteAddr string) string {
-	host, _, err := net.SplitHostPort(remoteAddr)
-	if err != nil {
-		return remoteAddr
-	}
-	return host
 }

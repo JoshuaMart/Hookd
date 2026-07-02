@@ -1,6 +1,7 @@
 package http
 
 import (
+	"crypto/subtle"
 	"log/slog"
 	"net/http"
 )
@@ -19,8 +20,9 @@ func AuthMiddleware(token string, logger *slog.Logger) func(http.Handler) http.H
 				return
 			}
 
-			// Validate token
-			if apiKey != token {
+			// Validate token using a constant-time comparison to avoid
+			// leaking the token through response timing.
+			if subtle.ConstantTimeCompare([]byte(apiKey), []byte(token)) != 1 {
 				logger.Debug("invalid api key", "path", r.URL.Path, "client", r.RemoteAddr)
 				respondJSON(w, http.StatusUnauthorized, map[string]string{
 					"error": "Invalid or missing API key",

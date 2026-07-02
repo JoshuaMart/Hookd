@@ -14,11 +14,12 @@ type Manager interface {
 	// GetHook retrieves a hook by ID
 	GetHook(id string) (*Hook, bool)
 
-	// AddInteraction adds an interaction to a hook
-	AddInteraction(hookID string, interaction *Interaction) error
+	// AddInteraction adds an interaction to a hook. Interactions for unknown
+	// hooks are silently dropped.
+	AddInteraction(hookID string, interaction *Interaction)
 
 	// PollInteractions retrieves and deletes interactions for a hook
-	PollInteractions(hookID string) ([]*Interaction, error)
+	PollInteractions(hookID string) []*Interaction
 
 	// PollInteractionsBatch retrieves and deletes interactions for multiple hooks
 	PollInteractionsBatch(hookIDs []string) map[string]*PollResult
@@ -94,28 +95,28 @@ func (m *MemoryManager) GetHook(id string) (*Hook, bool) {
 	return hook, exists
 }
 
-// AddInteraction adds an interaction to a hook
-func (m *MemoryManager) AddInteraction(hookID string, interaction *Interaction) error {
+// AddInteraction adds an interaction to a hook. Interactions for non-existent
+// hooks are silently ignored (e.g. bots probing random subdomains).
+func (m *MemoryManager) AddInteraction(hookID string, interaction *Interaction) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	// Check if hook exists
 	if _, exists := m.hooks[hookID]; !exists {
-		return nil // Silently ignore interactions for non-existent hooks
+		return
 	}
 
 	m.interactions[hookID] = append(m.interactions[hookID], interaction)
-	return nil
 }
 
 // PollInteractions retrieves and deletes interactions for a hook
-func (m *MemoryManager) PollInteractions(hookID string) ([]*Interaction, error) {
+func (m *MemoryManager) PollInteractions(hookID string) []*Interaction {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	interactions, exists := m.interactions[hookID]
 	if !exists {
-		return []*Interaction{}, nil
+		return []*Interaction{}
 	}
 
 	// Return a copy and clear the slice
@@ -124,7 +125,7 @@ func (m *MemoryManager) PollInteractions(hookID string) ([]*Interaction, error) 
 
 	m.interactions[hookID] = make([]*Interaction, 0)
 
-	return result, nil
+	return result
 }
 
 // PollInteractionsBatch retrieves and deletes interactions for multiple hooks

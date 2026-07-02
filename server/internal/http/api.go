@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/jomar/hookd/internal/eviction"
+	"github.com/jomar/hookd/internal/netutil"
 	"github.com/jomar/hookd/internal/storage"
 )
 
@@ -156,14 +157,7 @@ func (h *APIHandler) HandlePoll(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Poll interactions (atomic read-and-delete)
-	interactions, err := h.storage.PollInteractions(hookID)
-	if err != nil {
-		h.logger.Error("failed to poll interactions", "error", err, "hook_id", hookID)
-		respondJSON(w, http.StatusInternalServerError, map[string]string{
-			"error": "Internal server error",
-		})
-		return
-	}
+	interactions := h.storage.PollInteractions(hookID)
 
 	h.logger.Info("interactions polled",
 		"hook_id", hookID,
@@ -280,7 +274,7 @@ func (h *CaptureHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create interaction
-	sourceIP := extractIP(r.RemoteAddr)
+	sourceIP := netutil.ExtractIP(r.RemoteAddr)
 	interaction := storage.HTTPInteraction(
 		h.idGenerator(),
 		sourceIP,
@@ -291,9 +285,7 @@ func (h *CaptureHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	)
 
 	// Store interaction
-	if err := h.storage.AddInteraction(hookID, interaction); err != nil {
-		h.logger.Error("failed to store http interaction", "error", err)
-	}
+	h.storage.AddInteraction(hookID, interaction)
 
 	h.logger.Debug("http interaction captured",
 		"hook_id", hookID,
@@ -326,19 +318,8 @@ func (h *CaptureHandler) extractHookID(host string) string {
 	// Extract the subdomain part
 	subdomain := strings.TrimSuffix(host, suffix)
 
-	// Handle multi-level subdomains (take the first part)
+	// Handle multi-level subdomains (take the first part). strings.Split always
+	// returns at least one element, so parts[0] is safe.
 	parts := strings.Split(subdomain, ".")
-	if len(parts) == 0 {
-		return ""
-	}
-
 	return parts[0]
-}
-
-// extractIP extracts the IP address from a remote address string
-func extractIP(remoteAddr string) string {
-	if idx := strings.LastIndex(remoteAddr, ":"); idx != -1 {
-		return remoteAddr[:idx]
-	}
-	return remoteAddr
 }

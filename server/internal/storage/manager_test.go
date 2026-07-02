@@ -57,11 +57,7 @@ func TestMemoryManager_AddInteraction(t *testing.T) {
 
 	// Add interaction
 	interaction := DNSInteraction("int1", "1.2.3.4", "test.com", "A")
-	err := manager.AddInteraction("test123", interaction)
-
-	if err != nil {
-		t.Errorf("unexpected error: %v", err)
-	}
+	manager.AddInteraction("test123", interaction)
 
 	// Verify stats
 	stats := manager.Stats()
@@ -89,17 +85,13 @@ func TestMemoryManager_PollInteractions(t *testing.T) {
 	manager.AddInteraction("test123", int2)
 
 	// Poll interactions
-	interactions, err := manager.PollInteractions("test123")
-	if err != nil {
-		t.Errorf("unexpected error: %v", err)
-	}
-
+	interactions := manager.PollInteractions("test123")
 	if len(interactions) != 2 {
 		t.Errorf("expected 2 interactions, got %d", len(interactions))
 	}
 
 	// Verify interactions are cleared
-	interactions, _ = manager.PollInteractions("test123")
+	interactions = manager.PollInteractions("test123")
 	if len(interactions) != 0 {
 		t.Errorf("expected 0 interactions after poll, got %d", len(interactions))
 	}
@@ -125,7 +117,7 @@ func TestMemoryManager_DeleteInteractions(t *testing.T) {
 	manager.DeleteInteractions("test123", []string{"int1", "int3"})
 
 	// Poll remaining
-	interactions, _ := manager.PollInteractions("test123")
+	interactions := manager.PollInteractions("test123")
 	if len(interactions) != 1 {
 		t.Errorf("expected 1 interaction remaining, got %d", len(interactions))
 	}
@@ -286,12 +278,9 @@ func TestMemoryManager_AddInteraction_NonExistentHook(t *testing.T) {
 	manager := NewMemoryManager(func() string { return "test-id" })
 
 	interaction := DNSInteraction("int1", "1.2.3.4", "test.com", "A")
-	err := manager.AddInteraction("nonexistent", interaction)
 
-	// AddInteraction silently ignores non-existent hooks (returns nil)
-	if err != nil {
-		t.Errorf("expected nil error for non-existent hook, got: %v", err)
-	}
+	// AddInteraction silently ignores non-existent hooks.
+	manager.AddInteraction("nonexistent", interaction)
 
 	// Verify interaction was not added
 	stats := manager.Stats()
@@ -303,12 +292,8 @@ func TestMemoryManager_AddInteraction_NonExistentHook(t *testing.T) {
 func TestMemoryManager_PollInteractions_NonExistentHook(t *testing.T) {
 	manager := NewMemoryManager(func() string { return "test-id" })
 
-	interactions, err := manager.PollInteractions("nonexistent")
-
-	// PollInteractions returns empty slice for non-existent hook
-	if err != nil {
-		t.Errorf("expected nil error, got: %v", err)
-	}
+	// PollInteractions returns an empty slice for a non-existent hook.
+	interactions := manager.PollInteractions("nonexistent")
 
 	if len(interactions) != 0 {
 		t.Errorf("expected 0 interactions for non-existent hook, got %d", len(interactions))

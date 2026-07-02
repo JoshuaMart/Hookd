@@ -65,27 +65,6 @@ func TestServer_ExtractHookID(t *testing.T) {
 	}
 }
 
-func TestExtractIP(t *testing.T) {
-	tests := []struct {
-		name       string
-		remoteAddr string
-		expected   string
-	}{
-		{"ipv4 with port", "192.168.1.1:12345", "192.168.1.1"},
-		{"ipv6 with port", "[::1]:8080", "::1"},
-		{"no port", "192.168.1.1", "192.168.1.1"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := extractIP(tt.remoteAddr)
-			if result != tt.expected {
-				t.Errorf("extractIP(%q) = %q, want %q", tt.remoteAddr, result, tt.expected)
-			}
-		})
-	}
-}
-
 func TestGetOutboundIP(t *testing.T) {
 	ip, err := getOutboundIP()
 	if err != nil {
@@ -140,7 +119,7 @@ func TestServer_HandleDNSRequest_TypeA(t *testing.T) {
 	}
 
 	// Verify interaction was stored
-	interactions, _ := manager.PollInteractions(hook.ID)
+	interactions := manager.PollInteractions(hook.ID)
 	if len(interactions) != 1 {
 		t.Fatalf("expected 1 interaction, got %d", len(interactions))
 	}

@@ -390,7 +390,7 @@ func TestCaptureHandler_ServeHTTP(t *testing.T) {
 		}
 
 		// Verify interaction was stored
-		interactions, _ := manager.PollInteractions(hook.ID)
+		interactions := manager.PollInteractions(hook.ID)
 		if len(interactions) != 1 {
 			t.Fatalf("expected 1 interaction, got %d", len(interactions))
 		}
@@ -448,27 +448,6 @@ func TestCaptureHandler_ExtractHookID(t *testing.T) {
 			result := handler.extractHookID(tt.host)
 			if result != tt.expected {
 				t.Errorf("extractHookID(%q) = %q, want %q", tt.host, result, tt.expected)
-			}
-		})
-	}
-}
-
-func TestExtractIP(t *testing.T) {
-	tests := []struct {
-		name       string
-		remoteAddr string
-		expected   string
-	}{
-		{"ipv4 with port", "192.168.1.1:12345", "192.168.1.1"},
-		{"ipv6 with port", "[::1]:8080", "[::1]"},
-		{"no port", "192.168.1.1", "192.168.1.1"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := extractIP(tt.remoteAddr)
-			if result != tt.expected {
-				t.Errorf("extractIP(%q) = %q, want %q", tt.remoteAddr, result, tt.expected)
 			}
 		})
 	}
@@ -559,7 +538,7 @@ func TestCaptureHandler_LargeBody(t *testing.T) {
 	}
 
 	// Verify interaction was stored (body should be truncated)
-	interactions, _ := manager.PollInteractions(hook.ID)
+	interactions := manager.PollInteractions(hook.ID)
 	if len(interactions) != 1 {
 		t.Fatalf("expected 1 interaction, got %d", len(interactions))
 	}
@@ -663,7 +642,7 @@ func TestAPIHandler_HandlePollBatch(t *testing.T) {
 		}
 
 		// Verify interactions were deleted (atomic poll)
-		remaining1, _ := manager.PollInteractions(hook1.ID)
+		remaining1 := manager.PollInteractions(hook1.ID)
 		if len(remaining1) != 0 {
 			t.Errorf("expected hook1 interactions to be cleared, got %d", len(remaining1))
 		}
