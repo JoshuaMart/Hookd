@@ -142,13 +142,6 @@ curl -X POST https://hookd.example.com/register \
   -d '{"ttl": "7d", "metadata": {"target": "acme", "field": "profile.bio"}}'
 ```
 
-A `ttl` above the ephemeral `hook_ttl` registers a **long-lived hook** — persisted
-to disk so it survives restarts (ideal for stored-XSS detection, where a payload
-may fire days after injection). It accepts a Go duration (`168h`) or a day count
-(`7d`), capped at `long_lived.max_ttl`; omit it for an ordinary ephemeral hook.
-Optional `metadata` is stored with the hook and echoed back on poll, so a fired
-hook can be correlated to its injection point.
-
 <details>
 <summary>Response example</summary>
 
