@@ -134,7 +134,20 @@ curl -X POST https://hookd.example.com/register \
   -H "X-API-Key: YOUR_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"count": 5}'
+
+# Long-lived hook (persisted, survives restarts) with metadata
+curl -X POST https://hookd.example.com/register \
+  -H "X-API-Key: YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"ttl": "7d", "metadata": {"target": "acme", "field": "profile.bio"}}'
 ```
+
+A `ttl` above the ephemeral `hook_ttl` registers a **long-lived hook** — persisted
+to disk so it survives restarts (ideal for stored-XSS detection, where a payload
+may fire days after injection). It accepts a Go duration (`168h`) or a day count
+(`7d`), capped at `long_lived.max_ttl`; omit it for an ordinary ephemeral hook.
+Optional `metadata` is stored with the hook and echoed back on poll, so a fired
+hook can be correlated to its injection point.
 
 <details>
 <summary>Response example</summary>
@@ -145,30 +158,13 @@ curl -X POST https://hookd.example.com/register \
   "dns": "abc123.hookd.example.com",
   "http": "http://abc123.hookd.example.com",
   "https": "https://abc123.hookd.example.com",
-  "created_at": "2025-10-01T10:30:00Z"
+  "created_at": "2025-10-01T10:30:00Z",
+  "expires_at": "2025-10-08T10:30:00Z",
+  "metadata": {"target": "acme", "field": "profile.bio"}
 }
 ```
 
 </details>
-
-#### Long-lived hooks & metadata
-
-Pass an optional `ttl` above the ephemeral `hook_ttl` to register a **long-lived
-hook** — persisted to disk so it survives restarts. This is ideal for stored-XSS
-style detection, where a payload may fire days after injection. Optional
-`metadata` is stored with the hook and echoed back when polled, so a fired hook
-can be correlated to its injection point.
-
-```bash
-curl -X POST https://hookd.example.com/register \
-  -H "X-API-Key: YOUR_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"ttl": "7d", "metadata": {"target": "acme", "field": "profile.bio"}}'
-```
-
-`ttl` accepts a Go duration (`168h`) or a day count (`7d`), capped at
-`long_lived.max_ttl`. Omit `ttl` (or keep it at/below `hook_ttl`) for an ordinary
-ephemeral, in-memory hook.
 
 ### `GET /poll/:id`
 
