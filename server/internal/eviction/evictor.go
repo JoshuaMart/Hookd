@@ -129,16 +129,18 @@ func (e *Evictor) evictByTTL() {
 	}
 }
 
-// evictByHookTTL removes hooks older than the configured hook TTL
+// evictByHookTTL removes hooks whose expiry has passed. Each hook carries its
+// own ExpiresAt (ephemeral hooks get now+hook_ttl at creation, long-lived hooks
+// get their requested TTL), so this pass is agnostic to the hook category. A
+// zero ExpiresAt means "no explicit expiry" and is skipped.
 func (e *Evictor) evictByHookTTL() {
 	now := time.Now().UTC()
-	cutoff := now.Add(-e.config.HookTTL)
 
 	allHooks := e.storage.GetAllHooks()
 	totalEvicted := 0
 
 	for _, hook := range allHooks {
-		if hook.CreatedAt.Before(cutoff) {
+		if !hook.ExpiresAt.IsZero() && hook.ExpiresAt.Before(now) {
 			e.storage.DeleteHook(hook.ID)
 			totalEvicted++
 		}
@@ -249,6 +251,12 @@ func (e *Evictor) evictByMemory() {
 			"new_alloc_mb", finalStats.Memory.AllocMB,
 			"gc_runs", finalStats.Memory.GCRuns)
 	}
+}
+
+// HookTTL returns the configured default lifetime for ephemeral hooks. The API
+// handler uses it to stamp each new hook's ExpiresAt at registration time.
+func (e *Evictor) HookTTL() time.Duration {
+	return e.config.HookTTL
 }
 
 // GetMetrics returns a snapshot of the eviction metrics

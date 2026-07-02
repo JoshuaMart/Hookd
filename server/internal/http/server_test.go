@@ -305,7 +305,7 @@ func TestServer_MiddlewareChain(t *testing.T) {
 
 	// Test that middleware is applied (logging, recovery)
 	t.Run("wildcard capture", func(t *testing.T) {
-		hook := manager.CreateHook("example.com")
+		hook := manager.CreateHook("example.com", storage.CreateOptions{})
 
 		req, _ := http.NewRequest(http.MethodGet, "http://localhost:18889/anything", nil)
 		req.Host = hook.ID + ".example.com"
@@ -323,7 +323,7 @@ func TestServer_MiddlewareChain(t *testing.T) {
 
 	// Test poll endpoint with different paths
 	t.Run("poll endpoint variations", func(t *testing.T) {
-		hook := manager.CreateHook("example.com")
+		hook := manager.CreateHook("example.com", storage.CreateOptions{})
 
 		// Valid poll
 		req, _ := http.NewRequest(http.MethodGet, "http://localhost:18889/poll/"+hook.ID, nil)

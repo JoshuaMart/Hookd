@@ -2,13 +2,44 @@ package storage
 
 import (
 	"testing"
+	"time"
 )
+
+func TestMemoryManager_CreateHook_Options(t *testing.T) {
+	manager := NewMemoryManager(func() string { return "test123" })
+
+	t.Run("ttl sets expiry", func(t *testing.T) {
+		before := time.Now().UTC()
+		hook := manager.CreateHook("example.com", CreateOptions{TTL: time.Hour})
+		if hook.ExpiresAt.IsZero() {
+			t.Fatal("expected ExpiresAt to be set")
+		}
+		if hook.ExpiresAt.Before(before.Add(time.Hour)) {
+			t.Errorf("expected ExpiresAt >= creation + 1h, got %s", hook.ExpiresAt)
+		}
+	})
+
+	t.Run("zero ttl leaves expiry unset", func(t *testing.T) {
+		hook := manager.CreateHook("example.com", CreateOptions{})
+		if !hook.ExpiresAt.IsZero() {
+			t.Errorf("expected zero ExpiresAt for zero TTL, got %s", hook.ExpiresAt)
+		}
+	})
+
+	t.Run("metadata is preserved", func(t *testing.T) {
+		meta := map[string]any{"field": "profile.bio", "target": "acme"}
+		hook := manager.CreateHook("example.com", CreateOptions{Metadata: meta})
+		if hook.Metadata["field"] != "profile.bio" {
+			t.Errorf("expected metadata to be preserved, got %v", hook.Metadata)
+		}
+	})
+}
 
 func TestMemoryManager_CreateHook(t *testing.T) {
 	idGen := func() string { return "test123" }
 	manager := NewMemoryManager(idGen)
 
-	hook := manager.CreateHook("example.com")
+	hook := manager.CreateHook("example.com", CreateOptions{})
 
 	if hook.ID != "test123" {
 		t.Errorf("expected ID test123, got %s", hook.ID)
@@ -28,7 +59,7 @@ func TestMemoryManager_GetHook(t *testing.T) {
 	manager := NewMemoryManager(idGen)
 
 	// Create hook
-	created := manager.CreateHook("example.com")
+	created := manager.CreateHook("example.com", CreateOptions{})
 
 	// Retrieve hook
 	retrieved, exists := manager.GetHook("test123")
@@ -53,7 +84,7 @@ func TestMemoryManager_AddInteraction(t *testing.T) {
 	manager := NewMemoryManager(idGen)
 
 	// Create hook
-	manager.CreateHook("example.com")
+	manager.CreateHook("example.com", CreateOptions{})
 
 	// Add interaction
 	interaction := DNSInteraction("int1", "1.2.3.4", "test.com", "A")
@@ -75,7 +106,7 @@ func TestMemoryManager_PollInteractions(t *testing.T) {
 	manager := NewMemoryManager(idGen)
 
 	// Create hook
-	manager.CreateHook("example.com")
+	manager.CreateHook("example.com", CreateOptions{})
 
 	// Add interactions
 	int1 := DNSInteraction("int1", "1.2.3.4", "test.com", "A")
@@ -102,7 +133,7 @@ func TestMemoryManager_DeleteInteractions(t *testing.T) {
 	manager := NewMemoryManager(idGen)
 
 	// Create hook
-	manager.CreateHook("example.com")
+	manager.CreateHook("example.com", CreateOptions{})
 
 	// Add interactions
 	int1 := DNSInteraction("int1", "1.2.3.4", "test.com", "A")
@@ -132,7 +163,7 @@ func TestMemoryManager_DeleteHook(t *testing.T) {
 	manager := NewMemoryManager(idGen)
 
 	// Create hook
-	manager.CreateHook("example.com")
+	manager.CreateHook("example.com", CreateOptions{})
 	manager.AddInteraction("test123", DNSInteraction("int1", "1.2.3.4", "test.com", "A"))
 
 	// Delete hook
@@ -156,7 +187,7 @@ func TestMemoryManager_Stats(t *testing.T) {
 	manager := NewMemoryManager(idGen)
 
 	// Create hook
-	manager.CreateHook("example.com")
+	manager.CreateHook("example.com", CreateOptions{})
 
 	// Add mixed interactions
 	manager.AddInteraction("test123", DNSInteraction("int1", "1.2.3.4", "test.com", "A"))
@@ -197,9 +228,9 @@ func TestMemoryManager_GetAllHooks(t *testing.T) {
 	}
 
 	// Create multiple hooks
-	hook1 := manager.CreateHook("example1.com")
-	hook2 := manager.CreateHook("example2.com")
-	hook3 := manager.CreateHook("example3.com")
+	hook1 := manager.CreateHook("example1.com", CreateOptions{})
+	hook2 := manager.CreateHook("example2.com", CreateOptions{})
+	hook3 := manager.CreateHook("example3.com", CreateOptions{})
 
 	// Get all hooks
 	hooks = manager.GetAllHooks()
@@ -226,8 +257,8 @@ func TestMemoryManager_GetAllInteractions(t *testing.T) {
 	}
 	manager := NewMemoryManager(idGen)
 
-	hook1 := manager.CreateHook("example1.com")
-	hook2 := manager.CreateHook("example2.com")
+	hook1 := manager.CreateHook("example1.com", CreateOptions{})
+	hook2 := manager.CreateHook("example2.com", CreateOptions{})
 
 	// Initially empty (but map has entries for the 2 hooks created above)
 	allInteractions := manager.GetAllInteractions()

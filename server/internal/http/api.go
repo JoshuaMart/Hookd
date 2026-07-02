@@ -65,9 +65,12 @@ func (h *APIHandler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Ephemeral hooks expire after the configured hook TTL.
+	opts := storage.CreateOptions{TTL: h.evictor.HookTTL()}
+
 	// Single hook case
 	if req.Count == 1 {
-		hook := h.storage.CreateHook(h.domain)
+		hook := h.storage.CreateHook(h.domain, opts)
 		h.logger.Info("hook created", "id", hook.ID, "client", r.RemoteAddr)
 		respondJSON(w, http.StatusOK, hook)
 		return
@@ -76,7 +79,7 @@ func (h *APIHandler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 	// Multiple hooks case
 	hooks := make([]interface{}, req.Count)
 	for i := 0; i < req.Count; i++ {
-		hook := h.storage.CreateHook(h.domain)
+		hook := h.storage.CreateHook(h.domain, opts)
 		hooks[i] = hook
 		h.logger.Debug("hook created", "id", hook.ID, "index", i+1, "total", req.Count, "client", r.RemoteAddr)
 	}

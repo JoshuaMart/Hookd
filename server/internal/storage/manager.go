@@ -9,7 +9,7 @@ import (
 // Manager defines the interface for storage operations
 type Manager interface {
 	// CreateHook creates a new hook and returns it
-	CreateHook(domain string) *Hook
+	CreateHook(domain string, opts CreateOptions) *Hook
 
 	// GetHook retrieves a hook by ID
 	GetHook(id string) (*Hook, bool)
@@ -67,17 +67,22 @@ func NewMemoryManager(idGenerator func() string) *MemoryManager {
 }
 
 // CreateHook creates a new hook
-func (m *MemoryManager) CreateHook(domain string) *Hook {
+func (m *MemoryManager) CreateHook(domain string, opts CreateOptions) *Hook {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	now := time.Now().UTC()
 	id := m.idGenerator()
 	hook := &Hook{
 		ID:        id,
 		DNS:       id + "." + domain,
 		HTTP:      "http://" + id + "." + domain,
 		HTTPS:     "https://" + id + "." + domain,
-		CreatedAt: time.Now().UTC(),
+		CreatedAt: now,
+		Metadata:  opts.Metadata,
+	}
+	if opts.TTL > 0 {
+		hook.ExpiresAt = now.Add(opts.TTL)
 	}
 
 	m.hooks[id] = hook
