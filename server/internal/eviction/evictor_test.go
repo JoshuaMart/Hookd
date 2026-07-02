@@ -314,90 +314,10 @@ func TestEvictor_MetricsConcurrentAccess(t *testing.T) {
 	}
 }
 
-// TestEvictor_EvictByMemory_NoGCBelowThreshold proves that when heap usage is
-// below the threshold, evictByMemory does not force a GC and evicts nothing.
-func TestEvictor_EvictByMemory_NoGCBelowThreshold(t *testing.T) {
-	idGen := func() string { return "test-id" }
-	manager := storage.NewMemoryManager(idGen)
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
-
-	cfg := config.EvictionConfig{
-		InteractionTTL:  1 * time.Hour,
-		MaxPerHook:      1000,
-		MaxMemoryMB:     100, // threshold = 90 MB
-		CleanupInterval: 10 * time.Second,
-	}
-
-	evictor := NewEvictor(manager, cfg, logger)
-
-	gcCalls := 0
-	evictor.forceGC = func() { gcCalls++ }
-	evictor.heapInUseMB = func() int { return 10 } // well below the 90 MB threshold
-
-	hook := manager.CreateHook("example.com", storage.CreateOptions{})
-	manager.AddInteraction(hook.ID, storage.DNSInteraction("int1", "1.2.3.4", "test.com", "A"))
-
-	evictor.evictByMemory()
-
-	if gcCalls != 0 {
-		t.Errorf("expected no forced GC below threshold, got %d", gcCalls)
-	}
-	if got := evictor.GetMetrics().EvictionsMemory; got != 0 {
-		t.Errorf("expected 0 memory evictions below threshold, got %d", got)
-	}
-	if stats := manager.Stats(); stats.HooksActive != 1 {
-		t.Errorf("expected hook to remain, got %d active", stats.HooksActive)
-	}
-}
-
-// TestEvictor_EvictByMemory_StopsAtTarget proves the eviction loop stops once a
-// fresh, post-GC reading drops below target, instead of evicting every hook.
-func TestEvictor_EvictByMemory_StopsAtTarget(t *testing.T) {
-	// Unique IDs so each CreateHook is a distinct map entry.
-	counter := 0
-	idGen := func() string {
-		counter++
-		return fmt.Sprintf("hook-%d", counter)
-	}
-	manager := storage.NewMemoryManager(idGen)
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
-
-	cfg := config.EvictionConfig{
-		InteractionTTL:  1 * time.Hour,
-		MaxPerHook:      1000,
-		MaxMemoryMB:     100, // threshold = 90 MB, target = 80 MB
-		CleanupInterval: 10 * time.Second,
-	}
-
-	evictor := NewEvictor(manager, cfg, logger)
-
-	// Create 25 distinct hooks, each with one interaction.
-	for i := 0; i < 25; i++ {
-		h := manager.CreateHook("example.com", storage.CreateOptions{})
-		manager.AddInteraction(h.ID, storage.DNSInteraction("int", "1.2.3.4", "test.com", "A"))
-	}
-
-	// Model heap usage as proportional to the number of active hooks: 4 MB per
-	// hook. 25 hooks -> 100 MB (above threshold). It drops below target (80 MB)
-	// once fewer than 20 hooks remain.
-	evictor.forceGC = func() {}
-	evictor.heapInUseMB = func() int { return manager.Stats().HooksActive * 4 }
-
-	evictor.evictByMemory()
-
-	active := manager.Stats().HooksActive
-	if active == 0 {
-		t.Fatal("expected eviction to stop before removing all hooks")
-	}
-	if active == 25 {
-		t.Fatal("expected some hooks to be evicted under memory pressure")
-	}
-	// With batchSize=10 it evicts exactly one batch: 25 -> 15 remaining, and
-	// 15*4=60 MB < 80 MB target stops the loop.
-	if active != 15 {
-		t.Errorf("expected 15 hooks remaining after one batch, got %d", active)
-	}
-}
+// The deterministic memory-pressure tests that inject the GC/heap seams live in
+// the storage package, where those seams are defined (see
+// TestMemoryManager_EvictByMemoryPressure_*). The tests here exercise only the
+// evictor's wiring against the real heap.
 
 func TestEvictor_EvictByMemory_NoHooks(t *testing.T) {
 	idGen := func() string { return "test-id" }

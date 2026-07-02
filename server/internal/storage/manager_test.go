@@ -1,9 +1,74 @@
 package storage
 
 import (
+	"fmt"
 	"testing"
 	"time"
 )
+
+// TestMemoryManager_EvictByMemoryPressure_NoGCBelowThreshold proves that when
+// heap usage is below the threshold, EvictByMemoryPressure does not force a GC
+// and evicts nothing.
+func TestMemoryManager_EvictByMemoryPressure_NoGCBelowThreshold(t *testing.T) {
+	manager := NewMemoryManager(func() string { return "test-id" })
+
+	gcCalls := 0
+	manager.forceGC = func() { gcCalls++ }
+	manager.heapInUseMB = func() int { return 10 } // below the 90 MB threshold
+
+	hook := manager.CreateHook("example.com", CreateOptions{})
+	manager.AddInteraction(hook.ID, DNSInteraction("int1", "1.2.3.4", "test.com", "A"))
+
+	result := manager.EvictByMemoryPressure(100) // threshold = 90 MB
+
+	if gcCalls != 0 {
+		t.Errorf("expected no forced GC below threshold, got %d", gcCalls)
+	}
+	if result.InteractionsEvicted != 0 || result.HooksEvicted != 0 {
+		t.Errorf("expected nothing evicted below threshold, got %+v", result)
+	}
+	if stats := manager.Stats(); stats.HooksActive != 1 {
+		t.Errorf("expected hook to remain, got %d active", stats.HooksActive)
+	}
+}
+
+// TestMemoryManager_EvictByMemoryPressure_StopsAtTarget proves the eviction loop
+// stops once a fresh, post-GC reading drops below target, instead of evicting
+// every hook.
+func TestMemoryManager_EvictByMemoryPressure_StopsAtTarget(t *testing.T) {
+	counter := 0
+	manager := NewMemoryManager(func() string { counter++; return fmt.Sprintf("hook-%d", counter) })
+
+	// Create 25 distinct hooks, each with one interaction.
+	for i := 0; i < 25; i++ {
+		h := manager.CreateHook("example.com", CreateOptions{})
+		manager.AddInteraction(h.ID, DNSInteraction("int", "1.2.3.4", "test.com", "A"))
+	}
+
+	// Model heap usage as proportional to the number of active hooks: 4 MB per
+	// hook. 25 hooks -> 100 MB (above threshold). It drops below target (80 MB)
+	// once fewer than 20 hooks remain.
+	manager.forceGC = func() {}
+	manager.heapInUseMB = func() int { return manager.Stats().HooksActive * 4 }
+
+	result := manager.EvictByMemoryPressure(100) // threshold = 90 MB, target = 80 MB
+
+	active := manager.Stats().HooksActive
+	if active == 0 {
+		t.Fatal("expected eviction to stop before removing all hooks")
+	}
+	if active == 25 {
+		t.Fatal("expected some hooks to be evicted under memory pressure")
+	}
+	// With batchSize=10 it evicts exactly one batch: 25 -> 15 remaining, and
+	// 15*4=60 MB < 80 MB target stops the loop.
+	if active != 15 {
+		t.Errorf("expected 15 hooks remaining after one batch, got %d", active)
+	}
+	if result.HooksEvicted != 10 {
+		t.Errorf("expected 10 hooks evicted, got %d", result.HooksEvicted)
+	}
+}
 
 func TestMemoryManager_CreateHook_Options(t *testing.T) {
 	manager := NewMemoryManager(func() string { return "test123" })

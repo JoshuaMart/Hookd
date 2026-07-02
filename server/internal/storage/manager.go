@@ -2,6 +2,7 @@ package storage
 
 import (
 	"runtime"
+	"sort"
 	"sync"
 	"time"
 )
@@ -24,20 +25,31 @@ type Manager interface {
 	// PollInteractionsBatch retrieves and deletes interactions for multiple hooks
 	PollInteractionsBatch(hookIDs []string) map[string]*PollResult
 
-	// GetAllHooks returns all registered hooks
-	GetAllHooks() []*Hook
-
-	// GetAllInteractions returns all interactions (for eviction purposes)
-	GetAllInteractions() map[string][]*Interaction
-
-	// DeleteInteractions deletes specific interactions from a hook
-	DeleteInteractions(hookID string, interactionIDs []string)
-
-	// DeleteHook deletes a hook and all its interactions
-	DeleteHook(hookID string)
-
 	// Stats returns storage statistics
 	Stats() Stats
+
+	// EvictInteractionsBefore removes interactions with a timestamp older than
+	// cutoff and returns how many were removed. Implementations push this down
+	// to their own storage rather than exposing every interaction to the caller.
+	EvictInteractionsBefore(cutoff time.Time) int
+
+	// EvictExpiredHooks removes hooks whose ExpiresAt has passed (zero ExpiresAt
+	// is skipped) and returns how many hooks were removed.
+	EvictExpiredHooks(now time.Time) int
+
+	// EnforcePerHookLimit trims each hook to at most max interactions, dropping
+	// the oldest first, and returns how many were removed.
+	EnforcePerHookLimit(max int) int
+
+	// EvictByMemoryPressure frees memory when heap usage approaches the limit.
+	// It only concerns in-heap storage; disk-backed stores are no-ops.
+	EvictByMemoryPressure(maxMemoryMB int) MemoryEvictionResult
+}
+
+// MemoryEvictionResult reports what a memory-pressure eviction pass removed.
+type MemoryEvictionResult struct {
+	HooksEvicted        int
+	InteractionsEvicted int
 }
 
 // Stats represents storage statistics
@@ -55,6 +67,11 @@ type MemoryManager struct {
 	interactions map[string][]*Interaction
 	mu           sync.RWMutex
 	idGenerator  func() string
+
+	// forceGC and heapInUseMB are injectable so the memory-pressure eviction
+	// logic can be tested deterministically without depending on the real heap.
+	forceGC     func()
+	heapInUseMB func() int
 }
 
 // NewMemoryManager creates a new in-memory storage manager
@@ -63,7 +80,17 @@ func NewMemoryManager(idGenerator func() string) *MemoryManager {
 		hooks:        make(map[string]*Hook),
 		interactions: make(map[string][]*Interaction),
 		idGenerator:  idGenerator,
+		forceGC:      runtime.GC,
+		heapInUseMB:  readHeapInUseMB,
 	}
+}
+
+// readHeapInUseMB reports the heap currently in use, in megabytes, without
+// forcing a garbage collection.
+func readHeapInUseMB() int {
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+	return int(m.HeapInuse / (1024 * 1024))
 }
 
 // CreateHook creates a new hook
@@ -236,6 +263,130 @@ func (m *MemoryManager) DeleteHook(hookID string) {
 
 	delete(m.hooks, hookID)
 	delete(m.interactions, hookID)
+}
+
+// EvictInteractionsBefore removes interactions older than cutoff across all
+// hooks and returns the number removed.
+func (m *MemoryManager) EvictInteractionsBefore(cutoff time.Time) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	total := 0
+	for hookID, interactions := range m.interactions {
+		filtered := make([]*Interaction, 0, len(interactions))
+		for _, interaction := range interactions {
+			if interaction.Timestamp.Before(cutoff) {
+				total++
+			} else {
+				filtered = append(filtered, interaction)
+			}
+		}
+		if len(filtered) != len(interactions) {
+			m.interactions[hookID] = filtered
+		}
+	}
+	return total
+}
+
+// EvictExpiredHooks removes hooks whose ExpiresAt has passed. A zero ExpiresAt
+// means "no explicit expiry" and is skipped.
+func (m *MemoryManager) EvictExpiredHooks(now time.Time) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	total := 0
+	for id, hook := range m.hooks {
+		if !hook.ExpiresAt.IsZero() && hook.ExpiresAt.Before(now) {
+			delete(m.hooks, id)
+			delete(m.interactions, id)
+			total++
+		}
+	}
+	return total
+}
+
+// EnforcePerHookLimit trims each hook to at most max interactions, dropping the
+// oldest first (the slice is ordered by arrival), and returns the number removed.
+func (m *MemoryManager) EnforcePerHookLimit(max int) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	total := 0
+	for hookID, interactions := range m.interactions {
+		if len(interactions) > max {
+			drop := len(interactions) - max
+			// Keep the newest max, copying into a fresh slice so the dropped
+			// entries can be garbage-collected.
+			m.interactions[hookID] = append([]*Interaction(nil), interactions[drop:]...)
+			total += drop
+		}
+	}
+	return total
+}
+
+// EvictByMemoryPressure performs emergency eviction of the oldest hooks when
+// heap usage approaches the configured limit.
+func (m *MemoryManager) EvictByMemoryPressure(maxMemoryMB int) MemoryEvictionResult {
+	threshold := int(float64(maxMemoryMB) * 0.9)
+
+	// Fast path: read heap usage without forcing a GC. This runs on every
+	// cleanup tick, and forcing a stop-the-world GC each time (when there is
+	// almost never any pressure) would be wasteful.
+	if m.heapInUseMB() < threshold {
+		return MemoryEvictionResult{}
+	}
+
+	// A high HeapInuse reading may just be uncollected garbage. Force a GC and
+	// re-measure so we only evict on genuine, post-collection pressure.
+	m.forceGC()
+	if m.heapInUseMB() < threshold {
+		return MemoryEvictionResult{}
+	}
+
+	// Snapshot hooks oldest-first under a brief read lock. The lock is released
+	// before the eviction loop so forceGC/heapInUseMB never run while held.
+	m.mu.RLock()
+	hooks := make([]*Hook, 0, len(m.hooks))
+	for _, hook := range m.hooks {
+		hooks = append(hooks, hook)
+	}
+	m.mu.RUnlock()
+
+	if len(hooks) == 0 {
+		return MemoryEvictionResult{}
+	}
+	sort.Slice(hooks, func(i, j int) bool {
+		return hooks[i].CreatedAt.Before(hooks[j].CreatedAt)
+	})
+
+	target := int(float64(maxMemoryMB) * 0.8)
+
+	// HeapInuse only drops after a GC, so re-measuring makes sense only in
+	// batches: each batch boundary forces one GC and checks a fresh reading.
+	// This bounds both the number of forced GCs and how far we can over-evict.
+	const batchSize = 10
+	var result MemoryEvictionResult
+
+	for _, hook := range hooks {
+		if result.HooksEvicted%batchSize == 0 {
+			m.forceGC()
+			if m.heapInUseMB() < target {
+				break
+			}
+		}
+
+		m.mu.Lock()
+		result.InteractionsEvicted += len(m.interactions[hook.ID])
+		delete(m.hooks, hook.ID)
+		delete(m.interactions, hook.ID)
+		m.mu.Unlock()
+		result.HooksEvicted++
+	}
+
+	if result.HooksEvicted > 0 {
+		m.forceGC()
+	}
+	return result
 }
 
 // Stats returns storage statistics
