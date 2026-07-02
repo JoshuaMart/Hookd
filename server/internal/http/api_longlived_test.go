@@ -96,6 +96,8 @@ func TestRegister_TTLRejections(t *testing.T) {
 		{"ttl equal to ephemeral", `{"ttl":"24h"}`},
 		{"invalid ttl string", `{"ttl":"soon"}`},
 		{"ttl above max", `{"ttl":"1000h"}`},
+		{"day count overflows int64", `{"ttl":"9223372036d"}`},
+		{"negative day count", `{"ttl":"-5d"}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

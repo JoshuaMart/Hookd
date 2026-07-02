@@ -117,11 +117,20 @@ func (e *Evictor) evictByLimit() {
 // are unaffected since their data is not held on the Go heap.
 func (e *Evictor) evictByMemory() {
 	r := e.storage.EvictByMemoryPressure(e.config.MaxMemoryMB)
-	if r.InteractionsEvicted > 0 || r.HooksEvicted > 0 {
+	if !r.Triggered {
+		return
+	}
+	// Log the pressure event even when nothing was evictable (e.g. the heap is
+	// dominated by non-ephemeral data), so operators get an early-warning signal
+	// before a possible OOM rather than silence.
+	e.logger.Warn("memory pressure detected",
+		"heap_inuse_mb", r.HeapInUseMB,
+		"threshold_mb", int(float64(e.config.MaxMemoryMB)*0.9),
+		"max_mb", e.config.MaxMemoryMB,
+		"evicted_interactions", r.InteractionsEvicted,
+		"evicted_hooks", r.HooksEvicted)
+	if r.InteractionsEvicted > 0 {
 		e.metrics.evictionsMemory.Add(int64(r.InteractionsEvicted))
-		e.logger.Warn("memory eviction completed",
-			"evicted_interactions", r.InteractionsEvicted,
-			"evicted_hooks", r.HooksEvicted)
 	}
 }
 

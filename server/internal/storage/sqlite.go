@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	_ "modernc.org/sqlite" // pure-Go SQLite driver (no cgo, cross-compiles cleanly)
 )
@@ -54,9 +57,16 @@ type SQLiteManager struct {
 // NewSQLiteManager opens (creating if needed) the database at dbPath and loads
 // the set of known hook IDs into memory.
 func NewSQLiteManager(dbPath string, idGenerator func() string, maxBodyBytes int, logger *slog.Logger) (*SQLiteManager, error) {
+	// Ensure the parent directory exists so a fresh host boots with the default
+	// db_path (e.g. /var/lib/hookd/longlived.db) instead of failing to open.
+	if dir := filepath.Dir(dbPath); dir != "" {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, fmt.Errorf("create db directory: %w", err)
+		}
+	}
+
 	// Per-connection pragmas via the DSN so every pooled connection gets them:
-	// WAL for concurrent readers alongside a writer, a busy timeout so writers
-	// wait rather than erroring under contention, and cascading deletes.
+	// WAL, a busy timeout, and cascading deletes.
 	dsn := fmt.Sprintf(
 		"file:%s?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)&_pragma=synchronous(NORMAL)",
 		dbPath,
@@ -66,6 +76,13 @@ func NewSQLiteManager(dbPath string, idGenerator func() string, maxBodyBytes int
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite db: %w", err)
 	}
+
+	// Serialize access to the single database file. SQLite allows only one
+	// writer at a time; with an unbounded pool a deferred read→write transaction
+	// (e.g. PollInteractions) can hit SQLITE_BUSY_SNAPSHOT, which busy_timeout
+	// does not retry. One connection removes writer contention entirely. The hot
+	// capture path is in-memory, so long-lived throughput is not a bottleneck.
+	db.SetMaxOpenConns(1)
 
 	if _, err := db.Exec(sqliteSchema); err != nil {
 		_ = db.Close()
@@ -127,43 +144,50 @@ func (m *SQLiteManager) LongLivedCount() int {
 	return len(m.known)
 }
 
-// CreateHook inserts a new long-lived hook. On a database error the hook is not
-// registered (it will not capture) and the error is logged; callers pre-check
-// capacity, so this path is reserved for exceptional failures such as a full disk.
-func (m *SQLiteManager) CreateHook(domain string, opts CreateOptions) *Hook {
-	now := time.Now().UTC()
-	id := m.idGenerator()
-	hook := &Hook{
-		ID:        id,
-		DNS:       id + "." + domain,
-		HTTP:      "http://" + id + "." + domain,
-		HTTPS:     "https://" + id + "." + domain,
-		CreatedAt: now,
-		Metadata:  opts.Metadata,
+// CreateLongLivedHook atomically enforces the cap and persists a new hook. The
+// capacity check, INSERT and index update happen under one lock, so the
+// MaxHooks invariant holds under concurrent registration and a persistence
+// failure is surfaced instead of yielding a hook that never captures.
+func (m *SQLiteManager) CreateLongLivedHook(domain string, opts CreateOptions, maxHooks int) (*Hook, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if maxHooks > 0 && len(m.known) >= maxHooks {
+		return nil, ErrHookLimitReached
 	}
-	if opts.TTL > 0 {
-		hook.ExpiresAt = now.Add(opts.TTL)
-	}
+
+	hook := newHook(m.idGenerator(), domain, opts)
 
 	var meta sql.NullString
 	if opts.Metadata != nil {
-		if b, err := json.Marshal(opts.Metadata); err == nil {
-			meta = sql.NullString{String: string(b), Valid: true}
+		b, err := json.Marshal(opts.Metadata)
+		if err != nil {
+			return nil, fmt.Errorf("encode metadata: %w", err)
 		}
+		meta = sql.NullString{String: string(b), Valid: true}
 	}
 
-	_, err := m.db.Exec(
+	if _, err := m.db.Exec(
 		`INSERT INTO hooks (id, dns, http, https, created_at, expires_at, metadata) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		id, hook.DNS, hook.HTTP, hook.HTTPS, now.UnixNano(), expiryNanos(hook.ExpiresAt), meta,
-	)
-	if err != nil {
-		m.logger.Error("failed to persist long-lived hook", "error", err, "id", id)
-		return hook
+		hook.ID, hook.DNS, hook.HTTP, hook.HTTPS, hook.CreatedAt.UnixNano(), expiryNanos(hook.ExpiresAt), meta,
+	); err != nil {
+		return nil, fmt.Errorf("persist long-lived hook: %w", err)
 	}
 
-	m.mu.Lock()
-	m.known[id] = struct{}{}
-	m.mu.Unlock()
+	m.known[hook.ID] = struct{}{}
+	return hook, nil
+}
+
+// CreateHook satisfies the Manager interface. Production registration goes
+// through CreateLongLivedHook (which can report failure); this uncapped wrapper
+// exists so the composite and tests can create via the generic interface. On a
+// persistence error it logs and returns the hook without registering it.
+func (m *SQLiteManager) CreateHook(domain string, opts CreateOptions) *Hook {
+	hook, err := m.CreateLongLivedHook(domain, opts, 0)
+	if err != nil {
+		m.logger.Error("failed to persist long-lived hook", "error", err)
+		return newHook(m.idGenerator(), domain, opts)
+	}
 	return hook
 }
 
@@ -203,19 +227,27 @@ func (m *SQLiteManager) AddInteraction(hookID string, interaction *Interaction) 
 		`INSERT INTO interactions (id, hook_id, type, timestamp, source_ip, data) VALUES (?, ?, ?, ?, ?, ?)`,
 		interaction.ID, hookID, string(interaction.Type), interaction.Timestamp.UnixNano(), interaction.SourceIP, string(data),
 	); err != nil {
-		m.logger.Error("failed to persist interaction", "error", err, "hook_id", hookID)
+		// The hook can be cascade-deleted (expiry) between the Has() check above
+		// and this insert; the resulting FK failure means the hook is gone, so
+		// dropping the interaction is correct, not an error worth alerting on.
+		m.logger.Debug("failed to persist interaction", "error", err, "hook_id", hookID)
 	}
 }
 
 // truncateBody caps the stored HTTP body at maxBodyBytes, flagging the entry so
 // clients know it was cut. Long-lived hooks can accumulate for weeks, so full
-// multi-megabyte bodies are not kept on disk.
+// multi-megabyte bodies are not kept on disk. The cut is made on a UTF-8 rune
+// boundary so the stored body is never left with a mangled trailing rune.
 func (m *SQLiteManager) truncateBody(interaction *Interaction) {
 	body, ok := interaction.Data["body"].(string)
 	if !ok || len(body) <= m.maxBodyBytes {
 		return
 	}
-	interaction.Data["body"] = body[:m.maxBodyBytes]
+	cut := m.maxBodyBytes
+	for cut > 0 && !utf8.RuneStart(body[cut]) {
+		cut--
+	}
+	interaction.Data["body"] = body[:cut]
 	interaction.Data["truncated"] = true
 }
 
@@ -329,18 +361,22 @@ func (m *SQLiteManager) EvictExpiredHooks(now time.Time) int {
 		return 0
 	}
 
-	if _, err := m.db.Exec(
-		`DELETE FROM hooks WHERE expires_at != 0 AND expires_at < ?`, now.UnixNano(),
-	); err != nil {
-		m.logger.Error("failed to delete expired hooks", "error", err)
-		return 0
-	}
-
+	// Drop the ids from the index *before* deleting the rows. A concurrent
+	// capture then sees Has()==false and is routed away cleanly, rather than
+	// passing Has() and hitting an FK failure when the row disappears mid-insert.
 	m.mu.Lock()
 	for _, id := range ids {
 		delete(m.known, id)
 	}
 	m.mu.Unlock()
+
+	if _, err := m.db.Exec(
+		`DELETE FROM hooks WHERE expires_at != 0 AND expires_at < ?`, now.UnixNano(),
+	); err != nil {
+		m.logger.Error("failed to delete expired hooks", "error", err)
+		// The index no longer lists these hooks; the rows are cleaned up on a
+		// later tick. Report them as evicted to keep the count consistent.
+	}
 	return len(ids)
 }
 
@@ -375,7 +411,7 @@ func (m *SQLiteManager) EnforcePerHookLimit(max int) int {
 		// Delete everything except the newest `max` rows for this hook.
 		res, err := m.db.Exec(
 			`DELETE FROM interactions WHERE hook_id = ? AND id NOT IN (
-				SELECT id FROM interactions WHERE hook_id = ? ORDER BY timestamp DESC LIMIT ?
+				SELECT id FROM interactions WHERE hook_id = ? ORDER BY timestamp DESC, id DESC LIMIT ?
 			)`,
 			o.hookID, o.hookID, max,
 		)
@@ -429,11 +465,7 @@ func (m *SQLiteManager) LongLivedActivity() []HookActivity {
 			m.logger.Error("failed to scan long-lived activity", "error", err)
 			return activity
 		}
-		hook.CreatedAt = time.Unix(0, createdNanos).UTC()
-		if expiresNanos != 0 {
-			hook.ExpiresAt = time.Unix(0, expiresNanos).UTC()
-		}
-		hook.Metadata = decodeMetadata(meta)
+		assignHookTimes(&hook, createdNanos, expiresNanos, meta)
 
 		activity = append(activity, HookActivity{
 			Hook:              &hook,
@@ -460,12 +492,18 @@ func scanHook(s scanner) (*Hook, error) {
 	if err := s.Scan(&hook.ID, &hook.DNS, &hook.HTTP, &hook.HTTPS, &createdNanos, &expiresNanos, &meta); err != nil {
 		return nil, err
 	}
+	assignHookTimes(&hook, createdNanos, expiresNanos, meta)
+	return &hook, nil
+}
+
+// assignHookTimes decodes the stored nanos/metadata columns onto a hook. The
+// zero expires_at sentinel maps back to a zero ExpiresAt.
+func assignHookTimes(hook *Hook, createdNanos, expiresNanos int64, meta sql.NullString) {
 	hook.CreatedAt = time.Unix(0, createdNanos).UTC()
 	if expiresNanos != 0 {
 		hook.ExpiresAt = time.Unix(0, expiresNanos).UTC()
 	}
 	hook.Metadata = decodeMetadata(meta)
-	return &hook, nil
 }
 
 // queryInteractions reads all interactions for a hook in arrival order.
@@ -473,7 +511,7 @@ func queryInteractions(q interface {
 	Query(query string, args ...any) (*sql.Rows, error)
 }, hookID string) ([]*Interaction, error) {
 	rows, err := q.Query(
-		`SELECT id, type, timestamp, source_ip, data FROM interactions WHERE hook_id = ? ORDER BY timestamp`, hookID,
+		`SELECT id, type, timestamp, source_ip, data FROM interactions WHERE hook_id = ? ORDER BY timestamp, id`, hookID,
 	)
 	if err != nil {
 		return nil, err

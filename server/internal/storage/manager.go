@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"errors"
 	"runtime"
 	"sort"
 	"sync"
@@ -46,16 +47,32 @@ type Manager interface {
 	EvictByMemoryPressure(maxMemoryMB int) MemoryEvictionResult
 }
 
-// MemoryEvictionResult reports what a memory-pressure eviction pass removed.
+// MemoryEvictionResult reports what a memory-pressure eviction pass did.
+// Triggered is set when heap usage crossed the threshold (post-GC), even if
+// nothing was evicted, so the evictor can emit an early-warning log before an
+// OOM. HeapInUseMB is the heap reading after the pass.
 type MemoryEvictionResult struct {
+	Triggered           bool
+	HeapInUseMB         int
 	HooksEvicted        int
 	InteractionsEvicted int
 }
+
+// ErrHookLimitReached is returned by CreateLongLivedHook when the configured
+// long-lived hook cap has been reached.
+var ErrHookLimitReached = errors.New("long-lived hook limit reached")
 
 // LongLivedManager is implemented by managers that support durable long-lived
 // hooks. It is an optional capability: callers type-assert a Manager to it and
 // degrade gracefully (no long-lived support) when the assertion fails.
 type LongLivedManager interface {
+	// CreateLongLivedHook atomically enforces the maxHooks cap and persists a new
+	// long-lived hook. It returns ErrHookLimitReached when the store is full and
+	// a non-nil error when persistence fails, so registration can surface the
+	// failure instead of handing back a hook that would never capture. A
+	// maxHooks <= 0 means "no cap".
+	CreateLongLivedHook(domain string, opts CreateOptions, maxHooks int) (*Hook, error)
+
 	// LongLivedActivity returns the long-lived hooks that currently have pending
 	// interactions, so a client can discover which ones fired.
 	LongLivedActivity() []HookActivity
@@ -110,22 +127,9 @@ func (m *MemoryManager) CreateHook(domain string, opts CreateOptions) *Hook {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	now := time.Now().UTC()
-	id := m.idGenerator()
-	hook := &Hook{
-		ID:        id,
-		DNS:       id + "." + domain,
-		HTTP:      "http://" + id + "." + domain,
-		HTTPS:     "https://" + id + "." + domain,
-		CreatedAt: now,
-		Metadata:  opts.Metadata,
-	}
-	if opts.TTL > 0 {
-		hook.ExpiresAt = now.Add(opts.TTL)
-	}
-
-	m.hooks[id] = hook
-	m.interactions[id] = make([]*Interaction, 0)
+	hook := newHook(m.idGenerator(), domain, opts)
+	m.hooks[hook.ID] = hook
+	m.interactions[hook.ID] = make([]*Interaction, 0)
 
 	return hook
 }
@@ -214,69 +218,6 @@ func (m *MemoryManager) PollInteractionsBatch(hookIDs []string) map[string]*Poll
 	return results
 }
 
-// GetAllHooks returns all registered hooks
-func (m *MemoryManager) GetAllHooks() []*Hook {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	hooks := make([]*Hook, 0, len(m.hooks))
-	for _, hook := range m.hooks {
-		hooks = append(hooks, hook)
-	}
-
-	return hooks
-}
-
-// GetAllInteractions returns all interactions
-func (m *MemoryManager) GetAllInteractions() map[string][]*Interaction {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	// Return a shallow copy
-	result := make(map[string][]*Interaction, len(m.interactions))
-	for k, v := range m.interactions {
-		result[k] = v
-	}
-
-	return result
-}
-
-// DeleteInteractions deletes specific interactions from a hook
-func (m *MemoryManager) DeleteInteractions(hookID string, interactionIDs []string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	interactions, exists := m.interactions[hookID]
-	if !exists {
-		return
-	}
-
-	// Create a set of IDs to delete
-	toDelete := make(map[string]bool)
-	for _, id := range interactionIDs {
-		toDelete[id] = true
-	}
-
-	// Filter out interactions
-	filtered := make([]*Interaction, 0)
-	for _, interaction := range interactions {
-		if !toDelete[interaction.ID] {
-			filtered = append(filtered, interaction)
-		}
-	}
-
-	m.interactions[hookID] = filtered
-}
-
-// DeleteHook deletes a hook and all its interactions
-func (m *MemoryManager) DeleteHook(hookID string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	delete(m.hooks, hookID)
-	delete(m.interactions, hookID)
-}
-
 // EvictInteractionsBefore removes interactions older than cutoff across all
 // hooks and returns the number removed.
 func (m *MemoryManager) EvictInteractionsBefore(cutoff time.Time) int {
@@ -351,9 +292,14 @@ func (m *MemoryManager) EvictByMemoryPressure(maxMemoryMB int) MemoryEvictionRes
 	// A high HeapInuse reading may just be uncollected garbage. Force a GC and
 	// re-measure so we only evict on genuine, post-collection pressure.
 	m.forceGC()
-	if m.heapInUseMB() < threshold {
+	heap := m.heapInUseMB()
+	if heap < threshold {
 		return MemoryEvictionResult{}
 	}
+
+	// Genuine pressure: report it even if nothing turns out to be evictable, so
+	// the evictor can log an early-warning before a possible OOM.
+	result := MemoryEvictionResult{Triggered: true, HeapInUseMB: heap}
 
 	// Snapshot hooks oldest-first under a brief read lock. The lock is released
 	// before the eviction loop so forceGC/heapInUseMB never run while held.
@@ -365,7 +311,7 @@ func (m *MemoryManager) EvictByMemoryPressure(maxMemoryMB int) MemoryEvictionRes
 	m.mu.RUnlock()
 
 	if len(hooks) == 0 {
-		return MemoryEvictionResult{}
+		return result
 	}
 	sort.Slice(hooks, func(i, j int) bool {
 		return hooks[i].CreatedAt.Before(hooks[j].CreatedAt)
@@ -377,12 +323,11 @@ func (m *MemoryManager) EvictByMemoryPressure(maxMemoryMB int) MemoryEvictionRes
 	// batches: each batch boundary forces one GC and checks a fresh reading.
 	// This bounds both the number of forced GCs and how far we can over-evict.
 	const batchSize = 10
-	var result MemoryEvictionResult
 
 	for _, hook := range hooks {
 		if result.HooksEvicted%batchSize == 0 {
 			m.forceGC()
-			if m.heapInUseMB() < target {
+			if heap = m.heapInUseMB(); heap < target {
 				break
 			}
 		}
@@ -397,7 +342,9 @@ func (m *MemoryManager) EvictByMemoryPressure(maxMemoryMB int) MemoryEvictionRes
 
 	if result.HooksEvicted > 0 {
 		m.forceGC()
+		heap = m.heapInUseMB()
 	}
+	result.HeapInUseMB = heap
 	return result
 }
 

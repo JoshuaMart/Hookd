@@ -174,6 +174,12 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("observability.log_format must be one of: json, text")
 	}
 
+	// Metadata can be attached to ephemeral hooks too, so its cap must always be
+	// valid regardless of whether the long-lived store is enabled.
+	if c.LongLived.MaxMetadataBytes <= 0 {
+		return fmt.Errorf("long_lived.max_metadata_bytes must be positive")
+	}
+
 	if c.LongLived.Enabled {
 		// A long-lived hook is one whose TTL exceeds the ephemeral hook TTL, so
 		// the cap must leave room above it, otherwise nothing could ever qualify.
@@ -185,9 +191,6 @@ func (c *Config) Validate() error {
 		}
 		if c.LongLived.MaxInteractionBodyBytes <= 0 {
 			return fmt.Errorf("long_lived.max_interaction_body_bytes must be positive")
-		}
-		if c.LongLived.MaxMetadataBytes <= 0 {
-			return fmt.Errorf("long_lived.max_metadata_bytes must be positive")
 		}
 		if c.LongLived.DBPath == "" {
 			return fmt.Errorf("long_lived.db_path is required when long_lived is enabled")

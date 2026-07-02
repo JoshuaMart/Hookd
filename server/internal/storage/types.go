@@ -23,6 +23,25 @@ type CreateOptions struct {
 	Metadata map[string]any
 }
 
+// newHook builds a Hook from an id, domain and options. It is shared by every
+// storage backend so the DNS/URL layout and the TTL-to-ExpiresAt rule live in
+// exactly one place.
+func newHook(id, domain string, opts CreateOptions) *Hook {
+	now := time.Now().UTC()
+	hook := &Hook{
+		ID:        id,
+		DNS:       id + "." + domain,
+		HTTP:      "http://" + id + "." + domain,
+		HTTPS:     "https://" + id + "." + domain,
+		CreatedAt: now,
+		Metadata:  opts.Metadata,
+	}
+	if opts.TTL > 0 {
+		hook.ExpiresAt = now.Add(opts.TTL)
+	}
+	return hook
+}
+
 // InteractionType represents the type of interaction
 type InteractionType string
 

@@ -1,6 +1,9 @@
 package storage
 
-import "time"
+import (
+	"errors"
+	"time"
+)
 
 // CompositeManager routes storage operations between an in-memory store for
 // ephemeral hooks and a SQLite store for durable long-lived hooks. Ephemeral
@@ -46,6 +49,17 @@ func (c *CompositeManager) routeFor(id string) Manager {
 	return c.memory
 }
 
+// has reports whether either store owns the given hook ID, without a database
+// round-trip: the long-lived membership set and the in-memory map are both
+// O(1) lookups.
+func (c *CompositeManager) has(id string) bool {
+	if c.longLived != nil && c.longLived.Has(id) {
+		return true
+	}
+	_, ok := c.memory.GetHook(id)
+	return ok
+}
+
 // CreateHook stores the hook in the long-lived backend when its TTL exceeds the
 // ephemeral threshold, otherwise in memory.
 func (c *CompositeManager) CreateHook(domain string, opts CreateOptions) *Hook {
@@ -74,7 +88,7 @@ func (c *CompositeManager) PollInteractions(hookID string) []*Interaction {
 func (c *CompositeManager) PollInteractionsBatch(hookIDs []string) map[string]*PollResult {
 	results := make(map[string]*PollResult, len(hookIDs))
 	for _, id := range hookIDs {
-		if _, ok := c.GetHook(id); !ok {
+		if !c.has(id) {
 			results[id] = &PollResult{Error: "Hook not found"}
 			continue
 		}
@@ -125,6 +139,15 @@ func (c *CompositeManager) EnforcePerHookLimit(max int) int {
 // EvictByMemoryPressure only affects in-heap storage.
 func (c *CompositeManager) EvictByMemoryPressure(maxMemoryMB int) MemoryEvictionResult {
 	return c.memory.EvictByMemoryPressure(maxMemoryMB)
+}
+
+// CreateLongLivedHook persists a durable hook, enforcing the cap atomically. It
+// returns an error when the long-lived store is disabled, full, or unwritable.
+func (c *CompositeManager) CreateLongLivedHook(domain string, opts CreateOptions, maxHooks int) (*Hook, error) {
+	if c.longLived == nil {
+		return nil, errors.New("long-lived hooks are disabled")
+	}
+	return c.longLived.CreateLongLivedHook(domain, opts, maxHooks)
 }
 
 // LongLivedActivity lists long-lived hooks with pending interactions.
