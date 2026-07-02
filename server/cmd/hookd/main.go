@@ -143,6 +143,7 @@ func main() {
 	// Start HTTP/HTTPS server
 	httpServer := http.NewServer(
 		cfg.Server,
+		cfg.LongLived,
 		storageManager,
 		evictor,
 		acmeProvider,

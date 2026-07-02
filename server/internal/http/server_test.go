@@ -46,7 +46,7 @@ func TestNewServer(t *testing.T) {
 		},
 	}
 
-	server := NewServer(cfg, manager, evictor, acmeProvider, logger, idGen)
+	server := NewServer(cfg, config.LongLivedConfig{}, manager, evictor, acmeProvider, logger, idGen)
 
 	if server == nil {
 		t.Fatal("expected server to be created")
@@ -86,7 +86,7 @@ func TestServer_StartHTTPOnly(t *testing.T) {
 		},
 	}
 
-	server := NewServer(cfg, manager, evictor, acmeProvider, logger, idGen)
+	server := NewServer(cfg, config.LongLivedConfig{}, manager, evictor, acmeProvider, logger, idGen)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -147,7 +147,7 @@ func TestServer_Endpoints(t *testing.T) {
 		},
 	}
 
-	server := NewServer(cfg, manager, evictor, acmeProvider, logger, idGen)
+	server := NewServer(cfg, config.LongLivedConfig{}, manager, evictor, acmeProvider, logger, idGen)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -238,7 +238,7 @@ func TestServer_StartHTTPSManualDisabled(t *testing.T) {
 		},
 	}
 
-	server := NewServer(cfg, manager, evictor, acmeProvider, logger, idGen)
+	server := NewServer(cfg, config.LongLivedConfig{}, manager, evictor, acmeProvider, logger, idGen)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -295,7 +295,7 @@ func TestServer_MiddlewareChain(t *testing.T) {
 		},
 	}
 
-	server := NewServer(cfg, manager, evictor, acmeProvider, logger, idGen)
+	server := NewServer(cfg, config.LongLivedConfig{}, manager, evictor, acmeProvider, logger, idGen)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -373,7 +373,7 @@ func TestServer_ContextCancellation(t *testing.T) {
 		},
 	}
 
-	server := NewServer(cfg, manager, evictor, acmeProvider, logger, idGen)
+	server := NewServer(cfg, config.LongLivedConfig{}, manager, evictor, acmeProvider, logger, idGen)
 
 	// Test that context cancellation stops the server gracefully
 	ctx, cancel := context.WithCancel(context.Background())

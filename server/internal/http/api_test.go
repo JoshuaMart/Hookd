@@ -26,7 +26,7 @@ func TestAPIHandler_HandleRegister(t *testing.T) {
 	evictor := eviction.NewEvictor(manager, evictorCfg, slog.Default())
 	logger := slog.Default()
 
-	handler := NewAPIHandler(manager, evictor, "example.com", logger, idGen)
+	handler := NewAPIHandler(manager, evictor, "example.com", config.LongLivedConfig{}, logger, idGen)
 
 	t.Run("success single hook (no body)", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/register", nil)
@@ -189,7 +189,7 @@ func TestAPIHandler_HandlePoll(t *testing.T) {
 	evictor := eviction.NewEvictor(manager, evictorCfg, slog.Default())
 	logger := slog.Default()
 
-	handler := NewAPIHandler(manager, evictor, "example.com", logger, idGen)
+	handler := NewAPIHandler(manager, evictor, "example.com", config.LongLivedConfig{}, logger, idGen)
 
 	// Create a hook first
 	hook := manager.CreateHook("example.com", storage.CreateOptions{})
@@ -286,7 +286,7 @@ func TestAPIHandler_HandleMetrics(t *testing.T) {
 	evictor := eviction.NewEvictor(manager, evictorCfg, slog.Default())
 	logger := slog.Default()
 
-	handler := NewAPIHandler(manager, evictor, "example.com", logger, idGen)
+	handler := NewAPIHandler(manager, evictor, "example.com", config.LongLivedConfig{}, logger, idGen)
 
 	t.Run("success", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
@@ -502,7 +502,7 @@ func TestAPIHandler_HandlePoll_EdgeCases(t *testing.T) {
 	evictor := eviction.NewEvictor(manager, evictorCfg, slog.Default())
 	logger := slog.Default()
 
-	handler := NewAPIHandler(manager, evictor, "example.com", logger, idGen)
+	handler := NewAPIHandler(manager, evictor, "example.com", config.LongLivedConfig{}, logger, idGen)
 
 	t.Run("empty path segments", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/poll//", nil)
@@ -560,7 +560,7 @@ func TestAPIHandler_HandlePollBatch(t *testing.T) {
 	evictor := eviction.NewEvictor(manager, evictorCfg, slog.Default())
 	logger := slog.Default()
 
-	handler := NewAPIHandler(manager, evictor, "example.com", logger, idGen)
+	handler := NewAPIHandler(manager, evictor, "example.com", config.LongLivedConfig{}, logger, idGen)
 
 	// Create multiple hooks
 	hook1 := manager.CreateHook("example.com", storage.CreateOptions{})

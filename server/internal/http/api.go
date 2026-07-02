@@ -2,11 +2,15 @@ package http
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
+	"github.com/jomar/hookd/internal/config"
 	"github.com/jomar/hookd/internal/eviction"
 	"github.com/jomar/hookd/internal/netutil"
 	"github.com/jomar/hookd/internal/storage"
@@ -17,16 +21,18 @@ type APIHandler struct {
 	storage     storage.Manager
 	evictor     *eviction.Evictor
 	domain      string
+	longLived   config.LongLivedConfig
 	logger      *slog.Logger
 	idGenerator func() string
 }
 
 // NewAPIHandler creates a new API handler
-func NewAPIHandler(storage storage.Manager, evictor *eviction.Evictor, domain string, logger *slog.Logger, idGenerator func() string) *APIHandler {
+func NewAPIHandler(storage storage.Manager, evictor *eviction.Evictor, domain string, longLived config.LongLivedConfig, logger *slog.Logger, idGenerator func() string) *APIHandler {
 	return &APIHandler{
 		storage:     storage,
 		evictor:     evictor,
 		domain:      domain,
+		longLived:   longLived,
 		logger:      logger,
 		idGenerator: idGenerator,
 	}
@@ -43,14 +49,20 @@ func (h *APIHandler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 
 	// Parse request body (optional)
 	var req struct {
-		Count int `json:"count,omitempty"`
+		Count    int            `json:"count,omitempty"`
+		TTL      string         `json:"ttl,omitempty"`
+		Metadata map[string]any `json:"metadata,omitempty"`
 	}
 
-	// Only parse body if content-type is JSON and body exists
+	// Only parse body if it exists. A malformed body falls back to a single
+	// ephemeral hook, preserving the historical lenient behavior.
 	if r.ContentLength > 0 {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			// If body parsing fails, treat as count=1
-			req.Count = 1
+			req = struct {
+				Count    int            `json:"count,omitempty"`
+				TTL      string         `json:"ttl,omitempty"`
+				Metadata map[string]any `json:"metadata,omitempty"`
+			}{}
 		}
 	}
 
@@ -65,13 +77,29 @@ func (h *APIHandler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Ephemeral hooks expire after the configured hook TTL.
-	opts := storage.CreateOptions{TTL: h.evictor.HookTTL()}
+	opts, errResp := h.buildCreateOptions(req.TTL, req.Metadata)
+	if errResp != nil {
+		respondJSON(w, errResp.status, map[string]string{"error": errResp.message})
+		return
+	}
+
+	// Long-lived registrations are bounded so the persistent store cannot grow
+	// without limit.
+	if opts.TTL > h.evictor.HookTTL() {
+		if llm, ok := h.storage.(storage.LongLivedManager); ok {
+			if llm.LongLivedCount()+req.Count > h.longLived.MaxHooks {
+				respondJSON(w, http.StatusTooManyRequests, map[string]string{
+					"error": "long-lived hook limit reached",
+				})
+				return
+			}
+		}
+	}
 
 	// Single hook case
 	if req.Count == 1 {
 		hook := h.storage.CreateHook(h.domain, opts)
-		h.logger.Info("hook created", "id", hook.ID, "client", r.RemoteAddr)
+		h.logger.Info("hook created", "id", hook.ID, "long_lived", opts.TTL > h.evictor.HookTTL(), "client", r.RemoteAddr)
 		respondJSON(w, http.StatusOK, hook)
 		return
 	}
@@ -84,11 +112,73 @@ func (h *APIHandler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 		h.logger.Debug("hook created", "id", hook.ID, "index", i+1, "total", req.Count, "client", r.RemoteAddr)
 	}
 
-	h.logger.Info("hooks created", "count", req.Count, "client", r.RemoteAddr)
+	h.logger.Info("hooks created", "count", req.Count, "long_lived", opts.TTL > h.evictor.HookTTL(), "client", r.RemoteAddr)
 
 	respondJSON(w, http.StatusOK, map[string]interface{}{
 		"hooks": hooks,
 	})
+}
+
+// apiError bundles an HTTP status with a client-facing message.
+type apiError struct {
+	status  int
+	message string
+}
+
+// buildCreateOptions validates the optional ttl and metadata and returns the
+// resolved storage options. A nil apiError means success.
+//
+// TTL semantics: absent means ephemeral (the configured hook TTL). A value at or
+// below the ephemeral hook TTL is rejected — ephemeral hooks are requested by
+// omitting ttl. A value above it designates a long-lived hook, capped at
+// long_lived.max_ttl, and requires the long-lived store to be enabled.
+func (h *APIHandler) buildCreateOptions(ttl string, metadata map[string]any) (storage.CreateOptions, *apiError) {
+	opts := storage.CreateOptions{Metadata: metadata}
+
+	if metadata != nil && h.longLived.MaxMetadataBytes > 0 {
+		encoded, err := json.Marshal(metadata)
+		if err != nil {
+			return opts, &apiError{http.StatusBadRequest, "invalid metadata"}
+		}
+		if len(encoded) > h.longLived.MaxMetadataBytes {
+			return opts, &apiError{http.StatusBadRequest, fmt.Sprintf("metadata must not exceed %d bytes", h.longLived.MaxMetadataBytes)}
+		}
+	}
+
+	ephemeralTTL := h.evictor.HookTTL()
+	if ttl == "" {
+		opts.TTL = ephemeralTTL
+		return opts, nil
+	}
+
+	d, err := parseTTL(ttl)
+	if err != nil {
+		return opts, &apiError{http.StatusBadRequest, "invalid ttl (use a Go duration like \"168h\" or a day count like \"7d\")"}
+	}
+	if d <= ephemeralTTL {
+		return opts, &apiError{http.StatusBadRequest, fmt.Sprintf("ttl must exceed the ephemeral hook ttl (%s); omit ttl for ephemeral hooks", ephemeralTTL)}
+	}
+	if !h.longLived.Enabled {
+		return opts, &apiError{http.StatusBadRequest, "long-lived hooks are disabled"}
+	}
+	if d > h.longLived.MaxTTL {
+		return opts, &apiError{http.StatusBadRequest, fmt.Sprintf("ttl must not exceed %s", h.longLived.MaxTTL)}
+	}
+	opts.TTL = d
+	return opts, nil
+}
+
+// parseTTL accepts a Go duration ("168h", "90m") or a plain day count ("7d").
+func parseTTL(s string) (time.Duration, error) {
+	s = strings.TrimSpace(s)
+	if days, ok := strings.CutSuffix(s, "d"); ok {
+		n, err := strconv.Atoi(days)
+		if err != nil {
+			return 0, fmt.Errorf("invalid day count: %q", s)
+		}
+		return time.Duration(n) * 24 * time.Hour, nil
+	}
+	return time.ParseDuration(s)
 }
 
 // HandlePollBatch handles POST /poll (batch polling)
@@ -152,7 +242,8 @@ func (h *APIHandler) HandlePoll(w http.ResponseWriter, r *http.Request) {
 	hookID := parts[1]
 
 	// Check if hook exists
-	if _, exists := h.storage.GetHook(hookID); !exists {
+	hook, exists := h.storage.GetHook(hookID)
+	if !exists {
 		respondJSON(w, http.StatusNotFound, map[string]string{
 			"error": "Hook not found",
 		})
@@ -167,8 +258,39 @@ func (h *APIHandler) HandlePoll(w http.ResponseWriter, r *http.Request) {
 		"count", len(interactions),
 		"client", r.RemoteAddr)
 
-	respondJSON(w, http.StatusOK, map[string]interface{}{
+	resp := map[string]interface{}{
 		"interactions": interactions,
+	}
+	// Echo the hook's metadata so a caller can correlate a fired hook back to
+	// its injection context without keeping its own registration bookkeeping.
+	if hook.Metadata != nil {
+		resp["metadata"] = hook.Metadata
+	}
+	respondJSON(w, http.StatusOK, resp)
+}
+
+// HandleActivity handles GET /activity: the long-lived hooks that currently have
+// pending interactions. It lets a client discover which of its many long-lived
+// hooks have fired without polling each one; the details are then drained via
+// GET /poll/:id. It does not mutate state — a hook drops off this list once
+// polled.
+func (h *APIHandler) HandleActivity(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		respondJSON(w, http.StatusMethodNotAllowed, map[string]string{
+			"error": "Method not allowed",
+		})
+		return
+	}
+
+	activity := []storage.HookActivity{}
+	if llm, ok := h.storage.(storage.LongLivedManager); ok {
+		if found := llm.LongLivedActivity(); found != nil {
+			activity = found
+		}
+	}
+
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"hooks": activity,
 	})
 }
 

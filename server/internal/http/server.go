@@ -19,6 +19,7 @@ import (
 // Server represents an HTTP/HTTPS server
 type Server struct {
 	config       config.ServerConfig
+	longLived    config.LongLivedConfig
 	storage      storage.Manager
 	evictor      *eviction.Evictor
 	acmeProvider *acme.Provider
@@ -29,9 +30,10 @@ type Server struct {
 }
 
 // NewServer creates a new HTTP/HTTPS server
-func NewServer(cfg config.ServerConfig, storage storage.Manager, evictor *eviction.Evictor, acmeProvider *acme.Provider, logger *slog.Logger, idGenerator func() string) *Server {
+func NewServer(cfg config.ServerConfig, longLived config.LongLivedConfig, storage storage.Manager, evictor *eviction.Evictor, acmeProvider *acme.Provider, logger *slog.Logger, idGenerator func() string) *Server {
 	return &Server{
 		config:       cfg,
+		longLived:    longLived,
 		storage:      storage,
 		evictor:      evictor,
 		acmeProvider: acmeProvider,
@@ -43,7 +45,7 @@ func NewServer(cfg config.ServerConfig, storage storage.Manager, evictor *evicti
 // Start starts the HTTP/HTTPS servers
 func (s *Server) Start(ctx context.Context) error {
 	// Create handlers
-	apiHandler := NewAPIHandler(s.storage, s.evictor, s.config.Domain, s.logger, s.idGenerator)
+	apiHandler := NewAPIHandler(s.storage, s.evictor, s.config.Domain, s.longLived, s.logger, s.idGenerator)
 	captureHandler := NewCaptureHandler(s.storage, s.config.Domain, s.logger, s.idGenerator)
 
 	// Create main mux
@@ -54,6 +56,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.Handle("/register", authMW(http.HandlerFunc(apiHandler.HandleRegister)))
 	mux.Handle("/poll", authMW(http.HandlerFunc(apiHandler.HandlePollBatch)))
 	mux.Handle("/poll/", authMW(http.HandlerFunc(apiHandler.HandlePoll)))
+	mux.Handle("/activity", authMW(http.HandlerFunc(apiHandler.HandleActivity)))
 
 	// Metrics endpoint (no auth)
 	mux.HandleFunc("/metrics", apiHandler.HandleMetrics)
