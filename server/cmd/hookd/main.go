@@ -122,6 +122,8 @@ func main() {
 		dnsServer, err := dns.NewServer(
 			cfg.Server.Domain,
 			cfg.Server.DNS.Port,
+			cfg.Server.PublicIP,
+			cfg.Server.DNS.BindAddress,
 			storageManager,
 			acmeProvider,
 			logger,

@@ -77,9 +77,11 @@ See [`server/config.example.yaml`](./server/config.example.yaml) for all options
 ```yaml
 server:
   domain: "hookd.domain.tld"
+  public_ip: ""                 # DNS answer IP; auto-detected if empty
   dns:
     enabled: true
     port: 53
+    bind_address: ""            # bind a single IP to coexist with a stub resolver
   http:
     port: 80
   https:
@@ -109,7 +111,9 @@ observability:
 |---|---|---|
 | `--config` | Path to YAML config file | (none) |
 | `--domain` | Override domain | (from config) |
+| `--public-ip` | Override the public IP returned in DNS answers | (auto-detected) |
 | `--dns-port` | Override DNS port | `53` |
+| `--dns-bind` | Override the DNS listener bind address | (all interfaces) |
 | `--http-port` | Override HTTP port | `80` |
 | `--https-port` | Override HTTPS port | `443` |
 | `--auth-token` | Override auth token | (from config) |
