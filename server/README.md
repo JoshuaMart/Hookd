@@ -40,9 +40,11 @@ Edit `/etc/hookd/config.yaml`:
 ```yaml
 server:
   domain: "hookd.domain.tld"  # Your domain
+  public_ip: ""               # DNS answer IP; auto-detected if empty (set behind NAT)
   dns:
     enabled: true
     port: 53
+    bind_address: ""          # bind a single IP to coexist with a stub resolver
   http:
     port: 80
   https:
@@ -386,7 +388,9 @@ Options:
   --config PATH       Path to YAML configuration file
   --token TOKEN       Override authentication token
   --domain DOMAIN     Override server domain
+  --public-ip IP      Override the public IP returned in DNS answers
   --dns-port PORT     Override DNS port
+  --dns-bind IP       Override the DNS listener bind address
   --http-port PORT    Override HTTP port
   --https-port PORT   Override HTTPS port
   --version           Show version information
@@ -522,6 +526,34 @@ Structured JSON logs (or text format):
 # Grant capability (alternative to root)
 sudo setcap 'cap_net_bind_service=+ep' /usr/local/bin/hookd
 ```
+
+### Port 53 already in use (systemd-resolved)
+
+On hosts running `systemd-resolved`, a stub resolver listens on `127.0.0.53:53`.
+Binding Hookd's DNS server to `0.0.0.0:53` (the default) collides with it, so it
+is tempting to stop `systemd-resolved` — but that also removes the host's own DNS
+resolution (`/etc/resolv.conf` points at the stub), which then breaks outbound
+lookups such as reaching Let's Encrypt.
+
+Instead, bind Hookd to the server's public IP so the two coexist on the same
+port. `systemd-resolved` keeps `127.0.0.53:53`; Hookd owns `<public-ip>:53`:
+
+```yaml
+server:
+  public_ip: "203.0.113.7"      # returned in DNS answers
+  dns:
+    bind_address: "203.0.113.7" # listen only on the public interface
+```
+
+With this, the host's resolver stays intact and Hookd needs no override of the
+process-wide DNS resolver.
+
+### Wrong IP in DNS answers (behind NAT)
+
+If auto-detection returns a private address (`10.x`, `172.16–31.x`, `192.168.x`)
+because the host is behind NAT or multi-homed, hooks will advertise an
+unreachable IP. Set `server.public_ip` (or `--public-ip`) to the real public
+address.
 
 ### HTTPS certificate issues
 

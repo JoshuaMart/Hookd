@@ -5,11 +5,22 @@ server:
   # All hooks will be subdomains of this domain
   domain: "hookd.domain.tld"
 
+  # Public IP returned in DNS A answers (the address clients dial back).
+  # Leave empty to auto-detect the outbound interface IP. Set it explicitly
+  # when the auto-detected value is wrong — e.g. behind NAT, on a multi-homed
+  # host, or when the public IP differs from the local interface IP.
+  public_ip: ""
+
   dns:
     # Enable DNS server
     enabled: true
     # DNS port (requires root or CAP_NET_BIND_SERVICE for port 53)
     port: 53
+    # Local address the DNS listener binds to. Leave empty to bind all
+    # interfaces. Set it to the server's public IP to coexist with a local stub
+    # resolver (e.g. systemd-resolved on 127.0.0.53:53) without stopping it —
+    # stopping it would break the host's own DNS resolution.
+    bind_address: ""
 
   http:
     # HTTP port
@@ -24,6 +35,13 @@ server:
     autocert: true
     # Directory to cache certificates
     cache_dir: "/var/lib/hookd/certs"
+    # Recursive resolvers CertMagic uses to self-check DNS-01 challenge
+    # propagation before validation. Leave empty for the public defaults
+    # (Cloudflare + Google). Scoped to the ACME solver only — the process's own
+    # name resolution stays on the system resolver.
+    # resolvers:
+    #   - "1.1.1.1:53"
+    #   - "8.8.8.8:53"
 
   api:
     # Authentication token for API access

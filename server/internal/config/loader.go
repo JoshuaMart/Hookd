@@ -13,8 +13,10 @@ import (
 // Unmarshal, so each key must be bound for env overrides to take effect.
 var configKeys = []string{
 	"server.domain",
+	"server.public_ip",
 	"server.dns.enabled",
 	"server.dns.port",
+	"server.dns.bind_address",
 	"server.http.port",
 	"server.https.enabled",
 	"server.https.port",
@@ -84,7 +86,9 @@ func RegisterFlags() {
 	pflag.String("config", "", "Path to configuration file")
 	pflag.String("token", "", "Override authentication token")
 	pflag.String("domain", "", "Override server domain")
+	pflag.String("public-ip", "", "Override the public IP returned in DNS answers")
 	pflag.Int("dns-port", 0, "Override DNS port")
+	pflag.String("dns-bind", "", "Override the DNS listener bind address")
 	pflag.Int("http-port", 0, "Override HTTP port")
 	pflag.Int("https-port", 0, "Override HTTPS port")
 	pflag.Bool("version", false, "Show version information")
@@ -101,8 +105,16 @@ func applyFlags(cfg *Config) {
 		cfg.Server.Domain = domain
 	}
 
+	if publicIP := viper.GetString("public-ip"); publicIP != "" {
+		cfg.Server.PublicIP = publicIP
+	}
+
 	if dnsPort := viper.GetInt("dns-port"); dnsPort > 0 {
 		cfg.Server.DNS.Port = dnsPort
+	}
+
+	if dnsBind := viper.GetString("dns-bind"); dnsBind != "" {
+		cfg.Server.DNS.BindAddress = dnsBind
 	}
 
 	if httpPort := viper.GetInt("http-port"); httpPort > 0 {

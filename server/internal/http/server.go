@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
-	"net"
 	"net/http"
 	"strings"
 
@@ -15,6 +14,18 @@ import (
 	"github.com/jomar/hookd/internal/eviction"
 	"github.com/jomar/hookd/internal/storage"
 )
+
+// defaultACMEResolvers are the public recursive resolvers CertMagic uses to
+// self-check DNS-01 challenge propagation when server.https.resolvers is unset
+// (Cloudflare + Google, matching interactsh's defaults).
+func defaultACMEResolvers() []string {
+	return []string{
+		"1.1.1.1:53",
+		"1.0.0.1:53",
+		"8.8.8.8:53",
+		"8.8.4.4:53",
+	}
+}
 
 // Server represents an HTTP/HTTPS server
 type Server struct {
@@ -72,32 +83,22 @@ func (s *Server) Start(ctx context.Context) error {
 	// Start HTTPS server if enabled
 	if s.config.HTTPS.Enabled {
 		if s.config.HTTPS.AutoCert {
-			// Override Go's default DNS resolver to use external nameservers
-			// This prevents CertMagic from using system DNS (127.0.0.53:53)
-			// which would query our own DNS server for Let's Encrypt domains
-			net.DefaultResolver = &net.Resolver{
-				PreferGo: true,
-				Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
-					d := net.Dialer{}
-					// Use Google DNS for all resolution
-					return d.DialContext(ctx, network, "8.8.8.8:53")
-				},
-			}
-
-			s.logger.Info("configured global DNS resolver to use 8.8.8.8")
-
 			// Configure CertMagic with DNS-01 challenge using our custom provider
 			s.logger.Info("configuring certmagic for wildcard certificate",
 				"domain", s.config.Domain,
 				"cache_dir", s.config.HTTPS.CacheDir)
 
-			// Default resolvers (like Interactsh)
-			resolvers := []string{
-				"1.1.1.1:53",
-				"1.0.0.1:53",
-				"8.8.8.8:53",
-				"8.8.4.4:53",
+			// Recursive resolvers CertMagic uses to self-check challenge
+			// propagation. These are scoped to the ACME solver only — the
+			// process's own name resolution is left on the system resolver, so a
+			// correctly bound DNS server (see server.dns.bind_address) does not
+			// require overriding net.DefaultResolver or stopping the host's stub
+			// resolver.
+			resolvers := s.config.HTTPS.Resolvers
+			if len(resolvers) == 0 {
+				resolvers = defaultACMEResolvers()
 			}
+			s.logger.Info("acme dns-01 self-check resolvers", "resolvers", resolvers)
 
 			// Configure CertMagic defaults
 			certmagic.DefaultACME.Agreed = true

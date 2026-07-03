@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"strconv"
 	"strings"
 
 	"github.com/libdns/libdns"
@@ -27,12 +28,24 @@ type Server struct {
 	server       *dns.Server
 }
 
-// NewServer creates a new DNS server
-func NewServer(domain string, port int, storage storage.Manager, acmeProvider *acme.Provider, logger *slog.Logger, idGenerator func() string) (*Server, error) {
-	// Auto-detect server IP
-	serverIP, err := getOutboundIP()
-	if err != nil {
-		return nil, fmt.Errorf("failed to detect server IP: %w", err)
+// NewServer creates a new DNS server.
+//
+// publicIP is the address returned in A answers; when empty it is auto-detected
+// from the outbound interface. bindAddress is the local address the UDP listener
+// binds to; when empty the server binds all interfaces. Setting bindAddress to
+// the host's public IP lets Hookd coexist with a loopback stub resolver (e.g.
+// systemd-resolved on 127.0.0.53:53) instead of having to stop it.
+func NewServer(domain string, port int, publicIP, bindAddress string, storage storage.Manager, acmeProvider *acme.Provider, logger *slog.Logger, idGenerator func() string) (*Server, error) {
+	// Use the configured public IP when provided; otherwise auto-detect it from
+	// the outbound interface. The configured value is preferred because the
+	// auto-detected address is wrong behind NAT or on a multi-homed host.
+	serverIP := publicIP
+	if serverIP == "" {
+		detected, err := getOutboundIP()
+		if err != nil {
+			return nil, fmt.Errorf("failed to detect server IP (set server.public_ip to override): %w", err)
+		}
+		serverIP = detected
 	}
 
 	s := &Server{
@@ -50,7 +63,7 @@ func NewServer(domain string, port int, storage storage.Manager, acmeProvider *a
 	mux.HandleFunc(".", s.handleDNSRequest)
 
 	s.server = &dns.Server{
-		Addr:    fmt.Sprintf(":%d", port),
+		Addr:    net.JoinHostPort(bindAddress, strconv.Itoa(port)),
 		Net:     "udp",
 		Handler: mux,
 	}
@@ -61,7 +74,7 @@ func NewServer(domain string, port int, storage storage.Manager, acmeProvider *a
 // Start starts the DNS server
 func (s *Server) Start(ctx context.Context) error {
 	s.logger.Info("dns server starting",
-		"port", s.port,
+		"listen_addr", s.server.Addr,
 		"domain", s.domain,
 		"server_ip", s.serverIP)
 

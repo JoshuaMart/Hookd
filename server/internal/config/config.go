@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"net"
 	"time"
 )
 
@@ -17,17 +18,27 @@ type Config struct {
 
 // ServerConfig holds server-related configuration
 type ServerConfig struct {
-	Domain string      `mapstructure:"domain"`
-	DNS    DNSConfig   `mapstructure:"dns"`
-	HTTP   HTTPConfig  `mapstructure:"http"`
-	HTTPS  HTTPSConfig `mapstructure:"https"`
-	API    APIConfig   `mapstructure:"api"`
+	Domain string `mapstructure:"domain"`
+	// PublicIP is the address returned in DNS A answers and used as the value
+	// clients dial back. Leave empty to auto-detect the outbound interface IP;
+	// set it explicitly when the auto-detected address is wrong (behind NAT, on
+	// a multi-homed host, or when the public IP differs from the local one).
+	PublicIP string      `mapstructure:"public_ip"`
+	DNS      DNSConfig   `mapstructure:"dns"`
+	HTTP     HTTPConfig  `mapstructure:"http"`
+	HTTPS    HTTPSConfig `mapstructure:"https"`
+	API      APIConfig   `mapstructure:"api"`
 }
 
 // DNSConfig holds DNS server configuration
 type DNSConfig struct {
 	Enabled bool `mapstructure:"enabled"`
 	Port    int  `mapstructure:"port"`
+	// BindAddress is the local address the DNS listener binds to. Leave empty to
+	// bind all interfaces. Set it to the server's public IP to coexist with a
+	// local stub resolver (e.g. systemd-resolved on 127.0.0.53:53) without having
+	// to stop it — which would otherwise break the host's own DNS resolution.
+	BindAddress string `mapstructure:"bind_address"`
 }
 
 // HTTPConfig holds HTTP server configuration
@@ -41,6 +52,11 @@ type HTTPSConfig struct {
 	Port     int    `mapstructure:"port"`
 	AutoCert bool   `mapstructure:"autocert"`
 	CacheDir string `mapstructure:"cache_dir"`
+	// Resolvers are the recursive DNS servers CertMagic uses to self-check
+	// DNS-01 challenge propagation before asking Let's Encrypt to validate. Leave
+	// empty to use the public defaults (Cloudflare + Google). These are used only
+	// by the ACME solver; the process's own name resolution is left untouched.
+	Resolvers []string `mapstructure:"resolvers"`
 }
 
 // APIConfig holds API configuration
@@ -128,8 +144,16 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("server.domain is required")
 	}
 
+	if c.Server.PublicIP != "" && net.ParseIP(c.Server.PublicIP) == nil {
+		return fmt.Errorf("server.public_ip must be a valid IP address")
+	}
+
 	if c.Server.DNS.Enabled && (c.Server.DNS.Port < 1 || c.Server.DNS.Port > 65535) {
 		return fmt.Errorf("server.dns.port must be between 1 and 65535")
+	}
+
+	if c.Server.DNS.BindAddress != "" && net.ParseIP(c.Server.DNS.BindAddress) == nil {
+		return fmt.Errorf("server.dns.bind_address must be a valid IP address")
 	}
 
 	if c.Server.HTTP.Port < 1 || c.Server.HTTP.Port > 65535 {
