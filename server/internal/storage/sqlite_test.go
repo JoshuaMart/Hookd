@@ -224,6 +224,46 @@ func TestSQLite_LongLivedActivity(t *testing.T) {
 	_ = quiet
 }
 
+func TestSQLite_PollInteractionsBatch(t *testing.T) {
+	m := newTestSQLite(t, 1024)
+
+	fired := m.CreateHook("example.com", CreateOptions{TTL: time.Hour})
+	quiet := m.CreateHook("example.com", CreateOptions{TTL: time.Hour})
+	m.AddInteraction(fired.ID, DNSInteraction("i1", "1.2.3.4", "q", "A"))
+
+	res := m.PollInteractionsBatch([]string{fired.ID, quiet.ID, "missing"})
+
+	if got := res[fired.ID]; got == nil || len(got.Interactions) != 1 {
+		t.Errorf("expected 1 interaction for fired hook, got %+v", got)
+	}
+	if got := res[quiet.ID]; got == nil || got.Error != "" || len(got.Interactions) != 0 {
+		t.Errorf("expected empty result for quiet hook, got %+v", got)
+	}
+	if got := res["missing"]; got == nil || got.Error != "Hook not found" {
+		t.Errorf("expected not-found for missing hook, got %+v", got)
+	}
+
+	// Batch poll clears interactions.
+	if again := m.PollInteractions(fired.ID); len(again) != 0 {
+		t.Errorf("expected batch poll to clear interactions, got %d", len(again))
+	}
+}
+
+func TestSQLite_EvictByMemoryPressureIsNoOp(t *testing.T) {
+	m := newTestSQLite(t, 1024)
+	hook := m.CreateHook("example.com", CreateOptions{TTL: time.Hour})
+	m.AddInteraction(hook.ID, DNSInteraction("i1", "1.2.3.4", "q", "A"))
+
+	// Disk-backed storage never evicts on heap pressure.
+	res := m.EvictByMemoryPressure(1)
+	if res.Triggered || res.HooksEvicted != 0 || res.InteractionsEvicted != 0 {
+		t.Errorf("expected no-op memory-pressure eviction, got %+v", res)
+	}
+	if !m.Has(hook.ID) {
+		t.Error("expected hook to remain")
+	}
+}
+
 func TestSQLite_EvictInteractionsBeforeIsNoOp(t *testing.T) {
 	m := newTestSQLite(t, 1024)
 	hook := m.CreateHook("example.com", CreateOptions{TTL: time.Hour})

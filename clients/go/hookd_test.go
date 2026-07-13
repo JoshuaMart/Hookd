@@ -392,6 +392,153 @@ func TestConnectionError(t *testing.T) {
 	}
 }
 
+func TestErrorMessages(t *testing.T) {
+	cases := []struct {
+		err  error
+		want string
+	}{
+		{&Error{Message: "base"}, "base"},
+		{&AuthenticationError{Message: "auth"}, "auth"},
+		{&NotFoundError{Message: "missing"}, "missing"},
+		{&ServerError{Message: "boom"}, "boom"},
+		{&ConnectionError{Message: "offline"}, "offline"},
+	}
+	for _, c := range cases {
+		if got := c.err.Error(); got != c.want {
+			t.Errorf("expected Error() = %q, got %q", c.want, got)
+		}
+	}
+}
+
+func TestUnexpectedStatus(t *testing.T) {
+	server, client := setupServer(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTeapot) // 418: not 401/404/5xx, and outside 2xx
+		_, _ = w.Write([]byte(`{"error":"teapot"}`))
+	})
+	defer server.Close()
+
+	_, err := client.Poll("abc123")
+	if err == nil {
+		t.Fatal("expected error for unexpected status")
+	}
+	var baseErr *Error
+	if !errors.As(err, &baseErr) {
+		t.Fatalf("expected *Error, got %T", err)
+	}
+	if baseErr.StatusCode != http.StatusTeapot {
+		t.Errorf("expected status 418 on error, got %d", baseErr.StatusCode)
+	}
+}
+
+func TestEmptyResponseBody(t *testing.T) {
+	server, client := setupServer(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK) // 200 but no body
+	})
+	defer server.Close()
+
+	_, err := client.Poll("abc123")
+	if err == nil {
+		t.Fatal("expected error for empty response body")
+	}
+	var baseErr *Error
+	if !errors.As(err, &baseErr) {
+		t.Errorf("expected *Error, got %T", err)
+	}
+}
+
+func TestInvalidJSONResponse(t *testing.T) {
+	server, client := setupServer(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{not valid json`))
+	})
+	defer server.Close()
+
+	_, err := client.Poll("abc123")
+	if err == nil {
+		t.Fatal("expected error for invalid JSON")
+	}
+	var baseErr *Error
+	if !errors.As(err, &baseErr) {
+		t.Errorf("expected *Error, got %T", err)
+	}
+}
+
+func TestPollBatchWithErrorEntry(t *testing.T) {
+	server, client := setupServer(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]any{
+			"results": map[string]any{
+				"missing": map[string]any{
+					"error": "Hook not found",
+				},
+				"malformed": "not-an-object",
+			},
+		})
+	})
+	defer server.Close()
+
+	results, err := client.PollBatch([]string{"missing", "malformed"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if results["missing"].Error != "Hook not found" {
+		t.Errorf("expected not-found error propagated, got %q", results["missing"].Error)
+	}
+	// Non-object entries surface a per-entry error but never crash the batch.
+	if results["malformed"].Error != "invalid result format" {
+		t.Errorf("expected invalid-result error, got %q", results["malformed"].Error)
+	}
+}
+
+func TestPollBatchMalformedResponse(t *testing.T) {
+	server, client := setupServer(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]any{"results": "not-a-map"})
+	})
+	defer server.Close()
+
+	_, err := client.PollBatch([]string{"h1"})
+	if err == nil {
+		t.Fatal("expected error for malformed results format")
+	}
+}
+
+func TestPollBatchMissingResults(t *testing.T) {
+	server, client := setupServer(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]any{"something_else": true})
+	})
+	defer server.Close()
+
+	_, err := client.PollBatch([]string{"h1"})
+	if err == nil {
+		t.Fatal("expected error when results key is absent")
+	}
+}
+
+func TestActivityMalformedResponse(t *testing.T) {
+	server, client := setupServer(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]any{"hooks": "not-an-array"})
+	})
+	defer server.Close()
+
+	_, err := client.Activity()
+	if err == nil {
+		t.Fatal("expected error for malformed activity format")
+	}
+}
+
+func TestActivityMissingHooksKey(t *testing.T) {
+	server, client := setupServer(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]any{})
+	})
+	defer server.Close()
+
+	activity, err := client.Activity()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(activity) != 0 {
+		t.Errorf("expected empty activity when hooks key absent, got %d", len(activity))
+	}
+}
+
 func TestInteractionHelpers(t *testing.T) {
 	dns := Interaction{Type: "dns"}
 	if !dns.IsDNS() {

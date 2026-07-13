@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,6 +14,62 @@ import (
 	"github.com/jomar/hookd/internal/eviction"
 	"github.com/jomar/hookd/internal/storage"
 )
+
+func TestDefaultACMEResolvers(t *testing.T) {
+	resolvers := defaultACMEResolvers()
+	if len(resolvers) == 0 {
+		t.Fatal("expected default resolvers to be non-empty")
+	}
+	// Every default resolver must carry an explicit :53 port so CertMagic can
+	// dial it directly.
+	for _, r := range resolvers {
+		if !strings.HasSuffix(r, ":53") {
+			t.Errorf("expected resolver %q to specify port 53", r)
+		}
+	}
+}
+
+func TestSuppressedTLSWriter(t *testing.T) {
+	// Capture logged errors by counting records emitted to a recording handler.
+	rec := &recordingHandler{}
+	w := &suppressedTLSWriter{logger: slog.New(rec)}
+
+	t.Run("suppresses TLS handshake noise", func(t *testing.T) {
+		rec.count = 0
+		for _, msg := range []string{
+			"http: TLS handshake error from 1.2.3.4: EOF",
+			"http: TLS handshake error: no certificate available for \"x.com\"",
+		} {
+			n, err := w.Write([]byte(msg))
+			if err != nil || n != len(msg) {
+				t.Errorf("expected full write with no error, got n=%d err=%v", n, err)
+			}
+		}
+		if rec.count != 0 {
+			t.Errorf("expected TLS handshake errors suppressed, but %d were logged", rec.count)
+		}
+	})
+
+	t.Run("logs other errors", func(t *testing.T) {
+		rec.count = 0
+		msg := "http: some other server error"
+		n, err := w.Write([]byte(msg))
+		if err != nil || n != len(msg) {
+			t.Errorf("expected full write with no error, got n=%d err=%v", n, err)
+		}
+		if rec.count != 1 {
+			t.Errorf("expected non-TLS error to be logged once, got %d", rec.count)
+		}
+	})
+}
+
+// recordingHandler is a minimal slog.Handler that counts emitted records.
+type recordingHandler struct{ count int }
+
+func (h *recordingHandler) Enabled(context.Context, slog.Level) bool { return true }
+func (h *recordingHandler) Handle(context.Context, slog.Record) error { h.count++; return nil }
+func (h *recordingHandler) WithAttrs([]slog.Attr) slog.Handler        { return h }
+func (h *recordingHandler) WithGroup(string) slog.Handler             { return h }
 
 func TestNewServer(t *testing.T) {
 	idGen := func() string { return "test-id" }

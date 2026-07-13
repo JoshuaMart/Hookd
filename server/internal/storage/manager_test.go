@@ -249,3 +249,98 @@ func TestMemoryManager_PollInteractions_NonExistentHook(t *testing.T) {
 		t.Errorf("expected 0 interactions for non-existent hook, got %d", len(interactions))
 	}
 }
+
+func TestMemoryManager_PollInteractionsBatch(t *testing.T) {
+	counter := 0
+	manager := NewMemoryManager(func() string { counter++; return fmt.Sprintf("hook-%d", counter) })
+
+	withData := manager.CreateHook("example.com", CreateOptions{})
+	empty := manager.CreateHook("example.com", CreateOptions{})
+	manager.AddInteraction(withData.ID, DNSInteraction("i1", "1.2.3.4", "q", "A"))
+	manager.AddInteraction(withData.ID, HTTPInteraction("i2", "5.6.7.8", "GET", "/", nil, ""))
+
+	res := manager.PollInteractionsBatch([]string{withData.ID, empty.ID, "missing"})
+
+	if got := res[withData.ID]; got == nil || len(got.Interactions) != 2 {
+		t.Errorf("expected 2 interactions for populated hook, got %+v", got)
+	}
+	if got := res[empty.ID]; got == nil || got.Error != "" || len(got.Interactions) != 0 {
+		t.Errorf("expected empty (non-nil) result for empty hook, got %+v", got)
+	}
+	if got := res["missing"]; got == nil || got.Error != "Hook not found" {
+		t.Errorf("expected not-found for missing hook, got %+v", got)
+	}
+
+	// The batch poll clears interactions, just like the single poll.
+	if again := manager.PollInteractions(withData.ID); len(again) != 0 {
+		t.Errorf("expected batch poll to clear interactions, got %d", len(again))
+	}
+}
+
+func TestMemoryManager_EvictInteractionsBefore(t *testing.T) {
+	counter := 0
+	manager := NewMemoryManager(func() string { counter++; return fmt.Sprintf("hook-%d", counter) })
+
+	hook := manager.CreateHook("example.com", CreateOptions{})
+	cutoff := time.Now().UTC()
+
+	old1 := DNSInteraction("old1", "1.2.3.4", "q", "A")
+	old1.Timestamp = cutoff.Add(-2 * time.Hour)
+	old2 := DNSInteraction("old2", "1.2.3.4", "q", "A")
+	old2.Timestamp = cutoff.Add(-time.Hour)
+	fresh := DNSInteraction("fresh", "1.2.3.4", "q", "A")
+	fresh.Timestamp = cutoff.Add(time.Hour)
+	manager.AddInteraction(hook.ID, old1)
+	manager.AddInteraction(hook.ID, old2)
+	manager.AddInteraction(hook.ID, fresh)
+
+	removed := manager.EvictInteractionsBefore(cutoff)
+	if removed != 2 {
+		t.Errorf("expected 2 interactions evicted, got %d", removed)
+	}
+
+	got := manager.PollInteractions(hook.ID)
+	if len(got) != 1 || got[0].ID != "fresh" {
+		t.Errorf("expected only the fresh interaction to remain, got %+v", got)
+	}
+
+	// A second pass with nothing older than the cutoff removes nothing.
+	if n := manager.EvictInteractionsBefore(cutoff); n != 0 {
+		t.Errorf("expected no further eviction, got %d", n)
+	}
+}
+
+func TestMemoryManager_EnforcePerHookLimit(t *testing.T) {
+	counter := 0
+	manager := NewMemoryManager(func() string { counter++; return fmt.Sprintf("hook-%d", counter) })
+
+	over := manager.CreateHook("example.com", CreateOptions{})
+	under := manager.CreateHook("example.com", CreateOptions{})
+
+	for i := 0; i < 7; i++ {
+		manager.AddInteraction(over.ID, DNSInteraction(fmt.Sprintf("o%d", i), "1.2.3.4", "q", "A"))
+	}
+	for i := 0; i < 2; i++ {
+		manager.AddInteraction(under.ID, DNSInteraction(fmt.Sprintf("u%d", i), "1.2.3.4", "q", "A"))
+	}
+
+	removed := manager.EnforcePerHookLimit(3)
+	if removed != 4 {
+		t.Errorf("expected 4 interactions dropped from over-limit hook, got %d", removed)
+	}
+
+	got := manager.PollInteractions(over.ID)
+	if len(got) != 3 {
+		t.Fatalf("expected 3 interactions retained, got %d", len(got))
+	}
+	// The newest survive; the oldest (o0..o3) were dropped.
+	for _, it := range got {
+		if it.ID == "o0" || it.ID == "o3" {
+			t.Errorf("expected oldest interactions dropped, found %s", it.ID)
+		}
+	}
+	// The under-limit hook is untouched.
+	if got := manager.PollInteractions(under.ID); len(got) != 2 {
+		t.Errorf("expected under-limit hook untouched, got %d", len(got))
+	}
+}

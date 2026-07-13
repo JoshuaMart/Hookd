@@ -156,6 +156,103 @@ func TestComposite_NilLongLivedFallsBackToMemory(t *testing.T) {
 	}
 }
 
+func TestComposite_CreateLongLivedHook(t *testing.T) {
+	c, sqlite := newTestComposite(t)
+
+	hook, err := c.CreateLongLivedHook("example.com", CreateOptions{TTL: ephemeralTTL + time.Hour}, 5)
+	if err != nil {
+		t.Fatalf("expected long-lived hook created, got %v", err)
+	}
+	if !sqlite.Has(hook.ID) {
+		t.Error("expected hook persisted to the long-lived store")
+	}
+	if c.LongLivedCount() != 1 {
+		t.Errorf("expected 1 long-lived hook, got %d", c.LongLivedCount())
+	}
+}
+
+func TestComposite_CreateLongLivedHookDisabled(t *testing.T) {
+	mem := NewMemoryManager(func() string { return "x" })
+	c := NewCompositeManager(mem, nil, ephemeralTTL)
+
+	_, err := c.CreateLongLivedHook("example.com", CreateOptions{TTL: ephemeralTTL + time.Hour}, 5)
+	if err == nil {
+		t.Fatal("expected error when long-lived store is disabled")
+	}
+}
+
+func TestComposite_EvictInteractionsBeforeMemoryOnly(t *testing.T) {
+	c, _ := newTestComposite(t)
+
+	eph := c.CreateHook("example.com", CreateOptions{TTL: ephemeralTTL})
+	ll := c.CreateHook("example.com", CreateOptions{TTL: ephemeralTTL + time.Hour})
+
+	cutoff := time.Now().UTC()
+	oldEph := DNSInteraction("e-old", "1.2.3.4", "q", "A")
+	oldEph.Timestamp = cutoff.Add(-time.Hour)
+	oldLL := DNSInteraction("l-old", "1.2.3.4", "q", "A")
+	oldLL.Timestamp = cutoff.Add(-time.Hour)
+	c.AddInteraction(eph.ID, oldEph)
+	c.AddInteraction(ll.ID, oldLL)
+
+	// Only the ephemeral (in-memory) interaction ages out; long-lived is retained.
+	if n := c.EvictInteractionsBefore(cutoff); n != 1 {
+		t.Errorf("expected 1 ephemeral interaction evicted, got %d", n)
+	}
+	if got := c.PollInteractions(eph.ID); len(got) != 0 {
+		t.Errorf("expected ephemeral interaction gone, got %d", len(got))
+	}
+	if got := c.PollInteractions(ll.ID); len(got) != 1 {
+		t.Errorf("expected long-lived interaction retained, got %d", len(got))
+	}
+}
+
+func TestComposite_EnforcePerHookLimitBothStores(t *testing.T) {
+	c, _ := newTestComposite(t)
+
+	eph := c.CreateHook("example.com", CreateOptions{TTL: ephemeralTTL})
+	ll := c.CreateHook("example.com", CreateOptions{TTL: ephemeralTTL + time.Hour})
+	for i := 0; i < 5; i++ {
+		c.AddInteraction(eph.ID, DNSInteraction(fmt.Sprintf("e%d", i), "1.2.3.4", "q", "A"))
+		c.AddInteraction(ll.ID, DNSInteraction(fmt.Sprintf("l%d", i), "1.2.3.4", "q", "A"))
+	}
+
+	// Each store trims from 5 down to 2, so 3 removed per store.
+	if n := c.EnforcePerHookLimit(2); n != 6 {
+		t.Errorf("expected 6 interactions trimmed across both stores, got %d", n)
+	}
+	if got := c.PollInteractions(eph.ID); len(got) != 2 {
+		t.Errorf("expected ephemeral hook trimmed to 2, got %d", len(got))
+	}
+	if got := c.PollInteractions(ll.ID); len(got) != 2 {
+		t.Errorf("expected long-lived hook trimmed to 2, got %d", len(got))
+	}
+}
+
+func TestComposite_EvictByMemoryPressureMemoryOnly(t *testing.T) {
+	c, sqlite := newTestComposite(t)
+
+	// Drive the in-memory store above the pressure threshold deterministically.
+	c.memory.forceGC = func() {}
+	c.memory.heapInUseMB = func() int { return c.memory.Stats().HooksActive * 50 }
+
+	eph := c.CreateHook("example.com", CreateOptions{TTL: ephemeralTTL})
+	ll := c.CreateHook("example.com", CreateOptions{TTL: ephemeralTTL + time.Hour})
+	c.AddInteraction(ll.ID, DNSInteraction("l1", "1.2.3.4", "q", "A"))
+
+	res := c.EvictByMemoryPressure(50) // threshold 45 MB; one ephemeral hook = 50 MB
+	if !res.Triggered {
+		t.Error("expected memory-pressure eviction to trigger")
+	}
+	if _, ok := c.GetHook(eph.ID); ok {
+		t.Error("expected ephemeral hook evicted under memory pressure")
+	}
+	// Long-lived data lives on disk and is never touched by memory-pressure eviction.
+	if !sqlite.Has(ll.ID) {
+		t.Error("expected long-lived hook to survive memory-pressure eviction")
+	}
+}
+
 func TestComposite_ReloadAfterRestart(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	path := filepath.Join(t.TempDir(), "longlived.db")
