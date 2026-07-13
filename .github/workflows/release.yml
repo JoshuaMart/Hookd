@@ -21,7 +21,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: "1.26"
-          cache: true
+          cache: false
 
       - name: Build binaries
         working-directory: ./server
@@ -44,7 +44,7 @@ jobs:
           sha256sum hookd-* > checksums.txt
 
       - name: Create Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           files: |
             server/hookd-linux-amd64
