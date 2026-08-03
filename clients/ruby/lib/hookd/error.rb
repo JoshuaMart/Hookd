@@ -15,4 +15,7 @@ module Hookd
 
   # Raised when the server returns a 5xx error
   class ServerError < Error; end
+
+  # Raised when a response exceeds the client's size limit
+  class ResponseTooLargeError < Error; end
 end

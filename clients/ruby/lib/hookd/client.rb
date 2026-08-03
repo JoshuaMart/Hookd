@@ -6,11 +6,21 @@ require 'json'
 module Hookd
   # HTTP client for interacting with Hookd server
   class Client
-    attr_reader :server, :token
+    # Caps the response payload the client will materialise as a String. A poll
+    # can legitimately return many interactions carrying full request bodies, so
+    # the default is generous; it exists to stop a misdirected or hostile
+    # endpoint from exhausting the calling process. Zero or less disables it.
+    DEFAULT_MAX_RESPONSE_BYTES = 64 * 1024 * 1024
 
-    def initialize(server:, token:)
+    # How much of an error response is quoted back in the raised message.
+    ERROR_BODY_EXCERPT_BYTES = 1024
+
+    attr_reader :server, :token, :max_response_bytes
+
+    def initialize(server:, token:, max_response_bytes: DEFAULT_MAX_RESPONSE_BYTES)
       @server = server
       @token = token
+      @max_response_bytes = max_response_bytes
       @http = HTTPX.with(
         headers: { 'X-API-Key' => token },
         timeout: {
@@ -170,24 +180,50 @@ module Hookd
         raise ConnectionError, "Connection failed: #{error.message}"
       end
 
-      body = response.body.to_s
-
       case response.status
       when 200, 201
-        raise Error, 'Empty response body from server' if body.nil? || body.empty?
-
-        JSON.parse(body)
+        parse_body(response)
       when 401
-        raise AuthenticationError, "Authentication failed: #{body}"
+        raise AuthenticationError, "Authentication failed: #{error_excerpt(response)}"
       when 404
-        raise NotFoundError, "Resource not found: #{body}"
+        raise NotFoundError, "Resource not found: #{error_excerpt(response)}"
       when 500..599
-        raise ServerError, "Server error (#{response.status}): #{body}"
+        raise ServerError, "Server error (#{response.status}): #{error_excerpt(response)}"
       else
-        raise Error, "Unexpected response (#{response.status}): #{body}"
+        raise Error, "Unexpected response (#{response.status}): #{error_excerpt(response)}"
       end
+    end
+
+    def parse_body(response)
+      body = read_body(response, @max_response_bytes)
+      raise Error, 'Empty response body from server' if body.empty?
+
+      JSON.parse(body)
     rescue JSON::ParserError => e
       raise Error, "Invalid JSON response: #{e.message}"
+    end
+
+    # Accumulates the payload chunk by chunk and stops at the ceiling, so a
+    # hostile or misdirected endpoint never becomes an unbounded String. Past the
+    # ceiling it raises, or returns a truncated slice when truncate is set.
+    def read_body(response, limit, truncate: false)
+      return response.body.to_s if limit <= 0
+
+      body = nil
+      response.body.each do |chunk|
+        # Seed from the first chunk to keep the payload's own encoding.
+        body = body ? body << chunk : chunk.dup
+        next if body.bytesize <= limit
+        return body.byteslice(0, limit).scrub if truncate
+
+        raise ResponseTooLargeError, "Response exceeds the #{limit} byte limit"
+      end
+      body || ''
+    end
+
+    # A large error page must not become a large exception message.
+    def error_excerpt(response)
+      read_body(response, ERROR_BODY_EXCERPT_BYTES, truncate: true)
     end
   end
 end
