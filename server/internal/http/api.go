@@ -436,21 +436,26 @@ func respondJSON(w http.ResponseWriter, statusCode int, data interface{}) {
 	}
 }
 
+// defaultMaxCaptureBodyBytes bounds a captured body when the config value is unset.
+const defaultMaxCaptureBodyBytes = 1 << 20 // 1 MiB
+
 // CaptureHandler handles wildcard HTTP requests
 type CaptureHandler struct {
-	storage     storage.Manager
-	domain      string
-	logger      *slog.Logger
-	idGenerator func() string
+	storage      storage.Manager
+	domain       string
+	logger       *slog.Logger
+	idGenerator  func() string
+	maxBodyBytes int
 }
 
 // NewCaptureHandler creates a new capture handler
-func NewCaptureHandler(storage storage.Manager, domain string, logger *slog.Logger, idGenerator func() string) *CaptureHandler {
+func NewCaptureHandler(storage storage.Manager, domain string, logger *slog.Logger, idGenerator func() string, maxBodyBytes int) *CaptureHandler {
 	return &CaptureHandler{
-		storage:     storage,
-		domain:      domain,
-		logger:      logger,
-		idGenerator: idGenerator,
+		storage:      storage,
+		domain:       domain,
+		logger:       logger,
+		idGenerator:  idGenerator,
+		maxBodyBytes: maxBodyBytes,
 	}
 }
 
@@ -473,13 +478,23 @@ func (h *CaptureHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Read body (with size limit)
-	body, err := io.ReadAll(io.LimitReader(r.Body, 10*1024*1024)) // 10MB limit
+	limit := h.maxBodyBytes
+	if limit <= 0 {
+		limit = defaultMaxCaptureBodyBytes
+	}
+
+	// Read one byte past the cap to tell a body that just fits from one that was
+	// cut. An oversized body is truncated rather than rejected: the interaction
+	// itself is the signal worth keeping, and the caller sees the cut through the
+	// truncated flag.
+	raw, err := io.ReadAll(io.LimitReader(r.Body, int64(limit)+1))
 	if err != nil {
 		h.logger.Error("failed to read request body", "error", err)
-		body = []byte{}
+		raw = []byte{}
 	}
 	defer r.Body.Close()
+
+	body, truncated := storage.TruncateBody(string(raw), limit)
 
 	// Extract headers
 	headers := make(map[string]string)
@@ -497,8 +512,11 @@ func (h *CaptureHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		r.Method,
 		r.URL.Path,
 		headers,
-		string(body),
+		body,
 	)
+	if truncated {
+		interaction.Data["truncated"] = true
+	}
 
 	// Store interaction
 	h.storage.AddInteraction(hookID, interaction)

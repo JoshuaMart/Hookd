@@ -485,7 +485,7 @@ func TestNewPublicServer_Deadlines(t *testing.T) {
 func TestRouteByHost(t *testing.T) {
 	idGen := func() string { return "test-id" }
 	manager := storage.NewMemoryManager(idGen)
-	capture := NewCaptureHandler(manager, "example.com", slog.Default(), idGen)
+	capture := NewCaptureHandler(manager, "example.com", slog.Default(), idGen, 0)
 
 	apiMux := http.NewServeMux()
 	apiMux.HandleFunc("/register", func(w http.ResponseWriter, r *http.Request) {

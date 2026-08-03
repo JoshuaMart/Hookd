@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	_ "modernc.org/sqlite" // pure-Go SQLite driver (no cgo, cross-compiles cleanly)
 )
@@ -240,14 +239,14 @@ func (m *SQLiteManager) AddInteraction(hookID string, interaction *Interaction) 
 // boundary so the stored body is never left with a mangled trailing rune.
 func (m *SQLiteManager) truncateBody(interaction *Interaction) {
 	body, ok := interaction.Data["body"].(string)
-	if !ok || len(body) <= m.maxBodyBytes {
+	if !ok {
 		return
 	}
-	cut := m.maxBodyBytes
-	for cut > 0 && !utf8.RuneStart(body[cut]) {
-		cut--
+	cut, truncated := TruncateBody(body, m.maxBodyBytes)
+	if !truncated {
+		return
 	}
-	interaction.Data["body"] = body[:cut]
+	interaction.Data["body"] = cut
 	interaction.Data["truncated"] = true
 }
 

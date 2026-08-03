@@ -372,7 +372,7 @@ func TestCaptureHandler_ServeHTTP(t *testing.T) {
 	manager := storage.NewMemoryManager(idGen)
 	logger := slog.Default()
 
-	handler := NewCaptureHandler(manager, "example.com", logger, idGen)
+	handler := NewCaptureHandler(manager, "example.com", logger, idGen, 0)
 
 	// Create a hook first
 	hook := manager.CreateHook("example.com", storage.CreateOptions{})
@@ -528,7 +528,7 @@ func TestCaptureHandler_LargeBody(t *testing.T) {
 	manager := storage.NewMemoryManager(idGen)
 	logger := slog.Default()
 
-	handler := NewCaptureHandler(manager, "example.com", logger, idGen)
+	handler := NewCaptureHandler(manager, "example.com", logger, idGen, 0)
 	hook := manager.CreateHook("example.com", storage.CreateOptions{})
 
 	// Create large body (11MB - over 10MB limit)
@@ -730,7 +730,7 @@ func TestAPIHandler_HandlePollBatch(t *testing.T) {
 func TestCaptureHandler_UnknownHookSkipsBody(t *testing.T) {
 	idGen := func() string { return "test-id" }
 	manager := storage.NewMemoryManager(idGen)
-	handler := NewCaptureHandler(manager, "example.com", slog.Default(), idGen)
+	handler := NewCaptureHandler(manager, "example.com", slog.Default(), idGen, 0)
 
 	body := &trackingReader{data: []byte(`{"payload":"x"}`)}
 	req := httptest.NewRequest(http.MethodPost, "/", body)
@@ -750,7 +750,7 @@ func TestCaptureHandler_UnknownHookSkipsBody(t *testing.T) {
 func TestCaptureHandler_KnownHookReadsBody(t *testing.T) {
 	idGen := func() string { return "test-id" }
 	manager := storage.NewMemoryManager(idGen)
-	handler := NewCaptureHandler(manager, "example.com", slog.Default(), idGen)
+	handler := NewCaptureHandler(manager, "example.com", slog.Default(), idGen, 0)
 	hook := manager.CreateHook("example.com", storage.CreateOptions{})
 
 	body := &trackingReader{data: []byte(`{"payload":"x"}`)}
@@ -844,4 +844,53 @@ func TestAPIHandler_RejectsOversizedBatch(t *testing.T) {
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("expected status 400, got %d", w.Code)
 	}
+}
+
+func TestCaptureHandler_TruncatesBody(t *testing.T) {
+	idGen := func() string { return "test-id" }
+	manager := storage.NewMemoryManager(idGen)
+	const limit = 64
+	handler := NewCaptureHandler(manager, "example.com", slog.Default(), idGen, limit)
+
+	capture := func(t *testing.T, payload string) map[string]interface{} {
+		t.Helper()
+		hook := manager.CreateHook("example.com", storage.CreateOptions{})
+
+		req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(payload))
+		req.Host = hook.ID + ".example.com"
+		handler.ServeHTTP(httptest.NewRecorder(), req)
+
+		interactions := manager.PollInteractions(hook.ID)
+		if len(interactions) != 1 {
+			t.Fatalf("expected 1 interaction, got %d", len(interactions))
+		}
+		return interactions[0].Data
+	}
+
+	t.Run("keeps a body under the cap whole", func(t *testing.T) {
+		payload := strings.Repeat("a", limit)
+		data := capture(t, payload)
+
+		if data["body"] != payload {
+			t.Errorf("expected the body kept whole, got %d bytes", len(data["body"].(string)))
+		}
+		if _, flagged := data["truncated"]; flagged {
+			t.Error("expected no truncated flag")
+		}
+	})
+
+	t.Run("cuts an oversized body and flags it", func(t *testing.T) {
+		data := capture(t, strings.Repeat("a", limit*4))
+
+		body, ok := data["body"].(string)
+		if !ok {
+			t.Fatal("expected a string body")
+		}
+		if len(body) != limit {
+			t.Errorf("expected the body cut to %d bytes, got %d", limit, len(body))
+		}
+		if data["truncated"] != true {
+			t.Error("expected the interaction flagged as truncated")
+		}
+	})
 }

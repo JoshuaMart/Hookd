@@ -106,7 +106,7 @@ func newPublicServer(addr string, handler http.Handler, logger *slog.Logger) *ht
 func (s *Server) Start(ctx context.Context) error {
 	// Create handlers
 	apiHandler := NewAPIHandler(s.storage, s.evictor, s.config.Domain, s.longLived, s.logger, s.idGenerator)
-	captureHandler := NewCaptureHandler(s.storage, s.config.Domain, s.logger, s.idGenerator)
+	captureHandler := NewCaptureHandler(s.storage, s.config.Domain, s.logger, s.idGenerator, s.evictor.MaxInteractionBodyBytes())
 
 	// Create main mux
 	mux := http.NewServeMux()

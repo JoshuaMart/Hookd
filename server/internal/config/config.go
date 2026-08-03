@@ -66,11 +66,16 @@ type APIConfig struct {
 
 // EvictionConfig holds eviction-related configuration
 type EvictionConfig struct {
-	InteractionTTL  time.Duration `mapstructure:"interaction_ttl"`
-	HookTTL         time.Duration `mapstructure:"hook_ttl"`
-	MaxPerHook      int           `mapstructure:"max_per_hook"`
-	MaxMemoryMB     int           `mapstructure:"max_memory_mb"`
-	CleanupInterval time.Duration `mapstructure:"cleanup_interval"`
+	InteractionTTL time.Duration `mapstructure:"interaction_ttl"`
+	HookTTL        time.Duration `mapstructure:"hook_ttl"`
+	MaxPerHook     int           `mapstructure:"max_per_hook"`
+	// MaxInteractionBodyBytes caps a captured HTTP body. Ephemeral interactions
+	// are held whole in memory, so together with MaxPerHook this is what bounds
+	// a single hook's footprint; it also bounds the transient allocation of every
+	// in-flight capture.
+	MaxInteractionBodyBytes int           `mapstructure:"max_interaction_body_bytes"`
+	MaxMemoryMB             int           `mapstructure:"max_memory_mb"`
+	CleanupInterval         time.Duration `mapstructure:"cleanup_interval"`
 }
 
 // LongLivedConfig holds configuration for durable, long-lived hooks. These are
@@ -116,11 +121,12 @@ func DefaultConfig() *Config {
 			},
 		},
 		Eviction: EvictionConfig{
-			InteractionTTL:  1 * time.Hour,
-			HookTTL:         24 * time.Hour,
-			MaxPerHook:      1000,
-			MaxMemoryMB:     1800,
-			CleanupInterval: 10 * time.Second,
+			InteractionTTL:          1 * time.Hour,
+			HookTTL:                 24 * time.Hour,
+			MaxPerHook:              1000,
+			MaxInteractionBodyBytes: 1 << 20, // 1 MiB
+			MaxMemoryMB:             1800,
+			CleanupInterval:         10 * time.Second,
 		},
 		Observability: ObservabilityConfig{
 			MetricsEnabled: true,
@@ -178,6 +184,10 @@ func (c *Config) Validate() error {
 
 	if c.Eviction.MaxPerHook <= 0 {
 		return fmt.Errorf("eviction.max_per_hook must be positive")
+	}
+
+	if c.Eviction.MaxInteractionBodyBytes <= 0 {
+		return fmt.Errorf("eviction.max_interaction_body_bytes must be positive")
 	}
 
 	if c.Eviction.MaxMemoryMB <= 0 {
