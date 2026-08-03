@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/caddyserver/certmagic"
 	"github.com/jomar/hookd/internal/acme"
@@ -26,6 +27,17 @@ func defaultACMEResolvers() []string {
 		"8.8.4.4:53",
 	}
 }
+
+// Deadlines for the public listeners: without them a slow request holds its
+// socket and goroutine forever. readTimeout is the loosest since a capture body
+// can reach several megabytes.
+const (
+	readHeaderTimeout = 10 * time.Second
+	readTimeout       = 30 * time.Second
+	writeTimeout      = 30 * time.Second
+	idleTimeout       = 120 * time.Second
+	maxHeaderBytes    = 64 * 1024
+)
 
 // Server represents an HTTP/HTTPS server
 type Server struct {
@@ -53,6 +65,36 @@ func NewServer(cfg config.ServerConfig, longLived config.LongLivedConfig, storag
 	}
 }
 
+// routeByHost sends hook subdomains to the capture handler and everything else
+// to the API mux. On paths alone, a callback to /register (or /poll, /activity,
+// /metrics) would be answered by the API with a 401 and never recorded. The API
+// is addressed on the apex domain, an IP, or a proxy hostname — none of which
+// parse as a hook subdomain.
+func routeByHost(apiMux http.Handler, capture *CaptureHandler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if capture.extractHookID(r.Host) != "" {
+			capture.ServeHTTP(w, r)
+			return
+		}
+		apiMux.ServeHTTP(w, r)
+	})
+}
+
+// newPublicServer builds a listener with the shared deadline policy, so a new
+// one cannot silently inherit net/http's zero values (meaning no deadline).
+func newPublicServer(addr string, handler http.Handler, logger *slog.Logger) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: readHeaderTimeout,
+		ReadTimeout:       readTimeout,
+		WriteTimeout:      writeTimeout,
+		IdleTimeout:       idleTimeout,
+		MaxHeaderBytes:    maxHeaderBytes,
+		ErrorLog:          newSuppressedTLSLogger(logger),
+	}
+}
+
 // Start starts the HTTP/HTTPS servers
 func (s *Server) Start(ctx context.Context) error {
 	// Create handlers
@@ -76,7 +118,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.Handle("/", captureHandler)
 
 	// Apply global middleware
-	handler := RecoveryMiddleware(s.logger)(LoggingMiddleware(s.logger)(mux))
+	handler := RecoveryMiddleware(s.logger)(LoggingMiddleware(s.logger)(routeByHost(mux, captureHandler)))
 
 	errChan := make(chan error, 2)
 
@@ -151,12 +193,8 @@ func (s *Server) Start(ctx context.Context) error {
 			tlsConfig := certmagicConfig.TLSConfig()
 			tlsConfig.NextProtos = append([]string{"h2", "http/1.1"}, tlsConfig.NextProtos...)
 
-			s.httpsServer = &http.Server{
-				Addr:      fmt.Sprintf(":%d", s.config.HTTPS.Port),
-				Handler:   handler,
-				TLSConfig: tlsConfig,
-				ErrorLog:  newSuppressedTLSLogger(s.logger),
-			}
+			s.httpsServer = newPublicServer(fmt.Sprintf(":%d", s.config.HTTPS.Port), handler, s.logger)
+			s.httpsServer.TLSConfig = tlsConfig
 
 			go func() {
 				s.logger.Info("https server starting (certmagic wildcard)",
@@ -174,11 +212,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 	// Always start HTTP server on configured port
 	if s.httpServer == nil {
-		s.httpServer = &http.Server{
-			Addr:     fmt.Sprintf(":%d", s.config.HTTP.Port),
-			Handler:  handler,
-			ErrorLog: newSuppressedTLSLogger(s.logger),
-		}
+		s.httpServer = newPublicServer(fmt.Sprintf(":%d", s.config.HTTP.Port), handler, s.logger)
 
 		go func() {
 			s.logger.Info("http server starting", "port", s.config.HTTP.Port)
