@@ -471,13 +471,13 @@ func (h *CaptureHandler) extractHookID(host string) string {
 		host = host[:idx]
 	}
 
+	// Hostnames are case-insensitive and may arrive in absolute form, so neither
+	// varying the casing nor a trailing dot may hide a callback from capture.
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+
 	// Check if it's a subdomain of our domain
-	suffix := "." + h.domain
+	suffix := "." + strings.ToLower(h.domain)
 	if !strings.HasSuffix(host, suffix) {
-		// Check if it's the exact domain (no subdomain)
-		if host == h.domain {
-			return ""
-		}
 		return ""
 	}
 

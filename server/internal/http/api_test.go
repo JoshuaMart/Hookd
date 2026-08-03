@@ -441,6 +441,11 @@ func TestCaptureHandler_ExtractHookID(t *testing.T) {
 		{"invalid domain", "other.com", ""},
 		{"multi-level subdomain", "sub.abc123.example.com", "sub"},
 		{"no subdomain", "example.com:80", ""},
+		// Neither casing nor a trailing dot may hide a callback from capture.
+		{"mixed-case host", "AbC123.ExAmPlE.CoM", "abc123"},
+		{"uppercase host with port", "ABC123.EXAMPLE.COM:8080", "abc123"},
+		{"trailing dot", "abc123.example.com.", "abc123"},
+		{"mixed-case exact domain", "ExAmPlE.CoM", ""},
 	}
 
 	for _, tt := range tests {
