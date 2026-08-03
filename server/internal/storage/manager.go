@@ -16,8 +16,8 @@ type Manager interface {
 	// GetHook retrieves a hook by ID
 	GetHook(id string) (*Hook, bool)
 
-	// Has reports whether a hook exists, without loading it. Backends answer it
-	// from memory so the capture path never hits disk to decide.
+	// Has reports whether a hook exists, answered from memory so the capture
+	// path never hits disk to decide.
 	Has(id string) bool
 
 	// AddInteraction adds an interaction to a hook. Interactions for unknown

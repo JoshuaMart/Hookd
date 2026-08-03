@@ -5,9 +5,8 @@ import (
 	"unicode/utf8"
 )
 
-// TruncateBody caps body at max bytes, cutting on a UTF-8 rune boundary so the
-// result never ends in a mangled trailing rune, and reports whether it cut. A
-// max of zero or less means no limit.
+// TruncateBody caps body at max bytes, cutting on a UTF-8 rune boundary, and
+// reports whether it cut. A max of zero or less means no limit.
 func TruncateBody(body string, max int) (string, bool) {
 	if max <= 0 || len(body) <= max {
 		return body, false

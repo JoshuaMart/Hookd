@@ -44,9 +44,8 @@ func defaultTestConfig(dbPath string) *config.Config {
 	cfg.Server.Domain = "hookd.test.local"
 	cfg.Server.DNS.Enabled = true
 	cfg.Server.DNS.Port = 15353 // Use non-privileged port for testing
-	// Pin both to loopback: the listener has to be where the test queries it, and
-	// an explicit public IP keeps A answers off the auto-detection path, which
-	// needs a route to the outside.
+	// Loopback both: the listener must be where the test queries it, and an
+	// explicit public IP keeps startup off the auto-detection path.
 	cfg.Server.DNS.BindAddress = "127.0.0.1"
 	cfg.Server.PublicIP = "127.0.0.1"
 	cfg.Server.HTTP.Port = 18080

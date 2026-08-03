@@ -12,10 +12,8 @@ import (
 
 const Version = "1.1.0"
 
-// DefaultMaxResponseBytes bounds how much of a response body the client will
-// buffer. A poll can legitimately return many interactions carrying full request
-// bodies, so the default is generous; it exists to stop a misdirected or hostile
-// endpoint from driving the calling process out of memory.
+// DefaultMaxResponseBytes caps the buffered response body. It is generous
+// because a poll can legitimately return many interactions with full bodies.
 const DefaultMaxResponseBytes int64 = 64 << 20 // 64 MiB
 
 // Client communicates with a Hookd server.
@@ -121,8 +119,7 @@ type ConnectionError struct {
 
 func (e *ConnectionError) Error() string { return e.Message }
 
-// ResponseTooLargeError indicates the server returned more data than the client
-// is willing to buffer. Raise the ceiling with SetMaxResponseBytes.
+// ResponseTooLargeError indicates a response above the client's size limit.
 type ResponseTooLargeError struct {
 	Message string
 	Limit   int64
@@ -145,8 +142,7 @@ func NewClient(server, token string) *Client {
 	}
 }
 
-// SetMaxResponseBytes overrides how much of a response body the client buffers.
-// A value of zero or less disables the bound.
+// SetMaxResponseBytes overrides the response cap. Zero or less disables it.
 func (c *Client) SetMaxResponseBytes(n int64) {
 	c.maxResponseBytes = n
 }
@@ -353,8 +349,7 @@ func (c *Client) doRequest(req *http.Request) (map[string]any, error) {
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	// Status is decided before the body is touched: none of these errors quote
-	// it, so a failing response never has to be buffered at all.
+	// Status first: none of these errors quote the body, so it stays unread.
 	switch {
 	case resp.StatusCode == 401:
 		return nil, &AuthenticationError{Message: "authentication failed", StatusCode: 401}
@@ -366,8 +361,7 @@ func (c *Client) doRequest(req *http.Request) (map[string]any, error) {
 		return nil, &Error{Message: fmt.Sprintf("unexpected status: %d", resp.StatusCode), StatusCode: resp.StatusCode}
 	}
 
-	// Read one byte past the ceiling so an over-limit response is detected
-	// without buffering the whole of it.
+	// One byte past the ceiling is enough to detect an over-limit response.
 	body := io.Reader(resp.Body)
 	if c.maxResponseBytes > 0 {
 		body = io.LimitReader(resp.Body, c.maxResponseBytes+1)

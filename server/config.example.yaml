@@ -63,9 +63,7 @@ eviction:
   max_per_hook: 1000
 
   # Captured HTTP bodies are truncated to this many bytes (the interaction is
-  # kept and flagged with "truncated": true). Ephemeral bodies are held whole in
-  # memory, so with max_per_hook this bounds a hook's footprint; lower it if
-  # max_memory_mb is small.
+  # kept, flagged with "truncated": true). Lower it if max_memory_mb is small.
   max_interaction_body_bytes: 1048576
 
   # Maximum memory usage in MB

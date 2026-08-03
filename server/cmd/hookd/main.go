@@ -58,11 +58,8 @@ func main() {
 	// Setup logger
 	logger := setupLogger(cfg.Observability)
 
-	// Ensure auth token exists. The token is the sole authorization boundary for
-	// the control plane, so it stays out of the structured logs — those are
-	// commonly shipped to aggregators whose access is broader than a secret
-	// store's. A generated one is printed once on stderr instead, and both paths
-	// log a fingerprint so a deployment can be correlated without the secret.
+	// The token stays out of the structured logs, which are commonly shipped to
+	// aggregators; a generated one goes to stderr once.
 	token, generated := cfg.EnsureAuthToken()
 	if generated {
 		fmt.Fprintf(os.Stderr, "Generated API token: %s\n"+
@@ -182,8 +179,7 @@ func main() {
 	logger.Info("hookd stopped")
 }
 
-// tokenFingerprint returns a short, non-reversible identifier for a token, so
-// logs can name which credential is in use without disclosing it.
+// tokenFingerprint names which credential is in use without disclosing it.
 func tokenFingerprint(token string) string {
 	sum := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(sum[:4])

@@ -296,8 +296,7 @@ func (s *Server) extractHookID(qname string) string {
 	// Remove trailing dot
 	qname = strings.TrimSuffix(qname, ".")
 
-	// Resolvers randomize qname casing (DNS-0x20), so matching on the wire
-	// casing would silently drop legitimate queries.
+	// Resolvers randomize qname casing (DNS-0x20).
 	qname = strings.ToLower(qname)
 
 	// Check if it's a subdomain of our domain

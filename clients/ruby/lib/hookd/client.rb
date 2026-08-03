@@ -6,10 +6,8 @@ require 'json'
 module Hookd
   # HTTP client for interacting with Hookd server
   class Client
-    # Caps the response payload the client will materialise as a String. A poll
-    # can legitimately return many interactions carrying full request bodies, so
-    # the default is generous; it exists to stop a misdirected or hostile
-    # endpoint from exhausting the calling process. Zero or less disables it.
+    # Caps the payload materialised as a String. Generous, since a poll can
+    # return many interactions with full bodies. Zero or less disables it.
     DEFAULT_MAX_RESPONSE_BYTES = 64 * 1024 * 1024
 
     # How much of an error response is quoted back in the raised message.
@@ -203,9 +201,8 @@ module Hookd
       raise Error, "Invalid JSON response: #{e.message}"
     end
 
-    # Accumulates the payload chunk by chunk and stops at the ceiling, so a
-    # hostile or misdirected endpoint never becomes an unbounded String. Past the
-    # ceiling it raises, or returns a truncated slice when truncate is set.
+    # Accumulates chunk by chunk and stops at the ceiling, raising unless
+    # truncate is set, in which case it returns the bounded slice.
     def read_body(response, limit, truncate: false)
       return response.body.to_s if limit <= 0
 

@@ -29,8 +29,7 @@ func defaultACMEResolvers() []string {
 }
 
 // Deadlines for the public listeners: without them a slow request holds its
-// socket and goroutine forever. readTimeout is the loosest since a capture body
-// can reach several megabytes.
+// socket and goroutine forever.
 const (
 	readHeaderTimeout = 10 * time.Second
 	readTimeout       = 30 * time.Second
@@ -72,11 +71,9 @@ func NewServer(cfg config.ServerConfig, longLived config.LongLivedConfig, obs co
 	}
 }
 
-// routeByHost sends hook subdomains to the capture handler and everything else
-// to the API mux. On paths alone, a callback to /register (or /poll, /activity,
-// /metrics) would be answered by the API with a 401 and never recorded. The API
-// is addressed on the apex domain, an IP, or a proxy hostname — none of which
-// parse as a hook subdomain.
+// routeByHost sends hook subdomains to the capture handler, everything else to
+// the API mux. On paths alone a callback to /register would get a 401 from the
+// API and never be recorded.
 func routeByHost(apiMux http.Handler, capture *CaptureHandler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if capture.extractHookID(r.Host) != "" {
@@ -87,8 +84,8 @@ func routeByHost(apiMux http.Handler, capture *CaptureHandler) http.Handler {
 	})
 }
 
-// newPublicServer builds a listener with the shared deadline policy, so a new
-// one cannot silently inherit net/http's zero values (meaning no deadline).
+// newPublicServer applies the shared deadline policy, so a new listener cannot
+// inherit net/http's zero values (meaning no deadline).
 func newPublicServer(addr string, handler http.Handler, logger *slog.Logger) *http.Server {
 	return &http.Server{
 		Addr:              addr,
@@ -111,10 +108,8 @@ func (s *Server) Start(ctx context.Context) error {
 	// Create main mux
 	mux := http.NewServeMux()
 
-	// API endpoints. TLS is enforced ahead of auth so a plaintext request is
-	// refused without its token ever being examined. The condition mirrors the
-	// one guarding the HTTPS listener below: enforcing it while no HTTPS server
-	// runs would leave the API unreachable.
+	// API endpoints. TLS is enforced ahead of auth, on the same condition as the
+	// HTTPS listener below — enforcing it without one would strand the API.
 	authMW := AuthMiddleware(s.config.API.AuthToken, s.logger)
 	tlsMW := RequireTLSMiddleware(s.config.HTTPS.Enabled && s.config.HTTPS.AutoCert, s.logger)
 	apiMW := func(h http.Handler) http.Handler { return tlsMW(authMW(h)) }
@@ -124,8 +119,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.Handle("/poll/", apiMW(http.HandlerFunc(apiHandler.HandlePoll)))
 	mux.Handle("/activity", apiMW(http.HandlerFunc(apiHandler.HandleActivity)))
 
-	// Metrics endpoint (no auth). Left unmounted when disabled, so the config
-	// flag actually withholds the hook, interaction, eviction and memory counts.
+	// Metrics endpoint (no auth), left unmounted when disabled.
 	if s.observability.MetricsEnabled {
 		mux.HandleFunc("/metrics", apiHandler.HandleMetrics)
 	}
@@ -243,8 +237,7 @@ func (s *Server) Start(ctx context.Context) error {
 	case <-ctx.Done():
 		s.logger.Info("http server shutting down")
 
-		// Draining is best-effort: a client that never finishes its request must
-		// not keep the process alive.
+		// Draining is best-effort: a stalled client must not block the exit.
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancel()
 

@@ -590,8 +590,7 @@ func TestServer_MetricsDisabled(t *testing.T) {
 		t.Fatalf("failed to read response: %v", err)
 	}
 
-	// The route is unmounted, so the request falls through to the capture
-	// catch-all and must not disclose any counter.
+	// The request falls through to the capture catch-all, disclosing nothing.
 	for _, leak := range []string{"hooks", "interactions", "evictions", "memory"} {
 		if strings.Contains(string(body), leak) {
 			t.Errorf("expected no metrics disclosed, found %q in %q", leak, body)

@@ -18,8 +18,7 @@ func TestTruncateBody(t *testing.T) {
 		{"over the cap", "hello world", 5, "hello", true},
 		{"no cap", "hello world", 0, "hello world", false},
 		{"negative cap", "hello world", -1, "hello world", false},
-		// Cutting mid-rune would leave a mangled trailing byte, so the cut backs
-		// up to the rune start — here dropping the 3-byte € entirely.
+		// The cut backs up to the rune start, dropping the 3-byte € entirely.
 		{"cuts on a rune boundary", "ab€cd", 4, "ab", true},
 	}
 

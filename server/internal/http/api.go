@@ -20,9 +20,7 @@ import (
 // defaultMaxMetadataBytes bounds hook metadata when the config value is unset.
 const defaultMaxMetadataBytes = 8192
 
-// maxAPIBodyBytes caps the request body of the authenticated endpoints. Their
-// payloads are a small JSON object or a list of hook IDs, so this is far above
-// any legitimate request.
+// maxAPIBodyBytes caps the request body of the authenticated endpoints.
 const maxAPIBodyBytes = 1 << 20 // 1 MiB
 
 // maxPollBatch caps the hook IDs accepted by POST /poll.
@@ -62,8 +60,7 @@ func (h *APIHandler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxAPIBodyBytes)
 
 	// Only parse the body if it exists. A malformed body falls back to a single
-	// ephemeral hook, preserving the historical lenient behavior; an oversized
-	// one is rejected rather than silently treated as a default registration.
+	// ephemeral hook, preserving the historical lenient behavior.
 	var req registerRequest
 	if r.ContentLength > 0 {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -411,8 +408,7 @@ func (h *APIHandler) HandleMetrics(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, metrics)
 }
 
-// isTooLarge reports whether a decode failed because the body exceeded the
-// MaxBytesReader limit rather than because it was malformed.
+// isTooLarge distinguishes an over-limit body from a malformed one.
 func isTooLarge(err error) bool {
 	var maxErr *http.MaxBytesError
 	return errors.As(err, &maxErr)
@@ -471,8 +467,7 @@ func (h *CaptureHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Storage drops interactions for unknown hooks anyway; checking first keeps
-	// an unregistered subdomain from costing a full body read and copy.
+	// Storage drops unknown hooks anyway; checking first skips the body read.
 	if !h.storage.Has(hookID) {
 		w.WriteHeader(http.StatusOK)
 		return
@@ -483,10 +478,8 @@ func (h *CaptureHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		limit = defaultMaxCaptureBodyBytes
 	}
 
-	// Read one byte past the cap to tell a body that just fits from one that was
-	// cut. An oversized body is truncated rather than rejected: the interaction
-	// itself is the signal worth keeping, and the caller sees the cut through the
-	// truncated flag.
+	// One byte past the cap tells a body that just fits from one that was cut.
+	// Truncating rather than rejecting keeps the interaction, which is the signal.
 	raw, err := io.ReadAll(io.LimitReader(r.Body, int64(limit)+1))
 	if err != nil {
 		h.logger.Error("failed to read request body", "error", err)
@@ -539,8 +532,7 @@ func (h *CaptureHandler) extractHookID(host string) string {
 		host = host[:idx]
 	}
 
-	// Hostnames are case-insensitive and may arrive in absolute form, so neither
-	// varying the casing nor a trailing dot may hide a callback from capture.
+	// Hostnames are case-insensitive and may arrive with a trailing dot.
 	host = strings.ToLower(strings.TrimSuffix(host, "."))
 
 	// Check if it's a subdomain of our domain

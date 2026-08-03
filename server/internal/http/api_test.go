@@ -795,8 +795,7 @@ func TestAPIHandler_RejectsOversizedBodies(t *testing.T) {
 	evictor := eviction.NewEvictor(manager, config.EvictionConfig{HookTTL: time.Hour}, slog.Default())
 	handler := NewAPIHandler(manager, evictor, "example.com", config.LongLivedConfig{}, slog.Default(), idGen)
 
-	// Valid JSON, so the decoder reads past the limit instead of bailing out on
-	// the first byte.
+	// Valid JSON, so the decoder reads past the limit instead of failing early.
 	filler := strings.Repeat("a", maxAPIBodyBytes)
 
 	t.Run("register", func(t *testing.T) {

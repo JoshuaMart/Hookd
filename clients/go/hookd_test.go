@@ -561,8 +561,7 @@ func TestInteractionHelpers(t *testing.T) {
 func TestClient_RejectsOversizedResponse(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		// A well-formed but endless JSON string: the client must stop reading
-		// instead of buffering whatever the endpoint chooses to send.
+		// Well-formed but endless: the client must stop reading on its own.
 		_, _ = w.Write([]byte(`{"interactions":"`))
 		chunk := bytes.Repeat([]byte("a"), 4096)
 		for i := 0; i < 64; i++ {

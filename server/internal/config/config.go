@@ -69,10 +69,8 @@ type EvictionConfig struct {
 	InteractionTTL time.Duration `mapstructure:"interaction_ttl"`
 	HookTTL        time.Duration `mapstructure:"hook_ttl"`
 	MaxPerHook     int           `mapstructure:"max_per_hook"`
-	// MaxInteractionBodyBytes caps a captured HTTP body. Ephemeral interactions
-	// are held whole in memory, so together with MaxPerHook this is what bounds
-	// a single hook's footprint; it also bounds the transient allocation of every
-	// in-flight capture.
+	// MaxInteractionBodyBytes caps a captured HTTP body. Ephemeral bodies are
+	// held whole in memory, so with MaxPerHook this bounds a hook's footprint.
 	MaxInteractionBodyBytes int           `mapstructure:"max_interaction_body_bytes"`
 	MaxMemoryMB             int           `mapstructure:"max_memory_mb"`
 	CleanupInterval         time.Duration `mapstructure:"cleanup_interval"`

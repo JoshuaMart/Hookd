@@ -6,15 +6,10 @@ import (
 	"net/http"
 )
 
-// RequireTLSMiddleware refuses authenticated API requests that arrive in
-// plaintext, so a client pointed at http:// fails once instead of leaking its
-// token on every call. Redirecting would be worse than useless here: the
-// credential is already on the wire by the time the response is written, and a
-// client that follows the redirect keeps its http:// base URL, leaking again on
-// every request with nothing to show for it.
-//
-// enforce must only be set when an HTTPS listener is actually serving,
-// otherwise this would make the API unreachable.
+// RequireTLSMiddleware refuses authenticated API requests sent in plaintext.
+// Redirecting instead would leak the token on every call — it is already on the
+// wire — since clients keep their http:// base URL. enforce must only be set
+// when an HTTPS listener is actually serving, or the API becomes unreachable.
 func RequireTLSMiddleware(enforce bool, logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -23,8 +18,7 @@ func RequireTLSMiddleware(enforce bool, logger *slog.Logger) func(http.Handler) 
 				return
 			}
 
-			// A request carrying a key just exposed it; one without is a bot
-			// probing the port and not worth a warning.
+			// A request carrying a key just exposed it; one without is a bot.
 			if r.Header.Get("X-API-Key") != "" {
 				logger.Warn("api key received over plaintext, consider rotating it",
 					"path", r.URL.Path, "client", r.RemoteAddr)

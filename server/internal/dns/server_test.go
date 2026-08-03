@@ -486,8 +486,7 @@ func TestServer_StartContextCancelled(t *testing.T) {
 	}
 }
 
-// A 0x20-randomized query must be recorded, and its answer must echo the qname
-// as sent for the resolver's 0x20 check to pass.
+// A 0x20-randomized query must be recorded, and its answer must echo the qname.
 func TestServer_HandleDNSRequest_MixedCaseQname(t *testing.T) {
 	idGen := func() string { return "test-id" }
 	manager := storage.NewMemoryManager(idGen)
