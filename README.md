@@ -90,7 +90,7 @@ server:
     autocert: true
     cache_dir: "/var/lib/hookd/certs"
   api:
-    auth_token: ""              # auto-generated if empty
+    auth_token: ""              # auto-generated if empty, printed once on stderr
 
 eviction:
   interaction_ttl: "1h"

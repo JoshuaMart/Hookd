@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"log/slog"
@@ -57,13 +58,17 @@ func main() {
 	// Setup logger
 	logger := setupLogger(cfg.Observability)
 
-	// Ensure auth token exists
+	// Ensure auth token exists. The token is the sole authorization boundary for
+	// the control plane, so it stays out of the structured logs — those are
+	// commonly shipped to aggregators whose access is broader than a secret
+	// store's. A generated one is printed once on stderr instead, and both paths
+	// log a fingerprint so a deployment can be correlated without the secret.
 	token, generated := cfg.EnsureAuthToken()
 	if generated {
-		logger.Info("auth token generated", "token", token)
-	} else {
-		logger.Info("using configured auth token")
+		fmt.Fprintf(os.Stderr, "Generated API token: %s\n"+
+			"Store it now — set server.api.auth_token to keep it across restarts.\n", token)
 	}
+	logger.Info("auth token ready", "generated", generated, "fingerprint", tokenFingerprint(token))
 
 	// Display startup banner
 	logger.Info("hookd starting",
@@ -175,6 +180,13 @@ func main() {
 	// Graceful shutdown
 	cancel()
 	logger.Info("hookd stopped")
+}
+
+// tokenFingerprint returns a short, non-reversible identifier for a token, so
+// logs can name which credential is in use without disclosing it.
+func tokenFingerprint(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:4])
 }
 
 // setupLogger creates and configures a logger
