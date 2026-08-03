@@ -12,11 +12,18 @@ import (
 
 const Version = "1.1.0"
 
+// DefaultMaxResponseBytes bounds how much of a response body the client will
+// buffer. A poll can legitimately return many interactions carrying full request
+// bodies, so the default is generous; it exists to stop a misdirected or hostile
+// endpoint from driving the calling process out of memory.
+const DefaultMaxResponseBytes int64 = 64 << 20 // 64 MiB
+
 // Client communicates with a Hookd server.
 type Client struct {
-	server     string
-	token      string
-	httpClient *http.Client
+	server           string
+	token            string
+	httpClient       *http.Client
+	maxResponseBytes int64
 }
 
 // Hook represents a registered hook with its endpoints. ExpiresAt and Metadata
@@ -114,6 +121,15 @@ type ConnectionError struct {
 
 func (e *ConnectionError) Error() string { return e.Message }
 
+// ResponseTooLargeError indicates the server returned more data than the client
+// is willing to buffer. Raise the ceiling with SetMaxResponseBytes.
+type ResponseTooLargeError struct {
+	Message string
+	Limit   int64
+}
+
+func (e *ResponseTooLargeError) Error() string { return e.Message }
+
 // NewClient creates a new Hookd client.
 func NewClient(server, token string) *Client {
 	return &Client{
@@ -125,7 +141,14 @@ func NewClient(server, token string) *Client {
 				ResponseHeaderTimeout: 10 * time.Second,
 			},
 		},
+		maxResponseBytes: DefaultMaxResponseBytes,
 	}
+}
+
+// SetMaxResponseBytes overrides how much of a response body the client buffers.
+// A value of zero or less disables the bound.
+func (c *Client) SetMaxResponseBytes(n int64) {
+	c.maxResponseBytes = n
 }
 
 // Register creates one or more ephemeral hooks on the server.
@@ -330,11 +353,8 @@ func (c *Client) doRequest(req *http.Request) (map[string]any, error) {
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, &ConnectionError{Message: fmt.Sprintf("failed to read response: %v", err)}
-	}
-
+	// Status is decided before the body is touched: none of these errors quote
+	// it, so a failing response never has to be buffered at all.
 	switch {
 	case resp.StatusCode == 401:
 		return nil, &AuthenticationError{Message: "authentication failed", StatusCode: 401}
@@ -344,6 +364,25 @@ func (c *Client) doRequest(req *http.Request) (map[string]any, error) {
 		return nil, &ServerError{Message: fmt.Sprintf("server error: %d", resp.StatusCode), StatusCode: resp.StatusCode}
 	case resp.StatusCode < 200 || resp.StatusCode >= 300:
 		return nil, &Error{Message: fmt.Sprintf("unexpected status: %d", resp.StatusCode), StatusCode: resp.StatusCode}
+	}
+
+	// Read one byte past the ceiling so an over-limit response is detected
+	// without buffering the whole of it.
+	body := io.Reader(resp.Body)
+	if c.maxResponseBytes > 0 {
+		body = io.LimitReader(resp.Body, c.maxResponseBytes+1)
+	}
+
+	respBody, err := io.ReadAll(body)
+	if err != nil {
+		return nil, &ConnectionError{Message: fmt.Sprintf("failed to read response: %v", err)}
+	}
+
+	if c.maxResponseBytes > 0 && int64(len(respBody)) > c.maxResponseBytes {
+		return nil, &ResponseTooLargeError{
+			Message: fmt.Sprintf("response exceeds %d bytes", c.maxResponseBytes),
+			Limit:   c.maxResponseBytes,
+		}
 	}
 
 	if len(respBody) == 0 {
