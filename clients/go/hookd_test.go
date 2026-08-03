@@ -1,6 +1,7 @@
 package hookd
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -554,5 +555,67 @@ func TestInteractionHelpers(t *testing.T) {
 	}
 	if !h.IsHTTP() {
 		t.Error("expected IsHTTP to be true")
+	}
+}
+
+func TestClient_RejectsOversizedResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// Well-formed but endless: the client must stop reading on its own.
+		_, _ = w.Write([]byte(`{"interactions":"`))
+		chunk := bytes.Repeat([]byte("a"), 4096)
+		for i := 0; i < 64; i++ {
+			if _, err := w.Write(chunk); err != nil {
+				return
+			}
+		}
+		_, _ = w.Write([]byte(`"}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "token")
+	client.SetMaxResponseBytes(1024)
+
+	_, err := client.Poll("abc123")
+
+	var tooLarge *ResponseTooLargeError
+	if !errors.As(err, &tooLarge) {
+		t.Fatalf("expected ResponseTooLargeError, got %#v", err)
+	}
+	if tooLarge.Limit != 1024 {
+		t.Errorf("expected limit 1024, got %d", tooLarge.Limit)
+	}
+}
+
+func TestClient_AllowsResponseUnderLimit(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"interactions":[]}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "token")
+	client.SetMaxResponseBytes(1024)
+
+	if _, err := client.Poll("abc123"); err != nil {
+		t.Fatalf("expected a response under the limit to succeed, got %v", err)
+	}
+}
+
+func TestClient_StatusErrorsBeatSizeLimit(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write(bytes.Repeat([]byte("a"), 8192))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "token")
+	client.SetMaxResponseBytes(1024)
+
+	_, err := client.Poll("abc123")
+
+	var authErr *AuthenticationError
+	if !errors.As(err, &authErr) {
+		t.Fatalf("expected AuthenticationError to win over the size limit, got %#v", err)
 	}
 }

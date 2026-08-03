@@ -16,6 +16,10 @@ type Manager interface {
 	// GetHook retrieves a hook by ID
 	GetHook(id string) (*Hook, bool)
 
+	// Has reports whether a hook exists, answered from memory so the capture
+	// path never hits disk to decide.
+	Has(id string) bool
+
 	// AddInteraction adds an interaction to a hook. Interactions for unknown
 	// hooks are silently dropped.
 	AddInteraction(hookID string, interaction *Interaction)
@@ -141,6 +145,15 @@ func (m *MemoryManager) GetHook(id string) (*Hook, bool) {
 
 	hook, exists := m.hooks[id]
 	return hook, exists
+}
+
+// Has reports whether a hook exists.
+func (m *MemoryManager) Has(id string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	_, exists := m.hooks[id]
+	return exists
 }
 
 // AddInteraction adds an interaction to a hook. Interactions for non-existent

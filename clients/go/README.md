@@ -140,7 +140,13 @@ client := hookd.NewClient(server, token)
 
 #### `NewClient(server, token string) *Client`
 
-Creates a new Hookd client with default timeouts (10s connect, 30s total).
+Creates a new Hookd client with default timeouts (10s connect, 30s total) and a
+64 MiB cap on buffered response bodies.
+
+#### `(*Client) SetMaxResponseBytes(n int64)`
+
+Overrides the response size cap. A value of zero or less disables it. Exceeding
+the cap returns a `*ResponseTooLargeError`.
 
 #### `(*Client) Register(count int) ([]Hook, error)`
 
@@ -269,6 +275,8 @@ if err != nil {
         fmt.Println("Server error")
     case *hookd.ConnectionError:
         fmt.Println("Connection failed")
+    case *hookd.ResponseTooLargeError:
+        fmt.Println("Response exceeded the size cap")
     default:
         fmt.Printf("Error: %v\n", err)
     }

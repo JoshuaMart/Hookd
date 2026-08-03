@@ -296,8 +296,11 @@ func (s *Server) extractHookID(qname string) string {
 	// Remove trailing dot
 	qname = strings.TrimSuffix(qname, ".")
 
+	// Resolvers randomize qname casing (DNS-0x20).
+	qname = strings.ToLower(qname)
+
 	// Check if it's a subdomain of our domain
-	suffix := "." + s.domain
+	suffix := "." + strings.ToLower(s.domain)
 	if !strings.HasSuffix(qname, suffix) {
 		return ""
 	}

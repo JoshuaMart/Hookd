@@ -140,6 +140,11 @@ func (e *Evictor) HookTTL() time.Duration {
 	return e.config.HookTTL
 }
 
+// MaxInteractionBodyBytes returns the configured cap on a captured HTTP body.
+func (e *Evictor) MaxInteractionBodyBytes() int {
+	return e.config.MaxInteractionBodyBytes
+}
+
 // GetMetrics returns a snapshot of the eviction metrics
 func (e *Evictor) GetMetrics() Metrics {
 	return Metrics{

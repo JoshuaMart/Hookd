@@ -20,6 +20,12 @@ import (
 // defaultMaxMetadataBytes bounds hook metadata when the config value is unset.
 const defaultMaxMetadataBytes = 8192
 
+// maxAPIBodyBytes caps the request body of the authenticated endpoints.
+const maxAPIBodyBytes = 1 << 20 // 1 MiB
+
+// maxPollBatch caps the hook IDs accepted by POST /poll.
+const maxPollBatch = 1000
+
 // APIHandler handles API endpoints
 type APIHandler struct {
 	storage     storage.Manager
@@ -51,11 +57,17 @@ func (h *APIHandler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, maxAPIBodyBytes)
+
 	// Only parse the body if it exists. A malformed body falls back to a single
 	// ephemeral hook, preserving the historical lenient behavior.
 	var req registerRequest
 	if r.ContentLength > 0 {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			if isTooLarge(err) {
+				respondTooLarge(w)
+				return
+			}
 			req = registerRequest{}
 		}
 	}
@@ -231,10 +243,16 @@ func (h *APIHandler) HandlePollBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, maxAPIBodyBytes)
+
 	// Parse request body as array of hook IDs
 	var hookIDs []string
 
 	if err := json.NewDecoder(r.Body).Decode(&hookIDs); err != nil {
+		if isTooLarge(err) {
+			respondTooLarge(w)
+			return
+		}
 		respondJSON(w, http.StatusBadRequest, map[string]string{
 			"error": "Invalid request body",
 		})
@@ -245,6 +263,14 @@ func (h *APIHandler) HandlePollBatch(w http.ResponseWriter, r *http.Request) {
 	if len(hookIDs) == 0 {
 		respondJSON(w, http.StatusBadRequest, map[string]string{
 			"error": "hook_ids cannot be empty",
+		})
+		return
+	}
+
+	// The result map is sized to the request, so the batch is bounded too.
+	if len(hookIDs) > maxPollBatch {
+		respondJSON(w, http.StatusBadRequest, map[string]string{
+			"error": fmt.Sprintf("hook_ids must not exceed %d entries", maxPollBatch),
 		})
 		return
 	}
@@ -382,6 +408,19 @@ func (h *APIHandler) HandleMetrics(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, metrics)
 }
 
+// isTooLarge distinguishes an over-limit body from a malformed one.
+func isTooLarge(err error) bool {
+	var maxErr *http.MaxBytesError
+	return errors.As(err, &maxErr)
+}
+
+// respondTooLarge rejects an oversized request body.
+func respondTooLarge(w http.ResponseWriter) {
+	respondJSON(w, http.StatusRequestEntityTooLarge, map[string]string{
+		"error": fmt.Sprintf("request body must not exceed %d bytes", maxAPIBodyBytes),
+	})
+}
+
 // respondJSON writes a JSON response
 func respondJSON(w http.ResponseWriter, statusCode int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
@@ -393,21 +432,26 @@ func respondJSON(w http.ResponseWriter, statusCode int, data interface{}) {
 	}
 }
 
+// defaultMaxCaptureBodyBytes bounds a captured body when the config value is unset.
+const defaultMaxCaptureBodyBytes = 1 << 20 // 1 MiB
+
 // CaptureHandler handles wildcard HTTP requests
 type CaptureHandler struct {
-	storage     storage.Manager
-	domain      string
-	logger      *slog.Logger
-	idGenerator func() string
+	storage      storage.Manager
+	domain       string
+	logger       *slog.Logger
+	idGenerator  func() string
+	maxBodyBytes int
 }
 
 // NewCaptureHandler creates a new capture handler
-func NewCaptureHandler(storage storage.Manager, domain string, logger *slog.Logger, idGenerator func() string) *CaptureHandler {
+func NewCaptureHandler(storage storage.Manager, domain string, logger *slog.Logger, idGenerator func() string, maxBodyBytes int) *CaptureHandler {
 	return &CaptureHandler{
-		storage:     storage,
-		domain:      domain,
-		logger:      logger,
-		idGenerator: idGenerator,
+		storage:      storage,
+		domain:       domain,
+		logger:       logger,
+		idGenerator:  idGenerator,
+		maxBodyBytes: maxBodyBytes,
 	}
 }
 
@@ -423,13 +467,27 @@ func (h *CaptureHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Read body (with size limit)
-	body, err := io.ReadAll(io.LimitReader(r.Body, 10*1024*1024)) // 10MB limit
+	// Storage drops unknown hooks anyway; checking first skips the body read.
+	if !h.storage.Has(hookID) {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	limit := h.maxBodyBytes
+	if limit <= 0 {
+		limit = defaultMaxCaptureBodyBytes
+	}
+
+	// One byte past the cap tells a body that just fits from one that was cut.
+	// Truncating rather than rejecting keeps the interaction, which is the signal.
+	raw, err := io.ReadAll(io.LimitReader(r.Body, int64(limit)+1))
 	if err != nil {
 		h.logger.Error("failed to read request body", "error", err)
-		body = []byte{}
+		raw = []byte{}
 	}
 	defer r.Body.Close()
+
+	body, truncated := storage.TruncateBody(string(raw), limit)
 
 	// Extract headers
 	headers := make(map[string]string)
@@ -447,8 +505,11 @@ func (h *CaptureHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		r.Method,
 		r.URL.Path,
 		headers,
-		string(body),
+		body,
 	)
+	if truncated {
+		interaction.Data["truncated"] = true
+	}
 
 	// Store interaction
 	h.storage.AddInteraction(hookID, interaction)
@@ -471,13 +532,12 @@ func (h *CaptureHandler) extractHookID(host string) string {
 		host = host[:idx]
 	}
 
+	// Hostnames are case-insensitive and may arrive with a trailing dot.
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+
 	// Check if it's a subdomain of our domain
-	suffix := "." + h.domain
+	suffix := "." + strings.ToLower(h.domain)
 	if !strings.HasSuffix(host, suffix) {
-		// Check if it's the exact domain (no subdomain)
-		if host == h.domain {
-			return ""
-		}
 		return ""
 	}
 

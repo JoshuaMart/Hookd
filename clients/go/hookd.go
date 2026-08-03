@@ -12,11 +12,16 @@ import (
 
 const Version = "1.1.0"
 
+// DefaultMaxResponseBytes caps the buffered response body. It is generous
+// because a poll can legitimately return many interactions with full bodies.
+const DefaultMaxResponseBytes int64 = 64 << 20 // 64 MiB
+
 // Client communicates with a Hookd server.
 type Client struct {
-	server     string
-	token      string
-	httpClient *http.Client
+	server           string
+	token            string
+	httpClient       *http.Client
+	maxResponseBytes int64
 }
 
 // Hook represents a registered hook with its endpoints. ExpiresAt and Metadata
@@ -114,6 +119,14 @@ type ConnectionError struct {
 
 func (e *ConnectionError) Error() string { return e.Message }
 
+// ResponseTooLargeError indicates a response above the client's size limit.
+type ResponseTooLargeError struct {
+	Message string
+	Limit   int64
+}
+
+func (e *ResponseTooLargeError) Error() string { return e.Message }
+
 // NewClient creates a new Hookd client.
 func NewClient(server, token string) *Client {
 	return &Client{
@@ -125,7 +138,13 @@ func NewClient(server, token string) *Client {
 				ResponseHeaderTimeout: 10 * time.Second,
 			},
 		},
+		maxResponseBytes: DefaultMaxResponseBytes,
 	}
+}
+
+// SetMaxResponseBytes overrides the response cap. Zero or less disables it.
+func (c *Client) SetMaxResponseBytes(n int64) {
+	c.maxResponseBytes = n
 }
 
 // Register creates one or more ephemeral hooks on the server.
@@ -330,11 +349,7 @@ func (c *Client) doRequest(req *http.Request) (map[string]any, error) {
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, &ConnectionError{Message: fmt.Sprintf("failed to read response: %v", err)}
-	}
-
+	// Status first: none of these errors quote the body, so it stays unread.
 	switch {
 	case resp.StatusCode == 401:
 		return nil, &AuthenticationError{Message: "authentication failed", StatusCode: 401}
@@ -344,6 +359,24 @@ func (c *Client) doRequest(req *http.Request) (map[string]any, error) {
 		return nil, &ServerError{Message: fmt.Sprintf("server error: %d", resp.StatusCode), StatusCode: resp.StatusCode}
 	case resp.StatusCode < 200 || resp.StatusCode >= 300:
 		return nil, &Error{Message: fmt.Sprintf("unexpected status: %d", resp.StatusCode), StatusCode: resp.StatusCode}
+	}
+
+	// One byte past the ceiling is enough to detect an over-limit response.
+	body := io.Reader(resp.Body)
+	if c.maxResponseBytes > 0 {
+		body = io.LimitReader(resp.Body, c.maxResponseBytes+1)
+	}
+
+	respBody, err := io.ReadAll(body)
+	if err != nil {
+		return nil, &ConnectionError{Message: fmt.Sprintf("failed to read response: %v", err)}
+	}
+
+	if c.maxResponseBytes > 0 && int64(len(respBody)) > c.maxResponseBytes {
+		return nil, &ResponseTooLargeError{
+			Message: fmt.Sprintf("response exceeds %d bytes", c.maxResponseBytes),
+			Limit:   c.maxResponseBytes,
+		}
 	}
 
 	if len(respBody) == 0 {

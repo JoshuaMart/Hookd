@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -103,7 +104,7 @@ func TestNewServer(t *testing.T) {
 		},
 	}
 
-	server := NewServer(cfg, config.LongLivedConfig{}, manager, evictor, acmeProvider, logger, idGen)
+	server := NewServer(cfg, config.LongLivedConfig{}, config.ObservabilityConfig{MetricsEnabled: true}, manager, evictor, acmeProvider, logger, idGen)
 
 	if server == nil {
 		t.Fatal("expected server to be created")
@@ -143,7 +144,7 @@ func TestServer_StartHTTPOnly(t *testing.T) {
 		},
 	}
 
-	server := NewServer(cfg, config.LongLivedConfig{}, manager, evictor, acmeProvider, logger, idGen)
+	server := NewServer(cfg, config.LongLivedConfig{}, config.ObservabilityConfig{MetricsEnabled: true}, manager, evictor, acmeProvider, logger, idGen)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -204,7 +205,7 @@ func TestServer_Endpoints(t *testing.T) {
 		},
 	}
 
-	server := NewServer(cfg, config.LongLivedConfig{}, manager, evictor, acmeProvider, logger, idGen)
+	server := NewServer(cfg, config.LongLivedConfig{}, config.ObservabilityConfig{MetricsEnabled: true}, manager, evictor, acmeProvider, logger, idGen)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -295,7 +296,7 @@ func TestServer_StartHTTPSManualDisabled(t *testing.T) {
 		},
 	}
 
-	server := NewServer(cfg, config.LongLivedConfig{}, manager, evictor, acmeProvider, logger, idGen)
+	server := NewServer(cfg, config.LongLivedConfig{}, config.ObservabilityConfig{MetricsEnabled: true}, manager, evictor, acmeProvider, logger, idGen)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -352,7 +353,7 @@ func TestServer_MiddlewareChain(t *testing.T) {
 		},
 	}
 
-	server := NewServer(cfg, config.LongLivedConfig{}, manager, evictor, acmeProvider, logger, idGen)
+	server := NewServer(cfg, config.LongLivedConfig{}, config.ObservabilityConfig{MetricsEnabled: true}, manager, evictor, acmeProvider, logger, idGen)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -430,7 +431,7 @@ func TestServer_ContextCancellation(t *testing.T) {
 		},
 	}
 
-	server := NewServer(cfg, config.LongLivedConfig{}, manager, evictor, acmeProvider, logger, idGen)
+	server := NewServer(cfg, config.LongLivedConfig{}, config.ObservabilityConfig{MetricsEnabled: true}, manager, evictor, acmeProvider, logger, idGen)
 
 	// Test that context cancellation stops the server gracefully
 	ctx, cancel := context.WithCancel(context.Background())
@@ -453,4 +454,149 @@ func TestServer_ContextCancellation(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("server did not stop after context cancellation")
 	}
+}
+
+func TestNewPublicServer_Deadlines(t *testing.T) {
+	srv := newPublicServer(":8080", http.NewServeMux(), slog.Default())
+
+	// A zero value means "no deadline", so every bound must be set.
+	deadlines := map[string]time.Duration{
+		"ReadHeaderTimeout": srv.ReadHeaderTimeout,
+		"ReadTimeout":       srv.ReadTimeout,
+		"WriteTimeout":      srv.WriteTimeout,
+		"IdleTimeout":       srv.IdleTimeout,
+	}
+	for name, d := range deadlines {
+		if d <= 0 {
+			t.Errorf("expected %s to be set, got %v", name, d)
+		}
+	}
+
+	if srv.MaxHeaderBytes <= 0 {
+		t.Errorf("expected MaxHeaderBytes to be set, got %d", srv.MaxHeaderBytes)
+	}
+
+	// The read budget must cover a multi-megabyte capture body.
+	if srv.ReadTimeout < srv.ReadHeaderTimeout {
+		t.Errorf("expected ReadTimeout (%v) >= ReadHeaderTimeout (%v)", srv.ReadTimeout, srv.ReadHeaderTimeout)
+	}
+}
+
+func TestRouteByHost(t *testing.T) {
+	idGen := func() string { return "test-id" }
+	manager := storage.NewMemoryManager(idGen)
+	capture := NewCaptureHandler(manager, "example.com", slog.Default(), idGen, 0)
+
+	apiMux := http.NewServeMux()
+	apiMux.HandleFunc("/register", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTeapot) // marks "the API answered"
+	})
+	apiMux.Handle("/", capture)
+
+	handler := routeByHost(apiMux, capture)
+
+	t.Run("api path on a hook subdomain is captured", func(t *testing.T) {
+		hook := manager.CreateHook("example.com", storage.CreateOptions{})
+
+		req := httptest.NewRequest(http.MethodPost, "/register", nil)
+		req.Host = hook.ID + ".example.com"
+
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+
+		if w.Code == http.StatusTeapot {
+			t.Fatal("expected the capture handler to win over the API route on a hook host")
+		}
+		if n := len(manager.PollInteractions(hook.ID)); n != 1 {
+			t.Errorf("expected the callback to be recorded, got %d interactions", n)
+		}
+	})
+
+	t.Run("api path on a mixed-case hook subdomain is captured", func(t *testing.T) {
+		hook := manager.CreateHook("example.com", storage.CreateOptions{})
+
+		req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+		req.Host = strings.ToUpper(hook.ID) + ".ExAmPlE.CoM"
+
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+
+		if n := len(manager.PollInteractions(hook.ID)); n != 1 {
+			t.Errorf("expected the mixed-case callback to be recorded, got %d interactions", n)
+		}
+	})
+
+	t.Run("api reachable on the apex domain", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/register", nil)
+		req.Host = "example.com"
+
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+
+		if w.Code != http.StatusTeapot {
+			t.Errorf("expected the API to answer on the apex domain, got status %d", w.Code)
+		}
+	})
+
+	t.Run("api reachable on an arbitrary host", func(t *testing.T) {
+		// Deployments address the API by IP or proxy hostname.
+		for _, host := range []string{"127.0.0.1:8080", "hookd.internal"} {
+			req := httptest.NewRequest(http.MethodPost, "/register", nil)
+			req.Host = host
+
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, req)
+
+			if w.Code != http.StatusTeapot {
+				t.Errorf("expected the API to answer on host %q, got status %d", host, w.Code)
+			}
+		}
+	})
+}
+
+func TestServer_MetricsDisabled(t *testing.T) {
+	idGen := func() string { return "test-id" }
+	manager := storage.NewMemoryManager(idGen)
+	evictor := eviction.NewEvictor(manager, config.EvictionConfig{
+		CleanupInterval: 60,
+		InteractionTTL:  3600,
+		MaxPerHook:      100,
+		MaxMemoryMB:     100,
+	}, slog.Default())
+
+	cfg := config.ServerConfig{
+		Domain: "example.com",
+		HTTP:   config.HTTPConfig{Port: 18890},
+		API:    config.APIConfig{AuthToken: "test-token"},
+	}
+
+	server := NewServer(cfg, config.LongLivedConfig{}, config.ObservabilityConfig{MetricsEnabled: false},
+		manager, evictor, acme.NewProvider(slog.Default()), slog.Default(), idGen)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go server.Start(ctx)
+	time.Sleep(200 * time.Millisecond)
+
+	resp, err := http.Get("http://localhost:18890/metrics")
+	if err != nil {
+		t.Fatalf("failed to request metrics: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read response: %v", err)
+	}
+
+	// The request falls through to the capture catch-all, disclosing nothing.
+	for _, leak := range []string{"hooks", "interactions", "evictions", "memory"} {
+		if strings.Contains(string(body), leak) {
+			t.Errorf("expected no metrics disclosed, found %q in %q", leak, body)
+		}
+	}
+
+	cancel()
+	time.Sleep(100 * time.Millisecond)
 }

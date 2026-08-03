@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"log/slog"
@@ -57,13 +58,14 @@ func main() {
 	// Setup logger
 	logger := setupLogger(cfg.Observability)
 
-	// Ensure auth token exists
+	// The token stays out of the structured logs, which are commonly shipped to
+	// aggregators; a generated one goes to stderr once.
 	token, generated := cfg.EnsureAuthToken()
 	if generated {
-		logger.Info("auth token generated", "token", token)
-	} else {
-		logger.Info("using configured auth token")
+		fmt.Fprintf(os.Stderr, "Generated API token: %s\n"+
+			"Store it now — set server.api.auth_token to keep it across restarts.\n", token)
 	}
+	logger.Info("auth token ready", "generated", generated, "fingerprint", tokenFingerprint(token))
 
 	// Display startup banner
 	logger.Info("hookd starting",
@@ -146,6 +148,7 @@ func main() {
 	httpServer := http.NewServer(
 		cfg.Server,
 		cfg.LongLived,
+		cfg.Observability,
 		storageManager,
 		evictor,
 		acmeProvider,
@@ -174,6 +177,12 @@ func main() {
 	// Graceful shutdown
 	cancel()
 	logger.Info("hookd stopped")
+}
+
+// tokenFingerprint names which credential is in use without disclosing it.
+func tokenFingerprint(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:4])
 }
 
 // setupLogger creates and configures a logger

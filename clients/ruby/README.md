@@ -108,6 +108,10 @@ The client requires two configuration parameters:
 - `server`: The Hookd server URL (e.g., `https://hookd.example.com`)
 - `token`: Authentication token for API access
 
+An optional `max_response_bytes:` caps the response payload the client will read
+(64 MiB by default; zero or less disables it). Exceeding it raises
+`Hookd::ResponseTooLargeError`.
+
 ### API Reference
 
 #### `Hookd::Client`
@@ -307,3 +311,4 @@ Exception hierarchy:
   - `Hookd::NotFoundError` - 404 Not Found
   - `Hookd::ServerError` - 5xx Server Error
   - `Hookd::ConnectionError` - Network/connection errors
+  - `Hookd::ResponseTooLargeError` - Response above `max_response_bytes`

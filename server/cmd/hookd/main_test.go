@@ -173,3 +173,22 @@ func TestVersion(t *testing.T) {
 		t.Error("expected version to be set")
 	}
 }
+
+func TestTokenFingerprint(t *testing.T) {
+	const token = "0123456789abcdef0123456789abcdef"
+
+	fp := tokenFingerprint(token)
+
+	if strings.Contains(token, fp) || strings.Contains(fp, token) {
+		t.Errorf("fingerprint %q must not disclose the token", fp)
+	}
+	if len(fp) != 8 {
+		t.Errorf("expected an 8-char fingerprint, got %q", fp)
+	}
+	if fp != tokenFingerprint(token) {
+		t.Error("expected the fingerprint to be stable")
+	}
+	if fp == tokenFingerprint(token+"x") {
+		t.Error("expected different tokens to yield different fingerprints")
+	}
+}

@@ -26,6 +26,7 @@ var configKeys = []string{
 	"eviction.interaction_ttl",
 	"eviction.hook_ttl",
 	"eviction.max_per_hook",
+	"eviction.max_interaction_body_bytes",
 	"eviction.max_memory_mb",
 	"eviction.cleanup_interval",
 	"observability.metrics_enabled",

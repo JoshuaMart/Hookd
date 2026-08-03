@@ -106,6 +106,10 @@ func TestServer_ExtractHookID(t *testing.T) {
 		{"multi-level subdomain", "sub.abc123.example.com.", "sub"},
 		{"external domain", "other.com.", ""},
 		{"no subdomain", "example.com", ""},
+		// DNS-0x20: matching must be case-insensitive on label and suffix.
+		{"mixed-case qname", "AbC123.ExAmPlE.CoM.", "abc123"},
+		{"uppercase qname", "ABC123.EXAMPLE.COM.", "abc123"},
+		{"mixed-case exact domain", "ExAmPlE.CoM.", ""},
 	}
 
 	for _, tt := range tests {
@@ -479,5 +483,37 @@ func TestServer_StartContextCancelled(t *testing.T) {
 		// Server stopped successfully
 	case <-time.After(2 * time.Second):
 		t.Fatal("server did not stop after context cancellation")
+	}
+}
+
+// A 0x20-randomized query must be recorded, and its answer must echo the qname.
+func TestServer_HandleDNSRequest_MixedCaseQname(t *testing.T) {
+	idGen := func() string { return "test-id" }
+	manager := storage.NewMemoryManager(idGen)
+	acmeProvider := acme.NewProvider(slog.Default())
+	logger := slog.Default()
+
+	server, _ := NewServer("example.com", 5353, "", "", manager, acmeProvider, logger, idGen)
+
+	hook := manager.CreateHook("example.com", storage.CreateOptions{})
+
+	qname := strings.ToUpper(hook.ID) + ".ExAmPlE.CoM."
+
+	m := new(dns.Msg)
+	m.SetQuestion(qname, dns.TypeA)
+
+	w := &mockResponseWriter{remoteAddr: &net.UDPAddr{IP: net.ParseIP("1.2.3.4"), Port: 12345}}
+	server.handleDNSRequest(w, m)
+
+	interactions := manager.PollInteractions(hook.ID)
+	if len(interactions) != 1 {
+		t.Fatalf("expected mixed-case query to be captured, got %d interactions", len(interactions))
+	}
+
+	if w.msg == nil || len(w.msg.Answer) != 1 {
+		t.Fatal("expected an A answer for the mixed-case query")
+	}
+	if got := w.msg.Answer[0].Header().Name; got != qname {
+		t.Errorf("expected answer to echo the query name %q, got %q", qname, got)
 	}
 }

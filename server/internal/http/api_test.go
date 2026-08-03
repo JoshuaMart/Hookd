@@ -3,11 +3,13 @@ package http
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jomar/hookd/internal/config"
 	"github.com/jomar/hookd/internal/eviction"
@@ -370,7 +372,7 @@ func TestCaptureHandler_ServeHTTP(t *testing.T) {
 	manager := storage.NewMemoryManager(idGen)
 	logger := slog.Default()
 
-	handler := NewCaptureHandler(manager, "example.com", logger, idGen)
+	handler := NewCaptureHandler(manager, "example.com", logger, idGen, 0)
 
 	// Create a hook first
 	hook := manager.CreateHook("example.com", storage.CreateOptions{})
@@ -441,6 +443,11 @@ func TestCaptureHandler_ExtractHookID(t *testing.T) {
 		{"invalid domain", "other.com", ""},
 		{"multi-level subdomain", "sub.abc123.example.com", "sub"},
 		{"no subdomain", "example.com:80", ""},
+		// Neither casing nor a trailing dot may hide a callback from capture.
+		{"mixed-case host", "AbC123.ExAmPlE.CoM", "abc123"},
+		{"uppercase host with port", "ABC123.EXAMPLE.COM:8080", "abc123"},
+		{"trailing dot", "abc123.example.com.", "abc123"},
+		{"mixed-case exact domain", "ExAmPlE.CoM", ""},
 	}
 
 	for _, tt := range tests {
@@ -521,7 +528,7 @@ func TestCaptureHandler_LargeBody(t *testing.T) {
 	manager := storage.NewMemoryManager(idGen)
 	logger := slog.Default()
 
-	handler := NewCaptureHandler(manager, "example.com", logger, idGen)
+	handler := NewCaptureHandler(manager, "example.com", logger, idGen, 0)
 	hook := manager.CreateHook("example.com", storage.CreateOptions{})
 
 	// Create large body (11MB - over 10MB limit)
@@ -716,6 +723,173 @@ func TestAPIHandler_HandlePollBatch(t *testing.T) {
 
 		if w.Code != http.StatusMethodNotAllowed {
 			t.Errorf("expected status 405, got %d", w.Code)
+		}
+	})
+}
+
+func TestCaptureHandler_UnknownHookSkipsBody(t *testing.T) {
+	idGen := func() string { return "test-id" }
+	manager := storage.NewMemoryManager(idGen)
+	handler := NewCaptureHandler(manager, "example.com", slog.Default(), idGen, 0)
+
+	body := &trackingReader{data: []byte(`{"payload":"x"}`)}
+	req := httptest.NewRequest(http.MethodPost, "/", body)
+	req.Host = "unregistered.example.com"
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", w.Code)
+	}
+	if body.reads > 0 {
+		t.Errorf("expected no body read for an unknown hook, got %d reads", body.reads)
+	}
+}
+
+func TestCaptureHandler_KnownHookReadsBody(t *testing.T) {
+	idGen := func() string { return "test-id" }
+	manager := storage.NewMemoryManager(idGen)
+	handler := NewCaptureHandler(manager, "example.com", slog.Default(), idGen, 0)
+	hook := manager.CreateHook("example.com", storage.CreateOptions{})
+
+	body := &trackingReader{data: []byte(`{"payload":"x"}`)}
+	req := httptest.NewRequest(http.MethodPost, "/", body)
+	req.Host = hook.ID + ".example.com"
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if body.reads == 0 {
+		t.Error("expected the body of a registered hook to be read")
+	}
+	interactions := manager.PollInteractions(hook.ID)
+	if len(interactions) != 1 {
+		t.Fatalf("expected 1 interaction, got %d", len(interactions))
+	}
+	if got := interactions[0].Data["body"]; got != `{"payload":"x"}` {
+		t.Errorf("expected the body to be captured, got %v", got)
+	}
+}
+
+// trackingReader counts how many times the request body was read.
+type trackingReader struct {
+	data  []byte
+	pos   int
+	reads int
+}
+
+func (r *trackingReader) Read(p []byte) (int, error) {
+	r.reads++
+	if r.pos >= len(r.data) {
+		return 0, io.EOF
+	}
+	n := copy(p, r.data[r.pos:])
+	r.pos += n
+	return n, nil
+}
+
+func TestAPIHandler_RejectsOversizedBodies(t *testing.T) {
+	idGen := func() string { return "test-id" }
+	manager := storage.NewMemoryManager(idGen)
+	evictor := eviction.NewEvictor(manager, config.EvictionConfig{HookTTL: time.Hour}, slog.Default())
+	handler := NewAPIHandler(manager, evictor, "example.com", config.LongLivedConfig{}, slog.Default(), idGen)
+
+	// Valid JSON, so the decoder reads past the limit instead of failing early.
+	filler := strings.Repeat("a", maxAPIBodyBytes)
+
+	t.Run("register", func(t *testing.T) {
+		body := `{"metadata":{"k":"` + filler + `"}}`
+		req := httptest.NewRequest(http.MethodPost, "/register", strings.NewReader(body))
+		w := httptest.NewRecorder()
+		handler.HandleRegister(w, req)
+
+		if w.Code != http.StatusRequestEntityTooLarge {
+			t.Errorf("expected status 413, got %d", w.Code)
+		}
+	})
+
+	t.Run("poll batch", func(t *testing.T) {
+		body := `["` + filler + `"]`
+		req := httptest.NewRequest(http.MethodPost, "/poll", strings.NewReader(body))
+		w := httptest.NewRecorder()
+		handler.HandlePollBatch(w, req)
+
+		if w.Code != http.StatusRequestEntityTooLarge {
+			t.Errorf("expected status 413, got %d", w.Code)
+		}
+	})
+}
+
+func TestAPIHandler_RejectsOversizedBatch(t *testing.T) {
+	idGen := func() string { return "test-id" }
+	manager := storage.NewMemoryManager(idGen)
+	evictor := eviction.NewEvictor(manager, config.EvictionConfig{HookTTL: time.Hour}, slog.Default())
+	handler := NewAPIHandler(manager, evictor, "example.com", config.LongLivedConfig{}, slog.Default(), idGen)
+
+	ids := make([]string, maxPollBatch+1)
+	for i := range ids {
+		ids[i] = "hook"
+	}
+	payload, err := json.Marshal(ids)
+	if err != nil {
+		t.Fatalf("failed to marshal payload: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/poll", bytes.NewReader(payload))
+	w := httptest.NewRecorder()
+	handler.HandlePollBatch(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected status 400, got %d", w.Code)
+	}
+}
+
+func TestCaptureHandler_TruncatesBody(t *testing.T) {
+	idGen := func() string { return "test-id" }
+	manager := storage.NewMemoryManager(idGen)
+	const limit = 64
+	handler := NewCaptureHandler(manager, "example.com", slog.Default(), idGen, limit)
+
+	capture := func(t *testing.T, payload string) map[string]interface{} {
+		t.Helper()
+		hook := manager.CreateHook("example.com", storage.CreateOptions{})
+
+		req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(payload))
+		req.Host = hook.ID + ".example.com"
+		handler.ServeHTTP(httptest.NewRecorder(), req)
+
+		interactions := manager.PollInteractions(hook.ID)
+		if len(interactions) != 1 {
+			t.Fatalf("expected 1 interaction, got %d", len(interactions))
+		}
+		return interactions[0].Data
+	}
+
+	t.Run("keeps a body under the cap whole", func(t *testing.T) {
+		payload := strings.Repeat("a", limit)
+		data := capture(t, payload)
+
+		if data["body"] != payload {
+			t.Errorf("expected the body kept whole, got %d bytes", len(data["body"].(string)))
+		}
+		if _, flagged := data["truncated"]; flagged {
+			t.Error("expected no truncated flag")
+		}
+	})
+
+	t.Run("cuts an oversized body and flags it", func(t *testing.T) {
+		data := capture(t, strings.Repeat("a", limit*4))
+
+		body, ok := data["body"].(string)
+		if !ok {
+			t.Fatal("expected a string body")
+		}
+		if len(body) != limit {
+			t.Errorf("expected the body cut to %d bytes, got %d", limit, len(body))
+		}
+		if data["truncated"] != true {
+			t.Error("expected the interaction flagged as truncated")
 		}
 	})
 }

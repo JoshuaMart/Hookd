@@ -49,10 +49,10 @@ func (c *CompositeManager) routeFor(id string) Manager {
 	return c.memory
 }
 
-// has reports whether either store owns the given hook ID, without a database
+// Has reports whether either store owns the given hook ID, without a database
 // round-trip: the long-lived membership set and the in-memory map are both
 // O(1) lookups.
-func (c *CompositeManager) has(id string) bool {
+func (c *CompositeManager) Has(id string) bool {
 	if c.longLived != nil && c.longLived.Has(id) {
 		return true
 	}
@@ -88,7 +88,7 @@ func (c *CompositeManager) PollInteractions(hookID string) []*Interaction {
 func (c *CompositeManager) PollInteractionsBatch(hookIDs []string) map[string]*PollResult {
 	results := make(map[string]*PollResult, len(hookIDs))
 	for _, id := range hookIDs {
-		if !c.has(id) {
+		if !c.Has(id) {
 			results[id] = &PollResult{Error: "Hook not found"}
 			continue
 		}

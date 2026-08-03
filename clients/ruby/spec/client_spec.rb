@@ -509,4 +509,69 @@ RSpec.describe Hookd::Client do
       end
     end
   end
+
+  describe 'response size limit' do
+    let(:hook_id) { 'abc123' }
+
+    it 'defaults to a generous ceiling' do
+      expect(client.max_response_bytes).to eq(Hookd::Client::DEFAULT_MAX_RESPONSE_BYTES)
+    end
+
+    context 'when the response exceeds the limit' do
+      let(:client) { described_class.new(server: server, token: token, max_response_bytes: 1024) }
+
+      before do
+        oversized = { 'interactions' => ['a' * 4096] }.to_json
+        stub_request(:get, "#{server}/poll/#{hook_id}")
+          .to_return(status: 200, body: oversized, headers: { 'Content-Type' => 'application/json' })
+      end
+
+      it 'raises ResponseTooLargeError' do
+        expect { client.poll(hook_id) }.to raise_error(Hookd::ResponseTooLargeError, /exceeds the 1024 byte limit/)
+      end
+    end
+
+    context 'when the response is under the limit' do
+      let(:client) { described_class.new(server: server, token: token, max_response_bytes: 1024) }
+
+      before do
+        stub_request(:get, "#{server}/poll/#{hook_id}")
+          .to_return(status: 200, body: { 'interactions' => [] }.to_json,
+                     headers: { 'Content-Type' => 'application/json' })
+      end
+
+      it 'returns the parsed payload' do
+        expect(client.poll(hook_id)).to eq([])
+      end
+    end
+
+    context 'when the limit is disabled' do
+      let(:client) { described_class.new(server: server, token: token, max_response_bytes: 0) }
+
+      before do
+        stub_request(:get, "#{server}/poll/#{hook_id}")
+          .to_return(status: 200, body: { 'interactions' => [] }.to_json,
+                     headers: { 'Content-Type' => 'application/json' })
+      end
+
+      it 'does not enforce a ceiling' do
+        expect(client.poll(hook_id)).to eq([])
+      end
+    end
+
+    context 'when a failing response carries a large body' do
+      let(:client) { described_class.new(server: server, token: token, max_response_bytes: 1024) }
+
+      before do
+        stub_request(:get, "#{server}/poll/#{hook_id}")
+          .to_return(status: 401, body: 'x' * 65_536)
+      end
+
+      it 'raises the status error, with a bounded message' do
+        expect { client.poll(hook_id) }.to raise_error(Hookd::AuthenticationError) { |e|
+          expect(e.message.bytesize).to be <= Hookd::Client::ERROR_BODY_EXCERPT_BYTES + 64
+        }
+      end
+    end
+  end
 end

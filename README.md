@@ -90,7 +90,7 @@ server:
     autocert: true
     cache_dir: "/var/lib/hookd/certs"
   api:
-    auth_token: ""              # auto-generated if empty
+    auth_token: ""              # auto-generated if empty, printed once on stderr
 
 eviction:
   interaction_ttl: "1h"
@@ -123,6 +123,11 @@ observability:
 </details>
 
 ## API
+
+Authentication uses the `X-API-Key` header. When HTTPS is enabled (with
+`autocert`), the authenticated endpoints refuse plaintext requests with
+`426 Upgrade Required` rather than accepting a token sent in the clear — point
+your client at `https://`. Callback capture on port 80 is unaffected.
 
 ### `POST /register`
 
@@ -218,6 +223,8 @@ curl -X POST https://hookd.example.com/poll \
   -d '["abc123", "def456"]'
 ```
 
+Up to 1000 hook IDs per request.
+
 ### `GET /activity`
 
 List the **long-lived** hooks that currently have pending interactions — so you
@@ -255,7 +262,8 @@ curl https://hookd.example.com/activity \
 
 ### `GET /metrics`
 
-Server statistics (no authentication required).
+Server statistics (no authentication required). Not mounted when
+`observability.metrics_enabled` is `false`.
 
 ```bash
 curl https://hookd.example.com/metrics
