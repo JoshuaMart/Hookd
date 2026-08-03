@@ -3,11 +3,13 @@ package http
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jomar/hookd/internal/config"
 	"github.com/jomar/hookd/internal/eviction"
@@ -723,4 +725,123 @@ func TestAPIHandler_HandlePollBatch(t *testing.T) {
 			t.Errorf("expected status 405, got %d", w.Code)
 		}
 	})
+}
+
+func TestCaptureHandler_UnknownHookSkipsBody(t *testing.T) {
+	idGen := func() string { return "test-id" }
+	manager := storage.NewMemoryManager(idGen)
+	handler := NewCaptureHandler(manager, "example.com", slog.Default(), idGen)
+
+	body := &trackingReader{data: []byte(`{"payload":"x"}`)}
+	req := httptest.NewRequest(http.MethodPost, "/", body)
+	req.Host = "unregistered.example.com"
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", w.Code)
+	}
+	if body.reads > 0 {
+		t.Errorf("expected no body read for an unknown hook, got %d reads", body.reads)
+	}
+}
+
+func TestCaptureHandler_KnownHookReadsBody(t *testing.T) {
+	idGen := func() string { return "test-id" }
+	manager := storage.NewMemoryManager(idGen)
+	handler := NewCaptureHandler(manager, "example.com", slog.Default(), idGen)
+	hook := manager.CreateHook("example.com", storage.CreateOptions{})
+
+	body := &trackingReader{data: []byte(`{"payload":"x"}`)}
+	req := httptest.NewRequest(http.MethodPost, "/", body)
+	req.Host = hook.ID + ".example.com"
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if body.reads == 0 {
+		t.Error("expected the body of a registered hook to be read")
+	}
+	interactions := manager.PollInteractions(hook.ID)
+	if len(interactions) != 1 {
+		t.Fatalf("expected 1 interaction, got %d", len(interactions))
+	}
+	if got := interactions[0].Data["body"]; got != `{"payload":"x"}` {
+		t.Errorf("expected the body to be captured, got %v", got)
+	}
+}
+
+// trackingReader counts how many times the request body was read.
+type trackingReader struct {
+	data  []byte
+	pos   int
+	reads int
+}
+
+func (r *trackingReader) Read(p []byte) (int, error) {
+	r.reads++
+	if r.pos >= len(r.data) {
+		return 0, io.EOF
+	}
+	n := copy(p, r.data[r.pos:])
+	r.pos += n
+	return n, nil
+}
+
+func TestAPIHandler_RejectsOversizedBodies(t *testing.T) {
+	idGen := func() string { return "test-id" }
+	manager := storage.NewMemoryManager(idGen)
+	evictor := eviction.NewEvictor(manager, config.EvictionConfig{HookTTL: time.Hour}, slog.Default())
+	handler := NewAPIHandler(manager, evictor, "example.com", config.LongLivedConfig{}, slog.Default(), idGen)
+
+	// Valid JSON, so the decoder reads past the limit instead of bailing out on
+	// the first byte.
+	filler := strings.Repeat("a", maxAPIBodyBytes)
+
+	t.Run("register", func(t *testing.T) {
+		body := `{"metadata":{"k":"` + filler + `"}}`
+		req := httptest.NewRequest(http.MethodPost, "/register", strings.NewReader(body))
+		w := httptest.NewRecorder()
+		handler.HandleRegister(w, req)
+
+		if w.Code != http.StatusRequestEntityTooLarge {
+			t.Errorf("expected status 413, got %d", w.Code)
+		}
+	})
+
+	t.Run("poll batch", func(t *testing.T) {
+		body := `["` + filler + `"]`
+		req := httptest.NewRequest(http.MethodPost, "/poll", strings.NewReader(body))
+		w := httptest.NewRecorder()
+		handler.HandlePollBatch(w, req)
+
+		if w.Code != http.StatusRequestEntityTooLarge {
+			t.Errorf("expected status 413, got %d", w.Code)
+		}
+	})
+}
+
+func TestAPIHandler_RejectsOversizedBatch(t *testing.T) {
+	idGen := func() string { return "test-id" }
+	manager := storage.NewMemoryManager(idGen)
+	evictor := eviction.NewEvictor(manager, config.EvictionConfig{HookTTL: time.Hour}, slog.Default())
+	handler := NewAPIHandler(manager, evictor, "example.com", config.LongLivedConfig{}, slog.Default(), idGen)
+
+	ids := make([]string, maxPollBatch+1)
+	for i := range ids {
+		ids[i] = "hook"
+	}
+	payload, err := json.Marshal(ids)
+	if err != nil {
+		t.Fatalf("failed to marshal payload: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/poll", bytes.NewReader(payload))
+	w := httptest.NewRecorder()
+	handler.HandlePollBatch(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected status 400, got %d", w.Code)
+	}
 }

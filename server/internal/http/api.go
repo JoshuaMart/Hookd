@@ -20,6 +20,14 @@ import (
 // defaultMaxMetadataBytes bounds hook metadata when the config value is unset.
 const defaultMaxMetadataBytes = 8192
 
+// maxAPIBodyBytes caps the request body of the authenticated endpoints. Their
+// payloads are a small JSON object or a list of hook IDs, so this is far above
+// any legitimate request.
+const maxAPIBodyBytes = 1 << 20 // 1 MiB
+
+// maxPollBatch caps the hook IDs accepted by POST /poll.
+const maxPollBatch = 1000
+
 // APIHandler handles API endpoints
 type APIHandler struct {
 	storage     storage.Manager
@@ -51,11 +59,18 @@ func (h *APIHandler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, maxAPIBodyBytes)
+
 	// Only parse the body if it exists. A malformed body falls back to a single
-	// ephemeral hook, preserving the historical lenient behavior.
+	// ephemeral hook, preserving the historical lenient behavior; an oversized
+	// one is rejected rather than silently treated as a default registration.
 	var req registerRequest
 	if r.ContentLength > 0 {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			if isTooLarge(err) {
+				respondTooLarge(w)
+				return
+			}
 			req = registerRequest{}
 		}
 	}
@@ -231,10 +246,16 @@ func (h *APIHandler) HandlePollBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, maxAPIBodyBytes)
+
 	// Parse request body as array of hook IDs
 	var hookIDs []string
 
 	if err := json.NewDecoder(r.Body).Decode(&hookIDs); err != nil {
+		if isTooLarge(err) {
+			respondTooLarge(w)
+			return
+		}
 		respondJSON(w, http.StatusBadRequest, map[string]string{
 			"error": "Invalid request body",
 		})
@@ -245,6 +266,14 @@ func (h *APIHandler) HandlePollBatch(w http.ResponseWriter, r *http.Request) {
 	if len(hookIDs) == 0 {
 		respondJSON(w, http.StatusBadRequest, map[string]string{
 			"error": "hook_ids cannot be empty",
+		})
+		return
+	}
+
+	// The result map is sized to the request, so the batch is bounded too.
+	if len(hookIDs) > maxPollBatch {
+		respondJSON(w, http.StatusBadRequest, map[string]string{
+			"error": fmt.Sprintf("hook_ids must not exceed %d entries", maxPollBatch),
 		})
 		return
 	}
@@ -382,6 +411,20 @@ func (h *APIHandler) HandleMetrics(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, metrics)
 }
 
+// isTooLarge reports whether a decode failed because the body exceeded the
+// MaxBytesReader limit rather than because it was malformed.
+func isTooLarge(err error) bool {
+	var maxErr *http.MaxBytesError
+	return errors.As(err, &maxErr)
+}
+
+// respondTooLarge rejects an oversized request body.
+func respondTooLarge(w http.ResponseWriter) {
+	respondJSON(w, http.StatusRequestEntityTooLarge, map[string]string{
+		"error": fmt.Sprintf("request body must not exceed %d bytes", maxAPIBodyBytes),
+	})
+}
+
 // respondJSON writes a JSON response
 func respondJSON(w http.ResponseWriter, statusCode int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
@@ -419,6 +462,13 @@ func (h *CaptureHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if hookID == "" {
 		// Not a valid hook subdomain
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	// Storage drops interactions for unknown hooks anyway; checking first keeps
+	// an unregistered subdomain from costing a full body read and copy.
+	if !h.storage.Has(hookID) {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
