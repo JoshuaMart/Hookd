@@ -218,6 +218,8 @@ curl -X POST https://hookd.example.com/poll \
   -d '["abc123", "def456"]'
 ```
 
+Up to 1000 hook IDs per request.
+
 ### `GET /activity`
 
 List the **long-lived** hooks that currently have pending interactions — so you
@@ -255,7 +257,8 @@ curl https://hookd.example.com/activity \
 
 ### `GET /metrics`
 
-Server statistics (no authentication required).
+Server statistics (no authentication required). Not mounted when
+`observability.metrics_enabled` is `false`.
 
 ```bash
 curl https://hookd.example.com/metrics

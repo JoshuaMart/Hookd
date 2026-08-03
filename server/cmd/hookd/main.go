@@ -146,6 +146,7 @@ func main() {
 	httpServer := http.NewServer(
 		cfg.Server,
 		cfg.LongLived,
+		cfg.Observability,
 		storageManager,
 		evictor,
 		acmeProvider,

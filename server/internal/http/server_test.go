@@ -104,7 +104,7 @@ func TestNewServer(t *testing.T) {
 		},
 	}
 
-	server := NewServer(cfg, config.LongLivedConfig{}, manager, evictor, acmeProvider, logger, idGen)
+	server := NewServer(cfg, config.LongLivedConfig{}, config.ObservabilityConfig{MetricsEnabled: true}, manager, evictor, acmeProvider, logger, idGen)
 
 	if server == nil {
 		t.Fatal("expected server to be created")
@@ -144,7 +144,7 @@ func TestServer_StartHTTPOnly(t *testing.T) {
 		},
 	}
 
-	server := NewServer(cfg, config.LongLivedConfig{}, manager, evictor, acmeProvider, logger, idGen)
+	server := NewServer(cfg, config.LongLivedConfig{}, config.ObservabilityConfig{MetricsEnabled: true}, manager, evictor, acmeProvider, logger, idGen)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -205,7 +205,7 @@ func TestServer_Endpoints(t *testing.T) {
 		},
 	}
 
-	server := NewServer(cfg, config.LongLivedConfig{}, manager, evictor, acmeProvider, logger, idGen)
+	server := NewServer(cfg, config.LongLivedConfig{}, config.ObservabilityConfig{MetricsEnabled: true}, manager, evictor, acmeProvider, logger, idGen)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -296,7 +296,7 @@ func TestServer_StartHTTPSManualDisabled(t *testing.T) {
 		},
 	}
 
-	server := NewServer(cfg, config.LongLivedConfig{}, manager, evictor, acmeProvider, logger, idGen)
+	server := NewServer(cfg, config.LongLivedConfig{}, config.ObservabilityConfig{MetricsEnabled: true}, manager, evictor, acmeProvider, logger, idGen)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -353,7 +353,7 @@ func TestServer_MiddlewareChain(t *testing.T) {
 		},
 	}
 
-	server := NewServer(cfg, config.LongLivedConfig{}, manager, evictor, acmeProvider, logger, idGen)
+	server := NewServer(cfg, config.LongLivedConfig{}, config.ObservabilityConfig{MetricsEnabled: true}, manager, evictor, acmeProvider, logger, idGen)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -431,7 +431,7 @@ func TestServer_ContextCancellation(t *testing.T) {
 		},
 	}
 
-	server := NewServer(cfg, config.LongLivedConfig{}, manager, evictor, acmeProvider, logger, idGen)
+	server := NewServer(cfg, config.LongLivedConfig{}, config.ObservabilityConfig{MetricsEnabled: true}, manager, evictor, acmeProvider, logger, idGen)
 
 	// Test that context cancellation stops the server gracefully
 	ctx, cancel := context.WithCancel(context.Background())
@@ -552,4 +552,52 @@ func TestRouteByHost(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestServer_MetricsDisabled(t *testing.T) {
+	idGen := func() string { return "test-id" }
+	manager := storage.NewMemoryManager(idGen)
+	evictor := eviction.NewEvictor(manager, config.EvictionConfig{
+		CleanupInterval: 60,
+		InteractionTTL:  3600,
+		MaxPerHook:      100,
+		MaxMemoryMB:     100,
+	}, slog.Default())
+
+	cfg := config.ServerConfig{
+		Domain: "example.com",
+		HTTP:   config.HTTPConfig{Port: 18890},
+		API:    config.APIConfig{AuthToken: "test-token"},
+	}
+
+	server := NewServer(cfg, config.LongLivedConfig{}, config.ObservabilityConfig{MetricsEnabled: false},
+		manager, evictor, acme.NewProvider(slog.Default()), slog.Default(), idGen)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go server.Start(ctx)
+	time.Sleep(200 * time.Millisecond)
+
+	resp, err := http.Get("http://localhost:18890/metrics")
+	if err != nil {
+		t.Fatalf("failed to request metrics: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read response: %v", err)
+	}
+
+	// The route is unmounted, so the request falls through to the capture
+	// catch-all and must not disclose any counter.
+	for _, leak := range []string{"hooks", "interactions", "evictions", "memory"} {
+		if strings.Contains(string(body), leak) {
+			t.Errorf("expected no metrics disclosed, found %q in %q", leak, body)
+		}
+	}
+
+	cancel()
+	time.Sleep(100 * time.Millisecond)
 }

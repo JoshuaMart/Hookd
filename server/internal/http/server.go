@@ -39,10 +39,15 @@ const (
 	maxHeaderBytes    = 64 * 1024
 )
 
+// shutdownTimeout bounds graceful shutdown.
+const shutdownTimeout = 10 * time.Second
+
 // Server represents an HTTP/HTTPS server
 type Server struct {
-	config       config.ServerConfig
-	longLived    config.LongLivedConfig
+	config        config.ServerConfig
+	longLived     config.LongLivedConfig
+	observability config.ObservabilityConfig
+
 	storage      storage.Manager
 	evictor      *eviction.Evictor
 	acmeProvider *acme.Provider
@@ -53,10 +58,12 @@ type Server struct {
 }
 
 // NewServer creates a new HTTP/HTTPS server
-func NewServer(cfg config.ServerConfig, longLived config.LongLivedConfig, storage storage.Manager, evictor *eviction.Evictor, acmeProvider *acme.Provider, logger *slog.Logger, idGenerator func() string) *Server {
+func NewServer(cfg config.ServerConfig, longLived config.LongLivedConfig, obs config.ObservabilityConfig, storage storage.Manager, evictor *eviction.Evictor, acmeProvider *acme.Provider, logger *slog.Logger, idGenerator func() string) *Server {
 	return &Server{
-		config:       cfg,
-		longLived:    longLived,
+		config:        cfg,
+		longLived:     longLived,
+		observability: obs,
+
 		storage:      storage,
 		evictor:      evictor,
 		acmeProvider: acmeProvider,
@@ -111,8 +118,11 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.Handle("/poll/", authMW(http.HandlerFunc(apiHandler.HandlePoll)))
 	mux.Handle("/activity", authMW(http.HandlerFunc(apiHandler.HandleActivity)))
 
-	// Metrics endpoint (no auth)
-	mux.HandleFunc("/metrics", apiHandler.HandleMetrics)
+	// Metrics endpoint (no auth). Left unmounted when disabled, so the config
+	// flag actually withholds the hook, interaction, eviction and memory counts.
+	if s.observability.MetricsEnabled {
+		mux.HandleFunc("/metrics", apiHandler.HandleMetrics)
+	}
 
 	// Wildcard capture (everything else)
 	mux.Handle("/", captureHandler)
@@ -226,13 +236,19 @@ func (s *Server) Start(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
 		s.logger.Info("http server shutting down")
+
+		// Draining is best-effort: a client that never finishes its request must
+		// not keep the process alive.
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+		defer cancel()
+
 		if s.httpServer != nil {
-			if err := s.httpServer.Shutdown(context.Background()); err != nil {
+			if err := s.httpServer.Shutdown(shutdownCtx); err != nil {
 				s.logger.Error("http server shutdown error", "error", err)
 			}
 		}
 		if s.httpsServer != nil {
-			if err := s.httpsServer.Shutdown(context.Background()); err != nil {
+			if err := s.httpsServer.Shutdown(shutdownCtx); err != nil {
 				s.logger.Error("https server shutdown error", "error", err)
 			}
 		}
