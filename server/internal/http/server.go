@@ -111,12 +111,18 @@ func (s *Server) Start(ctx context.Context) error {
 	// Create main mux
 	mux := http.NewServeMux()
 
-	// API endpoints (with auth)
+	// API endpoints. TLS is enforced ahead of auth so a plaintext request is
+	// refused without its token ever being examined. The condition mirrors the
+	// one guarding the HTTPS listener below: enforcing it while no HTTPS server
+	// runs would leave the API unreachable.
 	authMW := AuthMiddleware(s.config.API.AuthToken, s.logger)
-	mux.Handle("/register", authMW(http.HandlerFunc(apiHandler.HandleRegister)))
-	mux.Handle("/poll", authMW(http.HandlerFunc(apiHandler.HandlePollBatch)))
-	mux.Handle("/poll/", authMW(http.HandlerFunc(apiHandler.HandlePoll)))
-	mux.Handle("/activity", authMW(http.HandlerFunc(apiHandler.HandleActivity)))
+	tlsMW := RequireTLSMiddleware(s.config.HTTPS.Enabled && s.config.HTTPS.AutoCert, s.logger)
+	apiMW := func(h http.Handler) http.Handler { return tlsMW(authMW(h)) }
+
+	mux.Handle("/register", apiMW(http.HandlerFunc(apiHandler.HandleRegister)))
+	mux.Handle("/poll", apiMW(http.HandlerFunc(apiHandler.HandlePollBatch)))
+	mux.Handle("/poll/", apiMW(http.HandlerFunc(apiHandler.HandlePoll)))
+	mux.Handle("/activity", apiMW(http.HandlerFunc(apiHandler.HandleActivity)))
 
 	// Metrics endpoint (no auth). Left unmounted when disabled, so the config
 	// flag actually withholds the hook, interaction, eviction and memory counts.

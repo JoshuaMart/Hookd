@@ -6,6 +6,40 @@ import (
 	"net/http"
 )
 
+// RequireTLSMiddleware refuses authenticated API requests that arrive in
+// plaintext, so a client pointed at http:// fails once instead of leaking its
+// token on every call. Redirecting would be worse than useless here: the
+// credential is already on the wire by the time the response is written, and a
+// client that follows the redirect keeps its http:// base URL, leaking again on
+// every request with nothing to show for it.
+//
+// enforce must only be set when an HTTPS listener is actually serving,
+// otherwise this would make the API unreachable.
+func RequireTLSMiddleware(enforce bool, logger *slog.Logger) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !enforce || r.TLS != nil {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			// A request carrying a key just exposed it; one without is a bot
+			// probing the port and not worth a warning.
+			if r.Header.Get("X-API-Key") != "" {
+				logger.Warn("api key received over plaintext, consider rotating it",
+					"path", r.URL.Path, "client", r.RemoteAddr)
+			}
+
+			// RFC 9110: a 426 must advertise what to upgrade to.
+			w.Header().Set("Upgrade", "TLS/1.3, HTTP/1.1")
+			w.Header().Set("Connection", "Upgrade")
+			respondJSON(w, http.StatusUpgradeRequired, map[string]string{
+				"error": "API requires HTTPS",
+			})
+		})
+	}
+}
+
 // AuthMiddleware creates an authentication middleware
 func AuthMiddleware(token string, logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {

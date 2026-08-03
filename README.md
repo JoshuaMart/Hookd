@@ -124,6 +124,11 @@ observability:
 
 ## API
 
+Authentication uses the `X-API-Key` header. When HTTPS is enabled (with
+`autocert`), the authenticated endpoints refuse plaintext requests with
+`426 Upgrade Required` rather than accepting a token sent in the clear — point
+your client at `https://`. Callback capture on port 80 is unaffected.
+
 ### `POST /register`
 
 Create one or more hooks.
