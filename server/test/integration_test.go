@@ -44,6 +44,11 @@ func defaultTestConfig(dbPath string) *config.Config {
 	cfg.Server.Domain = "hookd.test.local"
 	cfg.Server.DNS.Enabled = true
 	cfg.Server.DNS.Port = 15353 // Use non-privileged port for testing
+	// Pin both to loopback: the listener has to be where the test queries it, and
+	// an explicit public IP keeps A answers off the auto-detection path, which
+	// needs a route to the outside.
+	cfg.Server.DNS.BindAddress = "127.0.0.1"
+	cfg.Server.PublicIP = "127.0.0.1"
 	cfg.Server.HTTP.Port = 18080
 	cfg.Server.HTTPS.Enabled = false
 	cfg.Server.API.AuthToken = "test-token-123"
@@ -83,6 +88,8 @@ func startServer(t *testing.T, cfg *config.Config, idGenerator func() string) *t
 	dnsServer, err := dnsserver.NewServer(
 		cfg.Server.Domain,
 		cfg.Server.DNS.Port,
+		cfg.Server.PublicIP,
+		cfg.Server.DNS.BindAddress,
 		storageManager,
 		acmeProvider,
 		logger,
@@ -102,6 +109,7 @@ func startServer(t *testing.T, cfg *config.Config, idGenerator func() string) *t
 	httpServer := httpserver.NewServer(
 		cfg.Server,
 		cfg.LongLived,
+		cfg.Observability,
 		storageManager,
 		evictor,
 		acmeProvider,
