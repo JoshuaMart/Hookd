@@ -67,7 +67,7 @@ func TestSuppressedTLSWriter(t *testing.T) {
 // recordingHandler is a minimal slog.Handler that counts emitted records.
 type recordingHandler struct{ count int }
 
-func (h *recordingHandler) Enabled(context.Context, slog.Level) bool { return true }
+func (h *recordingHandler) Enabled(context.Context, slog.Level) bool  { return true }
 func (h *recordingHandler) Handle(context.Context, slog.Record) error { h.count++; return nil }
 func (h *recordingHandler) WithAttrs([]slog.Attr) slog.Handler        { return h }
 func (h *recordingHandler) WithGroup(string) slog.Handler             { return h }

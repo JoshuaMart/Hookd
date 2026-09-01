@@ -435,6 +435,11 @@ func respondJSON(w http.ResponseWriter, statusCode int, data interface{}) {
 // defaultMaxCaptureBodyBytes bounds a captured body when the config value is unset.
 const defaultMaxCaptureBodyBytes = 1 << 20 // 1 MiB
 
+// maxCaptureTargetBytes bounds the stored request target. The request line is
+// already bounded by MaxHeaderBytes, but a 64 KiB target on every interaction
+// is not worth keeping for weeks; 8 KiB matches what common servers accept.
+const maxCaptureTargetBytes = 8192
+
 // CaptureHandler handles wildcard HTTP requests
 type CaptureHandler struct {
 	storage      storage.Manager
@@ -489,13 +494,19 @@ func (h *CaptureHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	body, truncated := storage.TruncateBody(string(raw), limit)
 
-	// Extract headers
+	// Extract headers. A header sent several times carries a value per line;
+	// joining keeps them all instead of silently dropping every line but the
+	// first, which is where a payload may well sit.
 	headers := make(map[string]string)
 	for k, v := range r.Header {
 		if len(v) > 0 {
-			headers[k] = v[0]
+			headers[k] = strings.Join(v, ", ")
 		}
 	}
+
+	// The query string is half the request target and often carries the whole
+	// point of the callback, so store the target rather than the bare path.
+	target, targetTruncated := storage.TruncateBody(r.URL.RequestURI(), maxCaptureTargetBytes)
 
 	// Create interaction
 	sourceIP := netutil.ExtractIP(r.RemoteAddr)
@@ -503,12 +514,15 @@ func (h *CaptureHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.idGenerator(),
 		sourceIP,
 		r.Method,
-		r.URL.Path,
+		target,
 		headers,
 		body,
 	)
 	if truncated {
 		interaction.Data["truncated"] = true
+	}
+	if targetTruncated {
+		interaction.Data["path_truncated"] = true
 	}
 
 	// Store interaction
@@ -517,7 +531,7 @@ func (h *CaptureHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.logger.Debug("http interaction captured",
 		"hook_id", hookID,
 		"method", r.Method,
-		"path", r.URL.Path,
+		"path", target,
 		"client", sourceIP)
 
 	// Respond with 200 OK

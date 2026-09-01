@@ -21,7 +21,7 @@ Lightweight interaction server for capturing out-of-band DNS and HTTP callbacks.
 3. Capture — Hookd records every DNS query and HTTP request hitting the hook
         |  ┌─────────────────────────────────────────────────────┐
         |  │  DNS server (UDP 53)  → captures qname, qtype, IP   │
-        |  │  HTTP/HTTPS (80/443)  → captures method, path,      │
+        |  │  HTTP/HTTPS (80/443)  → captures method, target,    │
         |  │                          headers, body, IP          │
         |  └─────────────────────────────────────────────────────┘
         v
@@ -194,7 +194,7 @@ curl https://hookd.example.com/poll/abc123 \
       "source_ip": "5.6.7.8",
       "data": {
         "method": "POST",
-        "path": "/callback",
+        "path": "/callback?token=s3cr3t",
         "headers": {},
         "body": "payload"
       }

@@ -893,3 +893,92 @@ func TestCaptureHandler_TruncatesBody(t *testing.T) {
 		}
 	})
 }
+
+func TestCaptureHandler_CapturesRequestTarget(t *testing.T) {
+	idGen := func() string { return "test-id" }
+	manager := storage.NewMemoryManager(idGen)
+	handler := NewCaptureHandler(manager, "example.com", slog.Default(), idGen, 0)
+
+	capture := func(t *testing.T, target string) map[string]interface{} {
+		t.Helper()
+		hook := manager.CreateHook("example.com", storage.CreateOptions{})
+
+		req := httptest.NewRequest(http.MethodGet, target, nil)
+		req.Host = hook.ID + ".example.com"
+		handler.ServeHTTP(httptest.NewRecorder(), req)
+
+		interactions := manager.PollInteractions(hook.ID)
+		if len(interactions) != 1 {
+			t.Fatalf("expected 1 interaction, got %d", len(interactions))
+		}
+		return interactions[0].Data
+	}
+
+	t.Run("keeps the query string", func(t *testing.T) {
+		data := capture(t, "/callback?token=s3cr3t&id=42")
+
+		if data["path"] != "/callback?token=s3cr3t&id=42" {
+			t.Errorf("expected the target kept whole, got %q", data["path"])
+		}
+	})
+
+	t.Run("keeps a path without a query unchanged", func(t *testing.T) {
+		data := capture(t, "/callback")
+
+		if data["path"] != "/callback" {
+			t.Errorf("expected /callback, got %q", data["path"])
+		}
+		if _, flagged := data["path_truncated"]; flagged {
+			t.Error("expected no path_truncated flag")
+		}
+	})
+
+	t.Run("keeps percent encoding as sent", func(t *testing.T) {
+		data := capture(t, "/a%2Fb?q=%00")
+
+		if data["path"] != "/a%2Fb?q=%00" {
+			t.Errorf("expected the encoding preserved, got %q", data["path"])
+		}
+	})
+
+	t.Run("truncates an oversized target and flags it", func(t *testing.T) {
+		data := capture(t, "/?q="+strings.Repeat("a", maxCaptureTargetBytes))
+
+		target, ok := data["path"].(string)
+		if !ok {
+			t.Fatalf("expected a string path, got %T", data["path"])
+		}
+		if len(target) != maxCaptureTargetBytes {
+			t.Errorf("expected the target cut to %d bytes, got %d", maxCaptureTargetBytes, len(target))
+		}
+		if data["path_truncated"] != true {
+			t.Error("expected the path_truncated flag")
+		}
+	})
+}
+
+func TestCaptureHandler_KeepsRepeatedHeaders(t *testing.T) {
+	idGen := func() string { return "test-id" }
+	manager := storage.NewMemoryManager(idGen)
+	handler := NewCaptureHandler(manager, "example.com", slog.Default(), idGen, 0)
+	hook := manager.CreateHook("example.com", storage.CreateOptions{})
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Host = hook.ID + ".example.com"
+	req.Header.Add("X-Payload", "first")
+	req.Header.Add("X-Payload", "second")
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	interactions := manager.PollInteractions(hook.ID)
+	if len(interactions) != 1 {
+		t.Fatalf("expected 1 interaction, got %d", len(interactions))
+	}
+
+	headers, ok := interactions[0].Data["headers"].(map[string]string)
+	if !ok {
+		t.Fatalf("expected a header map, got %T", interactions[0].Data["headers"])
+	}
+	if headers["X-Payload"] != "first, second" {
+		t.Errorf("expected both values kept, got %q", headers["X-Payload"])
+	}
+}
