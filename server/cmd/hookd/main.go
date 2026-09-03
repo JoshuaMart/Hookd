@@ -22,7 +22,8 @@ import (
 	"github.com/jomar/hookd/internal/storage"
 )
 
-const version = "0.1.0"
+// version is overridden at build time via -ldflags "-X main.version=..."
+var version = "dev"
 
 func main() {
 	// Register CLI flags
