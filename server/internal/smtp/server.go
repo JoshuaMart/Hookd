@@ -1,7 +1,5 @@
-// Package smtp implements the inbound half of SMTP: enough of RFC 5321 to
-// receive a message and record it as an interaction. Hookd never originates
-// mail — there is no relaying, no bounce and no DSN — so the sending path, and
-// with it the case for a full SMTP library, does not exist here.
+// Package smtp receives mail and records it as an interaction. Reception only:
+// Hookd never originates mail, so there is no sending path here.
 package smtp
 
 import (
@@ -23,25 +21,22 @@ import (
 	"github.com/jomar/hookd/internal/storage"
 )
 
-// Line-length caps from RFC 5321 4.5.3.1.4 and 4.5.3.1.6, which count the
-// trailing CRLF. Without them an unterminated line would grow the read buffer
-// without bound.
+// Line caps from RFC 5321 4.5.3.1, which count the trailing CRLF. Without them
+// an unterminated line grows the buffer without bound.
 const (
 	maxCommandLine = 512 - 2
 	maxTextLine    = 1000 - 2
 )
 
-// readBufferSize is the size of the per-connection read buffer. Lines longer
-// than this are read in several chunks, so it bounds memory, not line length.
+// Longer lines are read in chunks, so this bounds memory, not line length.
 const readBufferSize = 1024
 
-// writeTimeout bounds a single reply. It is deliberately independent of the
-// read and session deadlines: the last thing a timed-out session does is send
-// its 421, and it must not inherit a deadline that has already passed.
+// Independent of the read deadline: a timed-out session still has to send its
+// 421, so it must not inherit a deadline that has already passed.
 const writeTimeout = 30 * time.Second
 
-// Server is an inbound SMTP listener. It accepts mail for every address under
-// the configured domain and records the ones that map to a live hook.
+// Server accepts mail for every address under the domain and records the ones
+// that map to a live hook.
 type Server struct {
 	domain       string
 	cfg          config.SMTPConfig
@@ -57,14 +52,9 @@ type Server struct {
 	conns map[net.Conn]struct{}
 }
 
-// NewServer creates an inbound SMTP server and binds its listener, so a port
-// conflict or a missing CAP_NET_BIND_SERVICE surfaces at startup rather than
-// from a goroutine. The listen address comes from cfg, so a caller cannot pass
-// a port that disagrees with the validated configuration.
-//
-// maxBodyBytes is the capture-body cap shared with the HTTP handler
-// (eviction.max_interaction_body_bytes): a message above it is stored
-// truncated and flagged, exactly as an oversized HTTP body is.
+// NewServer binds the listener here, so a port conflict or a missing
+// CAP_NET_BIND_SERVICE surfaces at startup rather than from a goroutine.
+// maxBodyBytes is the capture cap shared with the HTTP handler.
 func NewServer(domain string, cfg config.SMTPConfig, maxBodyBytes int, store storage.Manager, logger *slog.Logger, idGenerator func() string) (*Server, error) {
 	addr := net.JoinHostPort(cfg.BindAddress, strconv.Itoa(cfg.Port))
 	listener, err := net.Listen("tcp", addr)
@@ -85,8 +75,7 @@ func NewServer(domain string, cfg config.SMTPConfig, maxBodyBytes int, store sto
 	}, nil
 }
 
-// Addr returns the address the listener is bound to, which is how a test that
-// asked for port 0 finds the port it was given.
+// Addr is how a caller that asked for port 0 finds the port it was given.
 func (s *Server) Addr() string {
 	return s.listener.Addr().String()
 }
@@ -132,8 +121,8 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 }
 
-// refuse turns away a connection that would exceed max_concurrent. Answering
-// 421 rather than dropping the socket lets a legitimate sender retry later.
+// refuse answers 421 rather than dropping the socket, so a legitimate sender
+// knows to retry.
 func (s *Server) refuse(conn net.Conn) {
 	_ = conn.SetWriteDeadline(time.Now().Add(s.cfg.ReadTimeout))
 	_, _ = conn.Write([]byte("421 4.7.0 Too many connections, try again later\r\n"))
@@ -147,7 +136,7 @@ func (s *Server) serve(conn net.Conn) {
 	defer func() {
 		s.untrack(conn)
 		_ = conn.Close()
-		// One malformed session must not take the listener down with it.
+		// One bad session must not take the listener down with it.
 		if r := recover(); r != nil {
 			s.logger.Error("smtp session panic", "error", r)
 		}
@@ -175,8 +164,7 @@ func (s *Server) untrack(conn net.Conn) {
 	delete(s.conns, conn)
 }
 
-// closeAll drops the live sessions on shutdown, so a peer holding a connection
-// open cannot delay it by up to session_timeout.
+// closeAll drops live sessions so shutdown is not delayed by session_timeout.
 func (s *Server) closeAll() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -185,9 +173,8 @@ func (s *Server) closeAll() {
 	}
 }
 
-// recipient is an accepted RCPT TO: the address as given, plus the hook it
-// routes to. The hook may not exist — every in-domain address is accepted and
-// the unmatched ones are dropped after DATA.
+// recipient is an accepted RCPT TO. The hook may not exist: unmatched
+// recipients are dropped after DATA.
 type recipient struct {
 	addr string
 	id   string
@@ -206,8 +193,7 @@ type session struct {
 
 	helo string
 
-	// inTransaction is set by MAIL FROM and distinguishes "no sender yet" from
-	// the null sender <>, which is a legitimate value.
+	// Distinguishes "no sender yet" from the legitimate null sender <>.
 	inTransaction bool
 	mailFrom      string
 	rcpts         []recipient
@@ -237,8 +223,7 @@ func (ss *session) run() {
 	}
 }
 
-// handleReadError reports a session-ending read failure. A timeout gets a 421
-// so a well-behaved sender knows to retry; anything else is just a closed pipe.
+// handleReadError answers a timeout with 421; anything else is a closed pipe.
 func (ss *session) handleReadError(err error) {
 	var ne net.Error
 	if errors.As(err, &ne) && ne.Timeout() {
@@ -273,16 +258,14 @@ func (ss *session) command(line string) bool {
 		ss.reply("221 2.0.0 Bye")
 		return false
 	case "VRFY":
-		// Never confirm or deny an address: the catch-all exists precisely so
-		// that live hook IDs cannot be enumerated.
+		// Never confirm or deny: hook IDs must not be enumerable.
 		return ss.reply("252 2.5.2 Cannot VRFY user")
 	default:
 		return ss.reply("500 5.5.1 Command not recognized")
 	}
 }
 
-// ehlo handles both greetings; extended is false for HELO, whose reply carries
-// no extension lines.
+// ehlo handles both greetings; HELO's reply carries no extension lines.
 func (ss *session) ehlo(rest string, extended bool) bool {
 	name := strings.TrimSpace(rest)
 	if name == "" {
@@ -319,8 +302,7 @@ func (ss *session) mail(rest string) bool {
 		return ss.reply("501 5.5.4 Syntax: MAIL FROM:<address>")
 	}
 
-	// Refusing on the advertised SIZE saves transferring a body that would be
-	// rejected at the end of DATA anyway.
+	// Refusing here saves transferring a body DATA would reject anyway.
 	if size, given := sizeParam(params); given && size > ss.srv.cfg.MaxMessageBytes {
 		return ss.reply("552 5.3.4 Message size exceeds fixed limit")
 	}
@@ -330,9 +312,8 @@ func (ss *session) mail(rest string) bool {
 	return ss.reply("250 2.1.0 Ok")
 }
 
-// rcpt handles RCPT TO. Every address under the domain is accepted, whether or
-// not a hook answers to it; only an address outside the domain is refused,
-// which is what separates a capture server from an open relay.
+// rcpt accepts every address under the domain, hook or no hook. Refusing the
+// ones outside it is what separates a capture server from an open relay.
 func (ss *session) rcpt(rest string) bool {
 	if !ss.inTransaction {
 		return ss.reply("503 5.5.1 Need MAIL before RCPT")
@@ -360,8 +341,8 @@ func (ss *session) rcpt(rest string) bool {
 	return ss.reply("250 2.1.5 Ok")
 }
 
-// data reads the message and records it for every recipient that maps to a
-// live hook. Recipients that map to none are dropped here, after the 250.
+// data reads the message and records it for every recipient with a live hook;
+// the rest are dropped here, after the 250.
 func (ss *session) data() bool {
 	if !ss.inTransaction {
 		return ss.reply("503 5.5.1 Need MAIL before DATA")
@@ -397,9 +378,8 @@ func (ss *session) data() bool {
 	return ss.reply("250 2.0.0 Ok")
 }
 
-// readData reads to the terminating lone dot, unstuffing leading dots as it
-// goes. An oversized message is drained rather than abandoned, so the
-// connection stays in sync and can be reused for another transaction.
+// readData reads to the terminating lone dot. An oversized message is drained,
+// not abandoned, so the connection stays in sync.
 func (ss *session) readData() (raw string, truncated, tooBig bool, err error) {
 	var (
 		b    strings.Builder
@@ -412,9 +392,8 @@ func (ss *session) readData() (raw string, truncated, tooBig bool, err error) {
 			return "", false, false, err
 		}
 		if cut {
-			// A body line over the RFC limit keeps its first 1000 octets and
-			// the message is flagged. Keeping the capture is the point; a
-			// sender emitting such a line is already out of spec.
+			// An over-long body line keeps its prefix and flags the message:
+			// keeping the capture beats dropping it.
 			truncated = true
 		}
 
@@ -422,8 +401,7 @@ func (ss *session) readData() (raw string, truncated, tooBig bool, err error) {
 			return b.String(), truncated, tooBig, nil
 		}
 
-		// Dot-unstuffing (RFC 5321 4.5.2): a body line starting with '.'
-		// arrives doubled. Missing this corrupts every message containing one.
+		// Dot-unstuffing (RFC 5321 4.5.2): a leading '.' arrives doubled.
 		line = strings.TrimPrefix(line, ".")
 
 		size += len(line) + 2 // the CRLF counts toward the advertised SIZE
@@ -436,8 +414,7 @@ func (ss *session) readData() (raw string, truncated, tooBig bool, err error) {
 	}
 }
 
-// deliver records one interaction per recipient that maps to a live hook, and
-// returns how many were recorded.
+// deliver records one interaction per matching recipient and returns the count.
 func (ss *session) deliver(raw string, truncated bool) int {
 	subject := parseSubject(raw)
 	body, cut := storage.TruncateBody(raw, ss.srv.maxBodyBytes)
@@ -476,8 +453,7 @@ func (ss *session) resetTransaction() {
 	ss.rcpts = nil
 }
 
-// reply writes one or more response lines. It returns false when the write
-// failed, which ends the session.
+// reply returns false when the write failed, which ends the session.
 func (ss *session) reply(lines ...string) bool {
 	if err := ss.conn.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {
 		return false
@@ -495,9 +471,8 @@ func (ss *session) reply(lines ...string) bool {
 	return true
 }
 
-// readLine reads one CRLF-terminated line without its terminator, capped at
-// max bytes. An over-long line is drained to the terminator so the next read
-// starts at the following line, and truncated reports that it was cut.
+// readLine reads one line without its CRLF, capped at max bytes. An over-long
+// line is drained so the next read starts at the following one.
 func (ss *session) readLine(max int) (line string, truncated bool, err error) {
 	if err := ss.conn.SetReadDeadline(ss.readDeadline()); err != nil {
 		return "", false, err
@@ -527,9 +502,8 @@ func (ss *session) readLine(max int) (line string, truncated bool, err error) {
 	}
 }
 
-// readDeadline is the earlier of the per-command read timeout and the end of
-// the session, so neither a slow command nor a long series of them can hold a
-// connection open indefinitely.
+// readDeadline is the earlier of the command timeout and the session end, so
+// neither a slow command nor a long run of them holds the connection open.
 func (ss *session) readDeadline() time.Time {
 	d := time.Now().Add(ss.srv.cfg.ReadTimeout)
 	if d.After(ss.sessionEnd) {
@@ -538,10 +512,8 @@ func (ss *session) readDeadline() time.Time {
 	return d
 }
 
-// cutPrefixFold strips a case-insensitive prefix, returning the remainder of
-// the original string so the address keeps its case. Comparing in place rather
-// than against an upper-cased copy keeps the offsets valid: ToUpper can change
-// a string's byte length.
+// cutPrefixFold strips a case-insensitive prefix from the original string, so
+// the address keeps its case and the offsets stay valid (ToUpper can resize).
 func cutPrefixFold(s, prefix string) (string, bool) {
 	if len(s) < len(prefix) || !strings.EqualFold(s[:len(prefix)], prefix) {
 		return "", false
@@ -549,9 +521,8 @@ func cutPrefixFold(s, prefix string) (string, bool) {
 	return s[len(prefix):], true
 }
 
-// splitPath extracts the address from a MAIL/RCPT argument and returns any
-// trailing ESMTP parameters. The angle brackets are optional: some clients
-// omit them, and there is nothing to gain from refusing those.
+// splitPath returns the address and any trailing ESMTP parameters. The angle
+// brackets are optional, since some clients omit them.
 func splitPath(arg string) (addr, params string, ok bool) {
 	arg = strings.TrimLeft(arg, " \t")
 
@@ -570,8 +541,8 @@ func splitPath(arg string) (addr, params string, ok bool) {
 	return addr, strings.TrimSpace(params), true
 }
 
-// sizeParam reads the SIZE= ESMTP parameter. given is false when it is absent
-// or unparseable, in which case the cap is enforced while reading DATA.
+// sizeParam reads SIZE=. When absent or unparseable the cap is enforced while
+// reading DATA instead.
 func sizeParam(params string) (size int, given bool) {
 	for _, p := range strings.Fields(params) {
 		value, ok := strings.CutPrefix(strings.ToUpper(p), "SIZE=")
@@ -587,9 +558,8 @@ func sizeParam(params string) (size int, given bool) {
 	return 0, false
 }
 
-// parseSubject returns the decoded Subject header. A message that does not
-// parse yields an empty subject rather than being dropped: the raw message is
-// the signal, and a malformed one is often the interesting one.
+// parseSubject returns the decoded Subject. An unparseable message yields an
+// empty subject rather than being dropped.
 func parseSubject(raw string) string {
 	msg, err := mail.ReadMessage(strings.NewReader(raw))
 	if err != nil {
@@ -601,8 +571,7 @@ func parseSubject(raw string) string {
 		return ""
 	}
 
-	// RFC 2047 encoded-words ("=?UTF-8?B?...?=") are what a non-ASCII subject
-	// actually arrives as.
+	// A non-ASCII subject arrives as RFC 2047 encoded-words.
 	decoded, err := new(mime.WordDecoder).DecodeHeader(subject)
 	if err != nil {
 		return subject

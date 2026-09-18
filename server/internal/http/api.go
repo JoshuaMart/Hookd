@@ -32,9 +32,8 @@ type APIHandler struct {
 	evictor   *eviction.Evictor
 	domain    string
 	longLived config.LongLivedConfig
-	// smtpEnabled mirrors server.smtp.enabled. A hook only carries a mail
-	// address when a listener is actually running, so a deployment without one
-	// never hands out an address that would black-hole.
+	// A hook carries a mail address only when a listener is running, so a
+	// deployment without one never hands out a black hole.
 	smtpEnabled bool
 	logger      *slog.Logger
 	idGenerator func() string

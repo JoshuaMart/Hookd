@@ -25,9 +25,8 @@ func testConfig() config.SMTPConfig {
 	return cfg
 }
 
-// newTestServer starts an SMTP server on a loopback ephemeral port, backed by
-// an in-memory store, and returns both so a test can assert on what was
-// captured. The server is stopped when the test ends.
+// newTestServer starts a server on a loopback ephemeral port with an in-memory
+// store, stopped when the test ends.
 func newTestServer(t *testing.T, cfg config.SMTPConfig) (*Server, *storage.MemoryManager) {
 	t.Helper()
 	return newTestServerWithCap(t, cfg, 1<<20)
@@ -273,9 +272,7 @@ func TestRelayIsRefused(t *testing.T) {
 	c.expect("550")
 }
 
-// An address under the domain that matches no hook is accepted all the way
-// through, then dropped. Anything else would make the server an enumeration
-// oracle, and would fail the signup forms that probe an address before use.
+// Accepting then dropping is what keeps hook IDs unenumerable.
 func TestUnknownHookIsAcceptedThenDropped(t *testing.T) {
 	srv, store := newTestServer(t, testConfig())
 
@@ -309,8 +306,7 @@ func TestDotStuffedBodyRoundTrip(t *testing.T) {
 
 	c := dial(t, srv)
 	c.greet()
-	// ".." on the wire is a body line of a single "."; "..leading" is
-	// ".leading". Without unstuffing, both are corrupted.
+	// ".." on the wire is one "."; without unstuffing both lines corrupt.
 	c.deliver("x@vendor.test", hook.ID+"@"+testDomain,
 		"Subject: dots\r\n\r\nbefore\r\n..\r\n..leading dot\r\nafter")
 	c.expect("250")
@@ -343,8 +339,7 @@ func TestOversizedMessageIsRejected(t *testing.T) {
 		t.Errorf("stored %d interactions for an oversized message, want 0", n)
 	}
 
-	// The connection stays usable: the oversized message was drained, not
-	// abandoned mid-stream.
+	// Still usable: the oversized message was drained, not abandoned.
 	c.send("NOOP")
 	c.expect("250")
 }
@@ -532,8 +527,7 @@ func TestSessionTimeoutBoundsABusySession(t *testing.T) {
 	c := dial(t, srv)
 	c.expect("220")
 
-	// A client that keeps talking still cannot hold the connection past the
-	// whole-session deadline.
+	// A client that keeps talking still cannot outlast the session deadline.
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		c.send("NOOP")
@@ -599,8 +593,7 @@ func TestNullSenderIsAccepted(t *testing.T) {
 
 	c := dial(t, srv)
 	c.greet()
-	// A bounce arrives with the null sender; refusing it would lose the
-	// delivery failure, which is itself a signal.
+	// A bounce arrives with the null sender, and is itself a signal.
 	c.deliver("", hook.ID+"@"+testDomain, "Subject: returned mail\r\n\r\nbody")
 	c.expect("250")
 

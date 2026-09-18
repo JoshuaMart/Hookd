@@ -60,22 +60,18 @@ type HTTPSConfig struct {
 	Resolvers []string `mapstructure:"resolvers"`
 }
 
-// SMTPConfig holds inbound SMTP server configuration. Hookd only ever
-// receives: it accepts mail addressed to the domain and never relays.
+// SMTPConfig configures inbound capture. Hookd receives only; it never relays.
 type SMTPConfig struct {
 	Enabled bool `mapstructure:"enabled"`
 	Port    int  `mapstructure:"port"`
-	// BindAddress is the local address the SMTP listener binds to. Leave empty
-	// to bind all interfaces.
+	// Empty binds all interfaces.
 	BindAddress string `mapstructure:"bind_address"`
-	// MaxMessageBytes caps a captured message, advertised via the SIZE
-	// extension so senders can give up before transferring the body.
+	// Advertised via the SIZE extension, so a sender can give up early.
 	MaxMessageBytes int `mapstructure:"max_message_bytes"`
 	MaxRecipients   int `mapstructure:"max_recipients"`
 	MaxConcurrent   int `mapstructure:"max_concurrent"`
-	// ReadTimeout bounds a single command or data line; SessionTimeout bounds
-	// the whole connection. Both are deliberately shorter than the minutes
-	// RFC 5321 4.5.3.2 suggests, to limit what an idle attacker can hold open.
+	// One command or data line, then the whole session. Both shorter than
+	// RFC 5321 4.5.3.2 suggests, to bound what an idle attacker holds open.
 	ReadTimeout    time.Duration `mapstructure:"read_timeout"`
 	SessionTimeout time.Duration `mapstructure:"session_timeout"`
 }
@@ -136,9 +132,7 @@ func DefaultConfig() *Config {
 				CacheDir: "/var/lib/hookd/certs",
 			},
 			SMTP: SMTPConfig{
-				// Opt-in: it binds a privileged port and exposes a public
-				// receiver, neither of which should appear on upgrade without
-				// consent.
+				// Opt-in: it binds a privileged port and receives public mail.
 				Enabled:         false,
 				Port:            25,
 				MaxMessageBytes: 262144, // 256 KiB

@@ -36,9 +36,8 @@ type Hook struct {
 type CreateOptions struct {
 	TTL      time.Duration
 	Metadata map[string]any
-	// SMTPEnabled mirrors server.smtp.enabled. It is server-wide rather than
-	// per-request, but it reaches newHook this way so a deployment without a
-	// mail listener never advertises an address that would black-hole.
+	// Mirrors server.smtp.enabled: without a listener the address would
+	// black-hole, so it is not advertised.
 	SMTPEnabled bool
 }
 
@@ -136,9 +135,8 @@ func HTTPInteraction(id, sourceIP, method, path string, headers map[string]strin
 }
 
 // SMTPInteraction creates an SMTP interaction. body is the raw RFC 5322
-// message; it is stored under "body" so the long-lived store truncates it the
-// same way it truncates HTTP bodies. tag is the sub-address suffix of the
-// recipient (empty when the address carried none).
+// message, stored under "body" so the long-lived store truncates it like an
+// HTTP body. tag is the recipient's sub-address suffix.
 func SMTPInteraction(id, sourceIP, helo, mailFrom, rcptTo, tag, subject, body string) *Interaction {
 	return &Interaction{
 		ID:        id,

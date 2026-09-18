@@ -89,9 +89,8 @@ func NewSQLiteManager(dbPath string, idGenerator func() string, maxBodyBytes int
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
 
-	// CREATE TABLE IF NOT EXISTS is a no-op on an existing database, so a
-	// column added after the first release has to be applied separately or a
-	// fresh install and an upgraded one would silently diverge.
+	// CREATE TABLE IF NOT EXISTS is a no-op on an existing database, so a later
+	// column needs its own step or installs diverge silently.
 	if err := migrate(db); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("migrate schema: %w", err)
@@ -113,20 +112,15 @@ func NewSQLiteManager(dbPath string, idGenerator func() string, maxBodyBytes int
 	return m, nil
 }
 
-// migrate brings an existing database up to the current schema. Each step is
-// idempotent, so it is safe to run on every start, including on a database
-// created by the current schema.
+// migrate brings a database up to the current schema. Every step is idempotent.
 func migrate(db *sql.DB) error {
 	has, err := hasColumn(db, "hooks", "smtp")
 	if err != nil {
 		return err
 	}
 	if !has {
-		// Rows written before this migration keep ''. They are not backfilled:
-		// the store knows neither the domain nor whether SMTP is enabled, and
-		// deriving an address for a deployment with no mail listener would
-		// advertise one that black-holes. Hooks registered before the upgrade
-		// simply carry no mail address until they are registered again.
+		// Older rows keep '': the store knows neither the domain nor whether
+		// SMTP is enabled, so backfilling could advertise a black hole.
 		if _, err := db.Exec(`ALTER TABLE hooks ADD COLUMN smtp TEXT NOT NULL DEFAULT ''`); err != nil {
 			return fmt.Errorf("add hooks.smtp: %w", err)
 		}

@@ -56,8 +56,7 @@ func defaultTestConfig(dbPath string) *config.Config {
 	cfg.Server.PublicIP = "127.0.0.1"
 	cfg.Server.HTTP.Port = 18080
 	cfg.Server.HTTPS.Enabled = false
-	// Inbound mail on a non-privileged loopback port. Enabled here so a
-	// registered hook advertises its address; individual tests opt out by
+	// Enabled so a registered hook advertises its address; tests opt out by
 	// clearing it before startServer.
 	cfg.Server.SMTP.Enabled = true
 	cfg.Server.SMTP.Port = 12525

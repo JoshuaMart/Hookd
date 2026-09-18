@@ -17,13 +17,9 @@ func ExtractIP(remoteAddr string) string {
 	return host
 }
 
-// HookIDFromHost returns the hook ID encoded in a host name under domain: the
-// first label of the subdomain part. It returns "" when host is not a strict
-// subdomain of domain (the apex itself included).
-//
-// Matching is case-insensitive and a trailing dot is ignored, so a DNS qname
-// (whose casing resolvers randomise, per DNS-0x20), a Host header and an SMTP
-// recipient domain can all share one rule. Callers strip any port first.
+// HookIDFromHost returns the first label of host's subdomain part under domain,
+// or "" when host is not a strict subdomain of it. Matching ignores case
+// (DNS-0x20) and a trailing dot; callers strip any port first.
 func HookIDFromHost(host, domain string) string {
 	host = strings.ToLower(strings.TrimSuffix(host, "."))
 
