@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-const Version = "1.1.0"
+const Version = "1.2.0"
 
 // DefaultMaxResponseBytes caps the buffered response body. It is generous
 // because a poll can legitimately return many interactions with full bodies.
@@ -24,14 +24,15 @@ type Client struct {
 	maxResponseBytes int64
 }
 
-// Hook represents a registered hook with its endpoints. ExpiresAt and Metadata
-// are populated for long-lived hooks (registered with a TTL) and left empty
-// otherwise.
+// Hook represents a registered hook with its endpoints. SMTP is set only when
+// the server runs a mail listener. ExpiresAt and Metadata are populated for
+// long-lived hooks (registered with a TTL) and left empty otherwise.
 type Hook struct {
 	ID        string         `json:"id"`
 	DNS       string         `json:"dns"`
 	HTTP      string         `json:"http"`
 	HTTPS     string         `json:"https"`
+	SMTP      string         `json:"smtp,omitempty"`
 	CreatedAt string         `json:"created_at"`
 	ExpiresAt string         `json:"expires_at,omitempty"`
 	Metadata  map[string]any `json:"metadata,omitempty"`
@@ -54,7 +55,7 @@ type HookActivity struct {
 	LastInteractionAt string `json:"last_interaction_at"`
 }
 
-// Interaction represents a DNS or HTTP interaction captured by a hook.
+// Interaction represents a DNS, HTTP or SMTP interaction captured by a hook.
 type Interaction struct {
 	Type      string         `json:"type"`
 	Timestamp string         `json:"timestamp"`
@@ -67,6 +68,9 @@ func (i *Interaction) IsDNS() bool { return i.Type == "dns" }
 
 // IsHTTP returns true if the interaction is an HTTP interaction.
 func (i *Interaction) IsHTTP() bool { return i.Type == "http" }
+
+// IsSMTP returns true if the interaction is an SMTP interaction.
+func (i *Interaction) IsSMTP() bool { return i.Type == "smtp" }
 
 // BatchResult holds the poll result for a single hook in a batch poll.
 type BatchResult struct {

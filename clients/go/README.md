@@ -1,6 +1,6 @@
 # Hookd Go Client
 
-Go client library for [Hookd](https://github.com/JoshuaMart/hookd/server), a DNS/HTTP interaction server for security testing and debugging.
+Go client library for [Hookd](https://github.com/JoshuaMart/hookd/server), a DNS/HTTP/SMTP interaction server for security testing and debugging.
 
 ## Installation
 
@@ -36,6 +36,9 @@ func main() {
 	fmt.Printf("DNS endpoint: %s\n", hook.DNS)
 	fmt.Printf("HTTP endpoint: %s\n", hook.HTTP)
 	fmt.Printf("HTTPS endpoint: %s\n", hook.HTTPS)
+	if hook.SMTP != "" {
+		fmt.Printf("Mail endpoint: %s\n", hook.SMTP)
+	}
 
 	// Make a request to the HTTP endpoint to simulate an interaction
 	http.Get(hook.HTTP)
@@ -50,6 +53,8 @@ func main() {
 			fmt.Printf("DNS query: %v\n", interaction.Data)
 		} else if interaction.IsHTTP() {
 			fmt.Printf("HTTP request: %v\n", interaction.Data)
+		} else if interaction.IsSMTP() {
+			fmt.Printf("Mail from %v: %v\n", interaction.Data["mail_from"], interaction.Data["subject"])
 		}
 	}
 }
@@ -150,7 +155,7 @@ the cap returns a `*ResponseTooLargeError`.
 
 #### `(*Client) Register(count int) ([]Hook, error)`
 
-Register one or more hooks and get DNS/HTTP endpoints.
+Register one or more hooks and get their DNS, HTTP and (when the server runs a mail listener) SMTP endpoints.
 
 ```go
 // Single hook
@@ -227,6 +232,7 @@ fmt.Printf("Total hooks: %v\n", metrics["total_hooks"])
 | `DNS`       | string | DNS endpoint         |
 | `HTTP`      | string | HTTP endpoint        |
 | `HTTPS`     | string | HTTPS endpoint       |
+| `SMTP`      | string | Mail address (empty unless the server runs a mail listener) |
 | `CreatedAt` | string | Creation timestamp   |
 | `ExpiresAt` | string | Expiry timestamp (long-lived hooks) |
 | `Metadata`  | map[string]any | Metadata attached at registration |
@@ -243,7 +249,7 @@ fmt.Printf("Total hooks: %v\n", metrics["total_hooks"])
 
 | Field      | Type            | Description                    |
 |------------|-----------------|--------------------------------|
-| `Type`     | string          | "dns" or "http"                |
+| `Type`     | string          | "dns", "http" or "smtp"        |
 | `Timestamp`| string          | When the interaction occurred  |
 | `SourceIP` | string          | Source IP address               |
 | `Data`     | map[string]any  | Interaction details            |
@@ -251,6 +257,7 @@ fmt.Printf("Total hooks: %v\n", metrics["total_hooks"])
 Methods:
 - `IsDNS() bool` - Returns true if this is a DNS interaction
 - `IsHTTP() bool` - Returns true if this is an HTTP interaction
+- `IsSMTP() bool` - Returns true if this is an SMTP interaction
 
 #### `BatchResult`
 

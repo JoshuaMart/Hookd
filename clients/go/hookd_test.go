@@ -48,6 +48,7 @@ func TestRegisterSingle(t *testing.T) {
 			"dns":        "abc123.hookd.example.com",
 			"http":       "http://abc123.hookd.example.com",
 			"https":      "https://abc123.hookd.example.com",
+			"smtp":       "abc123@hookd.example.com",
 			"created_at": "2024-01-01T00:00:00Z",
 		})
 	})
@@ -65,6 +66,31 @@ func TestRegisterSingle(t *testing.T) {
 	}
 	if hooks[0].DNS != "abc123.hookd.example.com" {
 		t.Errorf("unexpected dns: %s", hooks[0].DNS)
+	}
+	if hooks[0].SMTP != "abc123@hookd.example.com" {
+		t.Errorf("unexpected smtp: %s", hooks[0].SMTP)
+	}
+}
+
+// A server without a mail listener omits the field entirely.
+func TestRegisterWithoutSMTP(t *testing.T) {
+	server, client := setupServer(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]any{
+			"id":         "abc123",
+			"dns":        "abc123.hookd.example.com",
+			"http":       "http://abc123.hookd.example.com",
+			"https":      "https://abc123.hookd.example.com",
+			"created_at": "2024-01-01T00:00:00Z",
+		})
+	})
+	defer server.Close()
+
+	hooks, err := client.Register(0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if hooks[0].SMTP != "" {
+		t.Errorf("expected an empty smtp address, got %s", hooks[0].SMTP)
 	}
 }
 
@@ -220,6 +246,12 @@ func TestPoll(t *testing.T) {
 					"source_ip": "5.6.7.8",
 					"data":      map[string]any{"method": "GET", "path": "/"},
 				},
+				map[string]any{
+					"type":      "smtp",
+					"timestamp": "2024-01-01T00:02:00Z",
+					"source_ip": "9.10.11.12",
+					"data":      map[string]any{"mail_from": "x@vendor.test", "subject": "hi", "tag": "vendor"},
+				},
 			},
 		})
 	})
@@ -229,14 +261,20 @@ func TestPoll(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(interactions) != 2 {
-		t.Fatalf("expected 2 interactions, got %d", len(interactions))
+	if len(interactions) != 3 {
+		t.Fatalf("expected 3 interactions, got %d", len(interactions))
 	}
 	if !interactions[0].IsDNS() {
 		t.Error("expected first interaction to be DNS")
 	}
 	if !interactions[1].IsHTTP() {
 		t.Error("expected second interaction to be HTTP")
+	}
+	if !interactions[2].IsSMTP() {
+		t.Error("expected third interaction to be SMTP")
+	}
+	if tag := interactions[2].Data["tag"]; tag != "vendor" {
+		t.Errorf("unexpected tag: %v", tag)
 	}
 	if interactions[0].SourceIP != "1.2.3.4" {
 		t.Errorf("unexpected source_ip: %s", interactions[0].SourceIP)
@@ -555,6 +593,14 @@ func TestInteractionHelpers(t *testing.T) {
 	}
 	if !h.IsHTTP() {
 		t.Error("expected IsHTTP to be true")
+	}
+
+	m := Interaction{Type: "smtp"}
+	if !m.IsSMTP() {
+		t.Error("expected IsSMTP to be true")
+	}
+	if m.IsDNS() || m.IsHTTP() {
+		t.Error("expected IsDNS and IsHTTP to be false")
 	}
 }
 
