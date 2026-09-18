@@ -7,22 +7,25 @@
     <img src="https://img.shields.io/badge/golang-1.26-blue?logo=go">
 </p>
 
-Lightweight interaction server for capturing out-of-band DNS and HTTP callbacks. Register ephemeral hooks, inject their endpoints into targets, and poll back to check for interactions — ideal for security testing, webhook debugging, and external service monitoring.
+Lightweight interaction server for capturing out-of-band DNS, HTTP and SMTP callbacks. Register ephemeral hooks, inject their endpoints into targets, and poll back to check for interactions — ideal for security testing, webhook debugging, and external service monitoring.
 
 ## Pipeline
 
 ```
 1. Register — POST /register creates a hook with unique DNS + HTTP(S) endpoints
+        |             (and a mail address when SMTP capture is enabled)
         |
         v
 2. Inject — use the hook endpoints in your payloads, webhooks, or test targets
         |
         v
-3. Capture — Hookd records every DNS query and HTTP request hitting the hook
+3. Capture — Hookd records every DNS query, HTTP request and mail hitting the hook
         |  ┌─────────────────────────────────────────────────────┐
         |  │  DNS server (UDP 53)  → captures qname, qtype, IP   │
         |  │  HTTP/HTTPS (80/443)  → captures method, target,    │
         |  │                          headers, body, IP          │
+        |  │  SMTP (TCP 25)        → captures the raw message,   │
+        |  │                          sender, subject, tag, IP   │
         |  └─────────────────────────────────────────────────────┘
         v
 4. Poll — GET /poll/{id} retrieves captured interactions (and clears them)
@@ -89,6 +92,10 @@ server:
     port: 443
     autocert: true
     cache_dir: "/var/lib/hookd/certs"
+  smtp:
+    enabled: false              # opt-in: binds port 25 and receives public mail
+    port: 25
+    max_message_bytes: 262144
   api:
     auth_token: ""              # auto-generated if empty, printed once on stderr
 
@@ -116,15 +123,46 @@ observability:
 | `--dns-bind` | Override the DNS listener bind address | (all interfaces) |
 | `--http-port` | Override HTTP port | `80` |
 | `--https-port` | Override HTTPS port | `443` |
+| `--smtp-port` | Override SMTP port | `25` |
+| `--smtp-bind` | Override the SMTP listener bind address | (all interfaces) |
 | `--auth-token` | Override auth token | (from config) |
 | `--log-level` | Log level | `info` |
 | `--log-format` | Log format (`json` or `text`) | `json` |
 
 </details>
 
+## Mail capture
+
+With `server.smtp.enabled`, a hook also becomes a disposable mailbox:
+
+```
+abc123@hookd.example.com          the address handed back at registration
+abc123+carrefour@hookd.example.com   any label you like, no extra API call
+```
+
+Mail is captured as an ordinary interaction and read back through
+`GET /poll/{id}`, under the same API token — no new endpoint, no new auth. The
+raw RFC 5322 message lands in `data.body`, with the sender, subject and the
+`+tag` alongside it, so the tag shows which site leaked the address.
+
+Reception only: **Hookd never sends, relays or bounces.** A `RCPT TO` outside
+the domain is refused with `550 5.7.1`, which is what separates a capture server
+from an open relay. Every address *under* the domain is accepted with a uniform
+`250`, whether or not a hook answers to it — a `550` would fail the signup forms
+that probe an address before accepting it, and per-recipient codes would turn
+the server into an enumeration oracle for live hook IDs. Unmatched recipients
+are read and silently dropped.
+
+There is no SPF, DKIM or DMARC verification: everything accepted is stored as
+received, and the raw message is the signal. Nothing to add in DNS either — the
+server already answers MX for every name under the domain. Check that your host
+does not filter inbound port 25, and grant `CAP_NET_BIND_SERVICE` as for port 53.
+
 ### `POST /register`
 
-Create one or more hooks.
+Create one or more hooks. The response carries `smtp` only when the mail
+listener is enabled, so a deployment without one never advertises an address
+that would black-hole.
 
 ```bash
 # Single hook
@@ -153,6 +191,7 @@ curl -X POST https://hookd.example.com/register \
   "dns": "abc123.hookd.example.com",
   "http": "http://abc123.hookd.example.com",
   "https": "https://abc123.hookd.example.com",
+  "smtp": "abc123@hookd.example.com",
   "created_at": "2025-10-01T10:30:00Z",
   "expires_at": "2025-10-08T10:30:00Z",
   "metadata": {"target": "acme", "field": "profile.bio"}
@@ -197,6 +236,20 @@ curl https://hookd.example.com/poll/abc123 \
         "path": "/callback?token=s3cr3t",
         "headers": {},
         "body": "payload"
+      }
+    },
+    {
+      "id": "int_def",
+      "type": "smtp",
+      "timestamp": "2025-10-01T10:33:00Z",
+      "source_ip": "9.10.11.12",
+      "data": {
+        "helo": "mail.vendor.example",
+        "mail_from": "signup@vendor.example",
+        "rcpt_to": "abc123+vendor@hookd.example.com",
+        "tag": "vendor",
+        "subject": "Your verification code",
+        "body": "From: signup@vendor.example\r\nSubject: Your verification code\r\n\r\nYour code is 123456."
       }
     }
   ]
