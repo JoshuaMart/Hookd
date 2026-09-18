@@ -91,6 +91,7 @@ type Stats struct {
 	InteractionsTotal int
 	InteractionsDNS   int
 	InteractionsHTTP  int
+	InteractionsSMTP  int
 	Memory            MemoryStats
 }
 
@@ -378,6 +379,8 @@ func (m *MemoryManager) Stats() Stats {
 				stats.InteractionsDNS++
 			case InteractionTypeHTTP:
 				stats.InteractionsHTTP++
+			case InteractionTypeSMTP:
+				stats.InteractionsSMTP++
 			}
 		}
 	}

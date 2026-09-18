@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS hooks (
 	dns        TEXT NOT NULL,
 	http       TEXT NOT NULL,
 	https      TEXT NOT NULL,
+	smtp       TEXT NOT NULL DEFAULT '',
 	created_at INTEGER NOT NULL,
 	expires_at INTEGER NOT NULL,
 	metadata   TEXT
@@ -88,6 +89,14 @@ func NewSQLiteManager(dbPath string, idGenerator func() string, maxBodyBytes int
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
 
+	// CREATE TABLE IF NOT EXISTS is a no-op on an existing database, so a
+	// column added after the first release has to be applied separately or a
+	// fresh install and an upgraded one would silently diverge.
+	if err := migrate(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate schema: %w", err)
+	}
+
 	m := &SQLiteManager{
 		db:           db,
 		idGenerator:  idGenerator,
@@ -102,6 +111,54 @@ func NewSQLiteManager(dbPath string, idGenerator func() string, maxBodyBytes int
 	}
 
 	return m, nil
+}
+
+// migrate brings an existing database up to the current schema. Each step is
+// idempotent, so it is safe to run on every start, including on a database
+// created by the current schema.
+func migrate(db *sql.DB) error {
+	has, err := hasColumn(db, "hooks", "smtp")
+	if err != nil {
+		return err
+	}
+	if !has {
+		// Rows written before this migration keep ''. They are not backfilled:
+		// the store knows neither the domain nor whether SMTP is enabled, and
+		// deriving an address for a deployment with no mail listener would
+		// advertise one that black-holes. Hooks registered before the upgrade
+		// simply carry no mail address until they are registered again.
+		if _, err := db.Exec(`ALTER TABLE hooks ADD COLUMN smtp TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("add hooks.smtp: %w", err)
+		}
+	}
+	return nil
+}
+
+// hasColumn reports whether a table already has the given column.
+func hasColumn(db *sql.DB, table, column string) (bool, error) {
+	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			cid        int
+			name       string
+			typ        string
+			notNull    int
+			dfltValue  sql.NullString
+			primaryKey int
+		)
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &dfltValue, &primaryKey); err != nil {
+			return false, err
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }
 
 // loadIndex populates the in-memory hook-ID set from the database.
@@ -167,8 +224,8 @@ func (m *SQLiteManager) CreateLongLivedHook(domain string, opts CreateOptions, m
 	}
 
 	if _, err := m.db.Exec(
-		`INSERT INTO hooks (id, dns, http, https, created_at, expires_at, metadata) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		hook.ID, hook.DNS, hook.HTTP, hook.HTTPS, hook.CreatedAt.UnixNano(), expiryNanos(hook.ExpiresAt), meta,
+		`INSERT INTO hooks (id, dns, http, https, smtp, created_at, expires_at, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		hook.ID, hook.DNS, hook.HTTP, hook.HTTPS, hook.SMTP, hook.CreatedAt.UnixNano(), expiryNanos(hook.ExpiresAt), meta,
 	); err != nil {
 		return nil, fmt.Errorf("persist long-lived hook: %w", err)
 	}
@@ -196,7 +253,7 @@ func (m *SQLiteManager) GetHook(id string) (*Hook, bool) {
 		return nil, false
 	}
 	row := m.db.QueryRow(
-		`SELECT id, dns, http, https, created_at, expires_at, metadata FROM hooks WHERE id = ?`, id,
+		`SELECT id, dns, http, https, smtp, created_at, expires_at, metadata FROM hooks WHERE id = ?`, id,
 	)
 	hook, err := scanHook(row)
 	if err != nil {
@@ -326,6 +383,8 @@ func (m *SQLiteManager) Stats() Stats {
 			stats.InteractionsDNS += count
 		case InteractionTypeHTTP:
 			stats.InteractionsHTTP += count
+		case InteractionTypeSMTP:
+			stats.InteractionsSMTP += count
 		}
 	}
 	return stats
@@ -434,7 +493,7 @@ func (m *SQLiteManager) EvictByMemoryPressure(_ int) MemoryEvictionResult {
 // interactions, with their pending count and most recent interaction time.
 func (m *SQLiteManager) LongLivedActivity() []HookActivity {
 	rows, err := m.db.Query(`
-		SELECT h.id, h.dns, h.http, h.https, h.created_at, h.expires_at, h.metadata,
+		SELECT h.id, h.dns, h.http, h.https, h.smtp, h.created_at, h.expires_at, h.metadata,
 		       COUNT(i.id), COALESCE(MAX(i.timestamp), 0)
 		FROM hooks h
 		JOIN interactions i ON i.hook_id = h.id
@@ -458,7 +517,7 @@ func (m *SQLiteManager) LongLivedActivity() []HookActivity {
 			lastInteractNano int64
 		)
 		if err := rows.Scan(
-			&hook.ID, &hook.DNS, &hook.HTTP, &hook.HTTPS, &createdNanos, &expiresNanos, &meta,
+			&hook.ID, &hook.DNS, &hook.HTTP, &hook.HTTPS, &hook.SMTP, &createdNanos, &expiresNanos, &meta,
 			&pendingCount, &lastInteractNano,
 		); err != nil {
 			m.logger.Error("failed to scan long-lived activity", "error", err)
@@ -488,7 +547,7 @@ func scanHook(s scanner) (*Hook, error) {
 		expiresNanos int64
 		meta         sql.NullString
 	)
-	if err := s.Scan(&hook.ID, &hook.DNS, &hook.HTTP, &hook.HTTPS, &createdNanos, &expiresNanos, &meta); err != nil {
+	if err := s.Scan(&hook.ID, &hook.DNS, &hook.HTTP, &hook.HTTPS, &hook.SMTP, &createdNanos, &expiresNanos, &meta); err != nil {
 		return nil, err
 	}
 	assignHookTimes(&hook, createdNanos, expiresNanos, meta)
