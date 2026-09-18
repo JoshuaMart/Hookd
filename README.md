@@ -131,33 +131,6 @@ observability:
 
 </details>
 
-## Mail capture
-
-With `server.smtp.enabled`, a hook also becomes a disposable mailbox:
-
-```
-abc123@hookd.example.com          the address handed back at registration
-abc123+carrefour@hookd.example.com   any label you like, no extra API call
-```
-
-Mail is captured as an ordinary interaction and read back through
-`GET /poll/{id}`, under the same API token — no new endpoint, no new auth. The
-raw RFC 5322 message lands in `data.body`, with the sender, subject and the
-`+tag` alongside it, so the tag shows which site leaked the address.
-
-Reception only: **Hookd never sends, relays or bounces.** A `RCPT TO` outside
-the domain is refused with `550 5.7.1`, which is what separates a capture server
-from an open relay. Every address *under* the domain is accepted with a uniform
-`250`, whether or not a hook answers to it — a `550` would fail the signup forms
-that probe an address before accepting it, and per-recipient codes would turn
-the server into an enumeration oracle for live hook IDs. Unmatched recipients
-are read and silently dropped.
-
-There is no SPF, DKIM or DMARC verification: everything accepted is stored as
-received, and the raw message is the signal. Nothing to add in DNS either — the
-server already answers MX for every name under the domain. Check that your host
-does not filter inbound port 25, and grant `CAP_NET_BIND_SERVICE` as for port 53.
-
 ### `POST /register`
 
 Create one or more hooks. The response carries `smtp` only when the mail
