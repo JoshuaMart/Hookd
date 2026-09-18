@@ -538,28 +538,13 @@ func (h *CaptureHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-// extractHookID extracts the hook ID from a host header
+// extractHookID extracts the hook ID from a host header.
 // Example: abc123.hookd.jomar.ovh -> abc123
 func (h *CaptureHandler) extractHookID(host string) string {
-	// Remove port if present
+	// Remove port if present. An IPv6 literal is mangled by this, but such a
+	// host never matches the domain suffix anyway.
 	if idx := strings.Index(host, ":"); idx != -1 {
 		host = host[:idx]
 	}
-
-	// Hostnames are case-insensitive and may arrive with a trailing dot.
-	host = strings.ToLower(strings.TrimSuffix(host, "."))
-
-	// Check if it's a subdomain of our domain
-	suffix := "." + strings.ToLower(h.domain)
-	if !strings.HasSuffix(host, suffix) {
-		return ""
-	}
-
-	// Extract the subdomain part
-	subdomain := strings.TrimSuffix(host, suffix)
-
-	// Handle multi-level subdomains (take the first part). strings.Split always
-	// returns at least one element, so parts[0] is safe.
-	parts := strings.Split(subdomain, ".")
-	return parts[0]
+	return netutil.HookIDFromHost(host, h.domain)
 }
