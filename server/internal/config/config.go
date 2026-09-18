@@ -27,6 +27,7 @@ type ServerConfig struct {
 	DNS      DNSConfig   `mapstructure:"dns"`
 	HTTP     HTTPConfig  `mapstructure:"http"`
 	HTTPS    HTTPSConfig `mapstructure:"https"`
+	SMTP     SMTPConfig  `mapstructure:"smtp"`
 	API      APIConfig   `mapstructure:"api"`
 }
 
@@ -57,6 +58,26 @@ type HTTPSConfig struct {
 	// empty to use the public defaults (Cloudflare + Google). These are used only
 	// by the ACME solver; the process's own name resolution is left untouched.
 	Resolvers []string `mapstructure:"resolvers"`
+}
+
+// SMTPConfig holds inbound SMTP server configuration. Hookd only ever
+// receives: it accepts mail addressed to the domain and never relays.
+type SMTPConfig struct {
+	Enabled bool `mapstructure:"enabled"`
+	Port    int  `mapstructure:"port"`
+	// BindAddress is the local address the SMTP listener binds to. Leave empty
+	// to bind all interfaces.
+	BindAddress string `mapstructure:"bind_address"`
+	// MaxMessageBytes caps a captured message, advertised via the SIZE
+	// extension so senders can give up before transferring the body.
+	MaxMessageBytes int `mapstructure:"max_message_bytes"`
+	MaxRecipients   int `mapstructure:"max_recipients"`
+	MaxConcurrent   int `mapstructure:"max_concurrent"`
+	// ReadTimeout bounds a single command or data line; SessionTimeout bounds
+	// the whole connection. Both are deliberately shorter than the minutes
+	// RFC 5321 4.5.3.2 suggests, to limit what an idle attacker can hold open.
+	ReadTimeout    time.Duration `mapstructure:"read_timeout"`
+	SessionTimeout time.Duration `mapstructure:"session_timeout"`
 }
 
 // APIConfig holds API configuration
@@ -114,6 +135,18 @@ func DefaultConfig() *Config {
 				AutoCert: false,
 				CacheDir: "/var/lib/hookd/certs",
 			},
+			SMTP: SMTPConfig{
+				// Opt-in: it binds a privileged port and exposes a public
+				// receiver, neither of which should appear on upgrade without
+				// consent.
+				Enabled:         false,
+				Port:            25,
+				MaxMessageBytes: 262144, // 256 KiB
+				MaxRecipients:   10,
+				MaxConcurrent:   50,
+				ReadTimeout:     60 * time.Second,
+				SessionTimeout:  5 * time.Minute,
+			},
 			API: APIConfig{
 				AuthToken: "",
 			},
@@ -170,6 +203,30 @@ func (c *Config) Validate() error {
 
 	if c.Server.HTTPS.Enabled && c.Server.HTTPS.AutoCert && c.Server.HTTPS.CacheDir == "" {
 		return fmt.Errorf("server.https.cache_dir is required when autocert is enabled")
+	}
+
+	if c.Server.SMTP.Enabled {
+		if c.Server.SMTP.Port < 1 || c.Server.SMTP.Port > 65535 {
+			return fmt.Errorf("server.smtp.port must be between 1 and 65535")
+		}
+		if c.Server.SMTP.BindAddress != "" && net.ParseIP(c.Server.SMTP.BindAddress) == nil {
+			return fmt.Errorf("server.smtp.bind_address must be a valid IP address")
+		}
+		if c.Server.SMTP.MaxMessageBytes <= 0 {
+			return fmt.Errorf("server.smtp.max_message_bytes must be positive")
+		}
+		if c.Server.SMTP.MaxRecipients <= 0 {
+			return fmt.Errorf("server.smtp.max_recipients must be positive")
+		}
+		if c.Server.SMTP.MaxConcurrent <= 0 {
+			return fmt.Errorf("server.smtp.max_concurrent must be positive")
+		}
+		if c.Server.SMTP.ReadTimeout <= 0 {
+			return fmt.Errorf("server.smtp.read_timeout must be positive")
+		}
+		if c.Server.SMTP.SessionTimeout <= 0 {
+			return fmt.Errorf("server.smtp.session_timeout must be positive")
+		}
 	}
 
 	if c.Eviction.InteractionTTL <= 0 {

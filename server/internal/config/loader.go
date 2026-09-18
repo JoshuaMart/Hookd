@@ -22,6 +22,14 @@ var configKeys = []string{
 	"server.https.port",
 	"server.https.autocert",
 	"server.https.cache_dir",
+	"server.smtp.enabled",
+	"server.smtp.port",
+	"server.smtp.bind_address",
+	"server.smtp.max_message_bytes",
+	"server.smtp.max_recipients",
+	"server.smtp.max_concurrent",
+	"server.smtp.read_timeout",
+	"server.smtp.session_timeout",
 	"server.api.auth_token",
 	"eviction.interaction_ttl",
 	"eviction.hook_ttl",
@@ -92,6 +100,8 @@ func RegisterFlags() {
 	pflag.String("dns-bind", "", "Override the DNS listener bind address")
 	pflag.Int("http-port", 0, "Override HTTP port")
 	pflag.Int("https-port", 0, "Override HTTPS port")
+	pflag.Int("smtp-port", 0, "Override SMTP port")
+	pflag.String("smtp-bind", "", "Override the SMTP listener bind address")
 	pflag.Bool("version", false, "Show version information")
 	pflag.BoolP("help", "h", false, "Show help message")
 }
@@ -124,5 +134,13 @@ func applyFlags(cfg *Config) {
 
 	if httpsPort := viper.GetInt("https-port"); httpsPort > 0 {
 		cfg.Server.HTTPS.Port = httpsPort
+	}
+
+	if smtpPort := viper.GetInt("smtp-port"); smtpPort > 0 {
+		cfg.Server.SMTP.Port = smtpPort
+	}
+
+	if smtpBind := viper.GetString("smtp-bind"); smtpBind != "" {
+		cfg.Server.SMTP.BindAddress = smtpBind
 	}
 }
