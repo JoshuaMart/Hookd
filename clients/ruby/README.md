@@ -1,6 +1,6 @@
 # Hookd Ruby Client
 
-Ruby client library for [Hookd](https://github.com/JoshuaMart/hookd/server), a DNS/HTTP interaction server for security testing and debugging.
+Ruby client library for [Hookd](https://github.com/JoshuaMart/hookd/server), a DNS/HTTP/SMTP interaction server for security testing and debugging.
 
 ## Installation
 
@@ -35,6 +35,7 @@ hook = client.register
 puts "DNS endpoint: #{hook.dns}"
 puts "HTTP endpoint: #{hook.http}"
 puts "HTTPS endpoint: #{hook.https}"
+puts "Mail endpoint: #{hook.smtp}" if hook.smtp
 
 # Make a request to the HTTP endpoint to simulate an interaction
 Typhoeus.get(hook.http)
@@ -46,6 +47,8 @@ interactions.each do |interaction|
     puts "DNS query: #{interaction.data}"
   elsif interaction.http?
     puts "HTTP request: #{interaction.data}"
+  elsif interaction.smtp?
+    puts "Mail from #{interaction.data['mail_from']}: #{interaction.data['subject']}"
   end
 end
 ```
@@ -95,6 +98,8 @@ results.each do |hook_id, result|
         puts "   - DNS: #{interaction.data['qname']} (#{interaction.data['qtype']})"
       elsif interaction.http?
         puts "   - HTTP: #{interaction.data['method']} #{interaction.data['path']}"
+      elsif interaction.smtp?
+        puts "   - SMTP: #{interaction.data['mail_from']} (#{interaction.data['subject']})"
       end
     end
   end
@@ -120,7 +125,7 @@ Main client class for interacting with the Hookd server.
 
 ##### `#register(count: nil)`
 
-Register one or more hooks and get DNS/HTTP endpoints.
+Register one or more hooks and get their DNS, HTTP and (when the server runs a mail listener) SMTP endpoints.
 
 **Single hook (default):**
 ```ruby
@@ -263,6 +268,7 @@ Attributes:
 - `dns` (String) - DNS endpoint
 - `http` (String) - HTTP endpoint
 - `https` (String) - HTTPS endpoint
+- `smtp` (String, nil) - Mail address (nil unless the server runs a mail listener)
 - `created_at` (String) - Creation timestamp
 - `expires_at` (String, nil) - Expiry timestamp (long-lived hooks)
 - `metadata` (Hash, nil) - Metadata attached at registration
@@ -278,16 +284,17 @@ Attributes:
 
 #### `Hookd::Interaction`
 
-Represents a captured DNS or HTTP interaction.
+Represents a captured DNS, HTTP or SMTP interaction.
 
 Attributes:
-- `type` (String) - Interaction type ("dns" or "http")
+- `type` (String) - Interaction type ("dns", "http" or "smtp")
 - `timestamp` (String) - When the interaction was captured
 - `data` (Hash) - Interaction details
 
 Methods:
 - `#dns?` - Returns true if this is a DNS interaction
 - `#http?` - Returns true if this is an HTTP interaction
+- `#smtp?` - Returns true if this is an SMTP interaction
 
 ### Error Handling
 
