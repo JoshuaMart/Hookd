@@ -9,7 +9,7 @@ Gem::Specification.new do |spec|
   spec.email = ['contact@jomar.fr']
 
   spec.summary = 'Ruby client for Hookd interaction server'
-  spec.description = 'Ruby client library for Hookd, a DNS/HTTP interaction server for security testing and debugging'
+  spec.description = 'Ruby client library for Hookd, a DNS/SMTP/HTTP interaction server for security testing and debugging'
   spec.homepage = 'https://github.com/JoshuaMart/Hookd'
   spec.license = 'MIT'
   spec.required_ruby_version = '>= 3.1.0'
