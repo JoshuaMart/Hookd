@@ -389,6 +389,7 @@ func TestIntegration_LongLivedSurvivesRestart(t *testing.T) {
 	cfg2 := defaultTestConfig(dbPath)
 	cfg2.Server.DNS.Port = 15354
 	cfg2.Server.HTTP.Port = 18081
+	cfg2.Server.SMTP.Port = 12526
 	ts2 := startServer(t, cfg2, idGenerator)
 	defer ts2.cleanup()
 

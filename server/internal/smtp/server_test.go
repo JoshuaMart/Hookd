@@ -611,3 +611,30 @@ func assertData(t *testing.T, interaction *storage.Interaction, key, want string
 		t.Errorf("data[%q] = %q, want %q", key, got, want)
 	}
 }
+
+// A long unwrapped line — an 8bit HTML body, or a verification link — must
+// survive intact up to the message cap, not be cut at the RFC's 1000 octets.
+func TestLongBodyLineSurvivesIntact(t *testing.T) {
+	srv, store := newTestServer(t, testConfig())
+	hook := store.CreateHook(testDomain, storage.CreateOptions{SMTPEnabled: true})
+
+	link := "https://vendor.test/verify?token=" + strings.Repeat("a", 4000)
+
+	c := dial(t, srv)
+	c.greet()
+	c.deliver("x@vendor.test", hook.ID+"@"+testDomain, "Subject: verify\r\n\r\n"+link)
+	c.expect("250")
+
+	interactions := store.PollInteractions(hook.ID)
+	if len(interactions) != 1 {
+		t.Fatalf("got %d interactions, want 1", len(interactions))
+	}
+
+	body, _ := interactions[0].Data["body"].(string)
+	if !strings.Contains(body, link) {
+		t.Errorf("the link was cut: body is %d bytes for a %d-byte line", len(body), len(link))
+	}
+	if _, flagged := interactions[0].Data["truncated"]; flagged {
+		t.Error("a line under the message cap should not flag the message as truncated")
+	}
+}

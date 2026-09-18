@@ -178,3 +178,28 @@ func TestSQLite_MigrationIsIdempotent(t *testing.T) {
 		}
 	}
 }
+
+// /metrics reads through the composite, so a long-lived capture must reach the
+// smtp bucket and not just the total.
+func TestCompositeStatsMergeSMTP(t *testing.T) {
+	memory := NewMemoryManager(func() string { return "ephemeral-1" })
+	longLived := newTestSQLite(t, 1024)
+	composite := NewCompositeManager(memory, longLived, time.Hour)
+
+	ephemeral := composite.CreateHook("hookd.example.com", CreateOptions{TTL: time.Minute, SMTPEnabled: true})
+	durable, err := longLived.CreateLongLivedHook("hookd.example.com", CreateOptions{TTL: 48 * time.Hour, SMTPEnabled: true}, 0)
+	if err != nil {
+		t.Fatalf("CreateLongLivedHook: %v", err)
+	}
+
+	composite.AddInteraction(ephemeral.ID, SMTPInteraction("i1", "1.2.3.4", "h", "f", "r", "", "s", "b"))
+	composite.AddInteraction(durable.ID, SMTPInteraction("i2", "1.2.3.4", "h", "f", "r", "", "s", "b"))
+
+	stats := composite.Stats()
+	if stats.InteractionsSMTP != 2 {
+		t.Errorf("InteractionsSMTP = %d, want 2", stats.InteractionsSMTP)
+	}
+	if stats.InteractionsTotal != 2 {
+		t.Errorf("InteractionsTotal = %d, want 2", stats.InteractionsTotal)
+	}
+}

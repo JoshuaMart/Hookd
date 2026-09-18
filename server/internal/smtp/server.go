@@ -21,12 +21,9 @@ import (
 	"github.com/jomar/hookd/internal/storage"
 )
 
-// Line caps from RFC 5321 4.5.3.1, which count the trailing CRLF. Without them
-// an unterminated line grows the buffer without bound.
-const (
-	maxCommandLine = 512 - 2
-	maxTextLine    = 1000 - 2
-)
+// Command-line cap from RFC 5321 4.5.3.1.4, which counts the trailing CRLF.
+// Without it an unterminated line grows the buffer without bound.
+const maxCommandLine = 512 - 2
 
 // Longer lines are read in chunks, so this bounds memory, not line length.
 const readBufferSize = 1024
@@ -34,6 +31,16 @@ const readBufferSize = 1024
 // Independent of the read deadline: a timed-out session still has to send its
 // 421, so it must not inherit a deadline that has already passed.
 const writeTimeout = 30 * time.Second
+
+// refuseWriteTimeout bounds the 421 sent to a connection over max_concurrent.
+// It is short because a peer that will not read a 46-byte greeting is hostile.
+const refuseWriteTimeout = 2 * time.Second
+
+// Accept backoff bounds, following net/http.Server.Serve.
+const (
+	minAcceptDelay = 5 * time.Millisecond
+	maxAcceptDelay = time.Second
+)
 
 // Server accepts mail for every address under the domain and records the ones
 // that map to a live hook.
@@ -94,6 +101,7 @@ func (s *Server) Start(ctx context.Context) error {
 		s.closeAll()
 	}()
 
+	var delay time.Duration
 	for {
 		conn, err := s.listener.Accept()
 		if err != nil {
@@ -101,13 +109,19 @@ func (s *Server) Start(ctx context.Context) error {
 				s.logger.Info("smtp server shutting down")
 				return nil
 			}
-			var ne net.Error
-			if errors.As(err, &ne) && ne.Timeout() {
-				// Transient: keep the listener alive.
+			// Never propagate: main cancels the root context on a Start error,
+			// so an EMFILE here would take DNS and HTTP down with it.
+			delay = nextAcceptDelay(delay)
+			s.logger.Warn("smtp accept failed, retrying", "error", err, "retry_in", delay)
+			select {
+			case <-time.After(delay):
 				continue
+			case <-ctx.Done():
+				s.logger.Info("smtp server shutting down")
+				return nil
 			}
-			return fmt.Errorf("smtp accept: %w", err)
 		}
+		delay = 0
 
 		select {
 		case s.sem <- struct{}{}:
@@ -122,12 +136,29 @@ func (s *Server) Start(ctx context.Context) error {
 }
 
 // refuse answers 421 rather than dropping the socket, so a legitimate sender
-// knows to retry.
+// knows to retry. The write runs off the accept loop: a peer that never reads
+// would otherwise stall every further connection for the write deadline.
 func (s *Server) refuse(conn net.Conn) {
-	_ = conn.SetWriteDeadline(time.Now().Add(s.cfg.ReadTimeout))
-	_, _ = conn.Write([]byte("421 4.7.0 Too many connections, try again later\r\n"))
-	_ = conn.Close()
-	s.logger.Warn("smtp connection refused", "reason", "max_concurrent", "client", netutil.ExtractIP(conn.RemoteAddr().String()))
+	// RemoteAddr is only defined while the connection is open.
+	client := netutil.ExtractIP(conn.RemoteAddr().String())
+	s.logger.Warn("smtp connection refused", "reason", "max_concurrent", "client", client)
+
+	go func() {
+		_ = conn.SetWriteDeadline(time.Now().Add(refuseWriteTimeout))
+		_, _ = conn.Write([]byte("421 4.7.0 Too many connections, try again later\r\n"))
+		_ = conn.Close()
+	}()
+}
+
+// nextAcceptDelay doubles the retry delay between the accept backoff bounds.
+func nextAcceptDelay(d time.Duration) time.Duration {
+	if d == 0 {
+		return minAcceptDelay
+	}
+	if d *= 2; d > maxAcceptDelay {
+		return maxAcceptDelay
+	}
+	return d
 }
 
 // serve runs one session to completion.
@@ -386,14 +417,16 @@ func (ss *session) readData() (raw string, truncated, tooBig bool, err error) {
 		size int
 	)
 
+	// RFC 5321 caps a text line at 1000 octets, but real senders exceed it: an
+	// 8bit HTML body is often one line, and a verification link is frequently
+	// unwrapped. Cutting there would lose the very payload we capture, so the
+	// line is bounded by the message cap, which already bounds memory.
 	for {
-		line, cut, err := ss.readLine(maxTextLine)
+		line, cut, err := ss.readLine(ss.srv.cfg.MaxMessageBytes)
 		if err != nil {
 			return "", false, false, err
 		}
 		if cut {
-			// An over-long body line keeps its prefix and flags the message:
-			// keeping the capture beats dropping it.
 			truncated = true
 		}
 
