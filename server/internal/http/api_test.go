@@ -28,7 +28,7 @@ func TestAPIHandler_HandleRegister(t *testing.T) {
 	evictor := eviction.NewEvictor(manager, evictorCfg, slog.Default())
 	logger := slog.Default()
 
-	handler := NewAPIHandler(manager, evictor, "example.com", config.LongLivedConfig{}, logger, idGen)
+	handler := NewAPIHandler(manager, evictor, "example.com", config.LongLivedConfig{}, false, logger, idGen)
 
 	t.Run("success single hook (no body)", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/register", nil)
@@ -191,7 +191,7 @@ func TestAPIHandler_HandlePoll(t *testing.T) {
 	evictor := eviction.NewEvictor(manager, evictorCfg, slog.Default())
 	logger := slog.Default()
 
-	handler := NewAPIHandler(manager, evictor, "example.com", config.LongLivedConfig{}, logger, idGen)
+	handler := NewAPIHandler(manager, evictor, "example.com", config.LongLivedConfig{}, false, logger, idGen)
 
 	// Create a hook first
 	hook := manager.CreateHook("example.com", storage.CreateOptions{})
@@ -288,7 +288,7 @@ func TestAPIHandler_HandleMetrics(t *testing.T) {
 	evictor := eviction.NewEvictor(manager, evictorCfg, slog.Default())
 	logger := slog.Default()
 
-	handler := NewAPIHandler(manager, evictor, "example.com", config.LongLivedConfig{}, logger, idGen)
+	handler := NewAPIHandler(manager, evictor, "example.com", config.LongLivedConfig{}, false, logger, idGen)
 
 	t.Run("success", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
@@ -509,7 +509,7 @@ func TestAPIHandler_HandlePoll_EdgeCases(t *testing.T) {
 	evictor := eviction.NewEvictor(manager, evictorCfg, slog.Default())
 	logger := slog.Default()
 
-	handler := NewAPIHandler(manager, evictor, "example.com", config.LongLivedConfig{}, logger, idGen)
+	handler := NewAPIHandler(manager, evictor, "example.com", config.LongLivedConfig{}, false, logger, idGen)
 
 	t.Run("empty path segments", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/poll//", nil)
@@ -567,7 +567,7 @@ func TestAPIHandler_HandlePollBatch(t *testing.T) {
 	evictor := eviction.NewEvictor(manager, evictorCfg, slog.Default())
 	logger := slog.Default()
 
-	handler := NewAPIHandler(manager, evictor, "example.com", config.LongLivedConfig{}, logger, idGen)
+	handler := NewAPIHandler(manager, evictor, "example.com", config.LongLivedConfig{}, false, logger, idGen)
 
 	// Create multiple hooks
 	hook1 := manager.CreateHook("example.com", storage.CreateOptions{})
@@ -793,7 +793,7 @@ func TestAPIHandler_RejectsOversizedBodies(t *testing.T) {
 	idGen := func() string { return "test-id" }
 	manager := storage.NewMemoryManager(idGen)
 	evictor := eviction.NewEvictor(manager, config.EvictionConfig{HookTTL: time.Hour}, slog.Default())
-	handler := NewAPIHandler(manager, evictor, "example.com", config.LongLivedConfig{}, slog.Default(), idGen)
+	handler := NewAPIHandler(manager, evictor, "example.com", config.LongLivedConfig{}, false, slog.Default(), idGen)
 
 	// Valid JSON, so the decoder reads past the limit instead of failing early.
 	filler := strings.Repeat("a", maxAPIBodyBytes)
@@ -825,7 +825,7 @@ func TestAPIHandler_RejectsOversizedBatch(t *testing.T) {
 	idGen := func() string { return "test-id" }
 	manager := storage.NewMemoryManager(idGen)
 	evictor := eviction.NewEvictor(manager, config.EvictionConfig{HookTTL: time.Hour}, slog.Default())
-	handler := NewAPIHandler(manager, evictor, "example.com", config.LongLivedConfig{}, slog.Default(), idGen)
+	handler := NewAPIHandler(manager, evictor, "example.com", config.LongLivedConfig{}, false, slog.Default(), idGen)
 
 	ids := make([]string, maxPollBatch+1)
 	for i := range ids {

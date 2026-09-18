@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 module Hookd
-  # Represents a captured DNS or HTTP interaction
+  # Represents a captured DNS, HTTP or SMTP interaction
   class Interaction
     attr_reader :type, :timestamp, :source_ip, :data
 
@@ -30,6 +30,11 @@ module Hookd
     # Check if this is an HTTP interaction
     def http?
       type == 'http'
+    end
+
+    # Check if this is an SMTP interaction
+    def smtp?
+      type == 'smtp'
     end
 
     def to_s

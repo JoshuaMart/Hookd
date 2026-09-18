@@ -107,6 +107,7 @@ func (c *CompositeManager) Stats() Stats {
 		stats.InteractionsTotal += ll.InteractionsTotal
 		stats.InteractionsDNS += ll.InteractionsDNS
 		stats.InteractionsHTTP += ll.InteractionsHTTP
+		stats.InteractionsSMTP += ll.InteractionsSMTP
 	}
 	return stats
 }

@@ -24,6 +24,7 @@ type Hook struct {
 	DNS       string         `json:"dns"`
 	HTTP      string         `json:"http"`
 	HTTPS     string         `json:"https"`
+	SMTP      string         `json:"smtp,omitempty"`
 	CreatedAt time.Time      `json:"created_at"`
 	ExpiresAt time.Time      `json:"expires_at"`
 	Metadata  map[string]any `json:"metadata,omitempty"`
@@ -35,6 +36,9 @@ type Hook struct {
 type CreateOptions struct {
 	TTL      time.Duration
 	Metadata map[string]any
+	// Mirrors server.smtp.enabled: without a listener the address would
+	// black-hole, so it is not advertised.
+	SMTPEnabled bool
 }
 
 // newHook builds a Hook from an id, domain and options. It is shared by every
@@ -50,6 +54,9 @@ func newHook(id, domain string, opts CreateOptions) *Hook {
 		CreatedAt: now,
 		Metadata:  opts.Metadata,
 	}
+	if opts.SMTPEnabled {
+		hook.SMTP = id + "@" + domain
+	}
 	if opts.TTL > 0 {
 		hook.ExpiresAt = now.Add(opts.TTL)
 	}
@@ -62,6 +69,7 @@ type InteractionType string
 const (
 	InteractionTypeDNS  InteractionType = "dns"
 	InteractionTypeHTTP InteractionType = "http"
+	InteractionTypeSMTP InteractionType = "smtp"
 )
 
 // Interaction represents a captured DNS or HTTP interaction
@@ -122,6 +130,26 @@ func HTTPInteraction(id, sourceIP, method, path string, headers map[string]strin
 			"path":    path,
 			"headers": headers,
 			"body":    body,
+		},
+	}
+}
+
+// SMTPInteraction creates an SMTP interaction. body is the raw RFC 5322
+// message, stored under "body" so the long-lived store truncates it like an
+// HTTP body. tag is the recipient's sub-address suffix.
+func SMTPInteraction(id, sourceIP, helo, mailFrom, rcptTo, tag, subject, body string) *Interaction {
+	return &Interaction{
+		ID:        id,
+		Type:      InteractionTypeSMTP,
+		Timestamp: time.Now().UTC(),
+		SourceIP:  sourceIP,
+		Data: map[string]interface{}{
+			"helo":      helo,
+			"mail_from": mailFrom,
+			"rcpt_to":   rcptTo,
+			"tag":       tag,
+			"subject":   subject,
+			"body":      body,
 		},
 	}
 }

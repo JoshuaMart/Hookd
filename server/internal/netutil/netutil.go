@@ -1,7 +1,10 @@
 // Package netutil holds small networking helpers shared across servers.
 package netutil
 
-import "net"
+import (
+	"net"
+	"strings"
+)
 
 // ExtractIP returns the host portion of a "host:port" remote address. It
 // handles IPv6 addresses (e.g. "[::1]:8080" -> "::1") and falls back to the
@@ -12,4 +15,22 @@ func ExtractIP(remoteAddr string) string {
 		return remoteAddr
 	}
 	return host
+}
+
+// HookIDFromHost returns the first label of host's subdomain part under domain,
+// or "" when host is not a strict subdomain of it. Matching ignores case
+// (DNS-0x20) and a trailing dot; callers strip any port first.
+func HookIDFromHost(host, domain string) string {
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+
+	suffix := "." + strings.ToLower(strings.TrimSuffix(domain, "."))
+	if !strings.HasSuffix(host, suffix) {
+		return ""
+	}
+
+	subdomain := strings.TrimSuffix(host, suffix)
+
+	// Handle multi-level subdomains (take the first label). strings.Split
+	// always returns at least one element, so parts[0] is safe.
+	return strings.Split(subdomain, ".")[0]
 }

@@ -14,6 +14,7 @@ RSpec.describe 'Hookd Integration' do
         'dns' => 'test123.hookd.example.com',
         'http' => 'http://test123.hookd.example.com',
         'https' => 'https://test123.hookd.example.com',
+        'smtp' => 'test123@hookd.example.com',
         'created_at' => '2024-01-01T00:00:00Z'
       }
     end
@@ -24,6 +25,11 @@ RSpec.describe 'Hookd Integration' do
           'type' => 'dns',
           'timestamp' => '2024-01-01T00:00:00Z',
           'data' => { 'query' => 'test.test123.hookd.example.com', 'query_type' => 'A' }
+        },
+        {
+          'type' => 'smtp',
+          'timestamp' => '2024-01-01T00:01:00Z',
+          'data' => { 'mail_from' => 'signup@vendor.test', 'subject' => 'Verify', 'tag' => '' }
         }
       ]
     end
@@ -44,12 +50,14 @@ RSpec.describe 'Hookd Integration' do
       hook = client.register
       expect(hook.id).to eq('test123')
       expect(hook.dns).to eq('test123.hookd.example.com')
+      expect(hook.smtp).to eq('test123@hookd.example.com')
 
       # Poll for interactions
       interactions = client.poll(hook.id)
       expect(interactions).not_to be_empty
       expect(interactions.first.type).to eq('dns')
       expect(interactions.first.dns?).to be true
+      expect(interactions.last.smtp?).to be true
     end
   end
 

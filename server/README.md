@@ -1,6 +1,6 @@
 # Hookd
 
-Hookd is a lightweight, memory-efficient interaction server designed to capture DNS and HTTP callbacks.
+Hookd is a lightweight, memory-efficient interaction server designed to capture DNS, HTTP and SMTP callbacks.
 
 ## Features
 
@@ -8,6 +8,7 @@ Hookd is a lightweight, memory-efficient interaction server designed to capture 
 - 💾 **Memory Efficient** - With configurable eviction
 - 📊 **Observable** - Built-in metrics and structured logging
 - 🎯 **Simple** - Single binary, YAML configuration, no dependencies
+- 📬 **Disposable mailboxes** - Optional inbound SMTP capture, reception only
 
 ## Quick Start
 
@@ -52,6 +53,15 @@ server:
     port: 443
     autocert: true
     cache_dir: "/var/lib/hookd/certs"
+  smtp:
+    enabled: false              # Opt-in: binds port 25 and receives public mail
+    port: 25
+    bind_address: ""            # Empty binds all interfaces
+    max_message_bytes: 262144   # Advertised via SIZE; above it, 552
+    max_recipients: 10          # Past it, 452
+    max_concurrent: 50          # Past it, 421
+    read_timeout: "60s"         # One command or data line
+    session_timeout: "5m"       # A whole session
   api:
     auth_token: "" # If empty, a random token will be generated at startup
 
@@ -85,6 +95,25 @@ may fire days after injection and an in-memory-only server would drop the
 interaction silently after a restart. Long-lived hooks are bounded by
 `long_lived.max_ttl` and `long_lived.max_hooks`; discover which ones have fired
 with `GET /activity`, then drain them with `GET /poll/:id`.
+
+### Mail capture (optional)
+
+With `server.smtp.enabled`, a registered hook also answers at
+`<hookid>@hookd.domain.tld`, and at `<hookid>+anylabel@hookd.domain.tld` for
+free — sub-addressing needs no extra API call, and the label is stored on the
+interaction so you can see which site leaked the address. Mail arrives as an
+ordinary interaction of type `smtp`, read back with `GET /poll/:id`.
+
+Reception only: Hookd never sends, relays or bounces. A recipient outside the
+domain gets `550 5.7.1`; every address under it gets a uniform `250` whether or
+not a hook exists, so the server is neither an open relay nor an enumeration
+oracle for live hook IDs. There is no SPF/DKIM/DMARC verification — the raw
+message is the signal.
+
+Deploying it needs nothing in DNS (the server already answers MX for every name
+under the domain, pointing at itself), but port 25 is privileged — grant
+`CAP_NET_BIND_SERVICE` as for port 53 — and some hosting providers filter
+inbound 25.
 
 ### DNS Setup
 
@@ -161,9 +190,13 @@ curl -X POST https://hookd.domain.tld/register \
   "dns": "abc123.hookd.domain.tld",
   "http": "http://abc123.hookd.domain.tld",
   "https": "https://abc123.hookd.domain.tld",
+  "smtp": "abc123@hookd.domain.tld",
   "created_at": "2025-10-01T10:30:00Z"
 }
 ```
+
+`smtp` is present only when `server.smtp.enabled` is set: a deployment with no
+mail listener does not advertise an address that would black-hole.
 
 **Request (multiple hooks):**
 ```bash
@@ -341,9 +374,10 @@ curl https://hookd.domain.tld/metrics
   "interactions": {
     "by_type": {
       "dns": 12,
-      "http": 24
+      "http": 24,
+      "smtp": 3
     },
-    "total": 36
+    "total": 39
   },
   "memory": {
     "alloc_mb": 2,
@@ -374,6 +408,10 @@ dig $HOOK_DNS
 curl -X POST https://$HOOK_ID.hookd.domain.tld/callback \
   -d "test payload"
 
+# 3b. Trigger SMTP interaction (when server.smtp.enabled)
+#     Use the address as-is, or with any +label to tag the source.
+swaks --to "$HOOK_ID+vendor@hookd.domain.tld" --server hookd.domain.tld
+
 # 4. Poll interactions
 curl -s https://hookd.domain.tld/poll/$HOOK_ID \
   -H "X-API-Key: YOUR_TOKEN" | jq
@@ -393,6 +431,8 @@ Options:
   --dns-bind IP       Override the DNS listener bind address
   --http-port PORT    Override HTTP port
   --https-port PORT   Override HTTPS port
+  --smtp-port PORT    Override SMTP port
+  --smtp-bind IP      Override the SMTP listener bind address
   --version           Show version information
   --help, -h          Show help message
 

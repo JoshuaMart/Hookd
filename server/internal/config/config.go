@@ -27,6 +27,7 @@ type ServerConfig struct {
 	DNS      DNSConfig   `mapstructure:"dns"`
 	HTTP     HTTPConfig  `mapstructure:"http"`
 	HTTPS    HTTPSConfig `mapstructure:"https"`
+	SMTP     SMTPConfig  `mapstructure:"smtp"`
 	API      APIConfig   `mapstructure:"api"`
 }
 
@@ -57,6 +58,22 @@ type HTTPSConfig struct {
 	// empty to use the public defaults (Cloudflare + Google). These are used only
 	// by the ACME solver; the process's own name resolution is left untouched.
 	Resolvers []string `mapstructure:"resolvers"`
+}
+
+// SMTPConfig configures inbound capture. Hookd receives only; it never relays.
+type SMTPConfig struct {
+	Enabled bool `mapstructure:"enabled"`
+	Port    int  `mapstructure:"port"`
+	// Empty binds all interfaces.
+	BindAddress string `mapstructure:"bind_address"`
+	// Advertised via the SIZE extension, so a sender can give up early.
+	MaxMessageBytes int `mapstructure:"max_message_bytes"`
+	MaxRecipients   int `mapstructure:"max_recipients"`
+	MaxConcurrent   int `mapstructure:"max_concurrent"`
+	// One command or data line, then the whole session. Both shorter than
+	// RFC 5321 4.5.3.2 suggests, to bound what an idle attacker holds open.
+	ReadTimeout    time.Duration `mapstructure:"read_timeout"`
+	SessionTimeout time.Duration `mapstructure:"session_timeout"`
 }
 
 // APIConfig holds API configuration
@@ -114,6 +131,16 @@ func DefaultConfig() *Config {
 				AutoCert: false,
 				CacheDir: "/var/lib/hookd/certs",
 			},
+			SMTP: SMTPConfig{
+				// Opt-in: it binds a privileged port and receives public mail.
+				Enabled:         false,
+				Port:            25,
+				MaxMessageBytes: 262144, // 256 KiB
+				MaxRecipients:   10,
+				MaxConcurrent:   50,
+				ReadTimeout:     60 * time.Second,
+				SessionTimeout:  5 * time.Minute,
+			},
 			API: APIConfig{
 				AuthToken: "",
 			},
@@ -170,6 +197,30 @@ func (c *Config) Validate() error {
 
 	if c.Server.HTTPS.Enabled && c.Server.HTTPS.AutoCert && c.Server.HTTPS.CacheDir == "" {
 		return fmt.Errorf("server.https.cache_dir is required when autocert is enabled")
+	}
+
+	if c.Server.SMTP.Enabled {
+		if c.Server.SMTP.Port < 1 || c.Server.SMTP.Port > 65535 {
+			return fmt.Errorf("server.smtp.port must be between 1 and 65535")
+		}
+		if c.Server.SMTP.BindAddress != "" && net.ParseIP(c.Server.SMTP.BindAddress) == nil {
+			return fmt.Errorf("server.smtp.bind_address must be a valid IP address")
+		}
+		if c.Server.SMTP.MaxMessageBytes <= 0 {
+			return fmt.Errorf("server.smtp.max_message_bytes must be positive")
+		}
+		if c.Server.SMTP.MaxRecipients <= 0 {
+			return fmt.Errorf("server.smtp.max_recipients must be positive")
+		}
+		if c.Server.SMTP.MaxConcurrent <= 0 {
+			return fmt.Errorf("server.smtp.max_concurrent must be positive")
+		}
+		if c.Server.SMTP.ReadTimeout <= 0 {
+			return fmt.Errorf("server.smtp.read_timeout must be positive")
+		}
+		if c.Server.SMTP.SessionTimeout <= 0 {
+			return fmt.Errorf("server.smtp.session_timeout must be positive")
+		}
 	}
 
 	if c.Eviction.InteractionTTL <= 0 {

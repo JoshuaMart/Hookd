@@ -21,6 +21,7 @@ RSpec.describe Hookd::Client do
         'dns' => 'abc123.hookd.example.com',
         'http' => 'http://abc123.hookd.example.com',
         'https' => 'https://abc123.hookd.example.com',
+        'smtp' => 'abc123@hookd.example.com',
         'created_at' => '2024-01-01T00:00:00Z'
       }
     end
@@ -39,6 +40,20 @@ RSpec.describe Hookd::Client do
         expect(hook.dns).to eq('abc123.hookd.example.com')
         expect(hook.http).to eq('http://abc123.hookd.example.com')
         expect(hook.https).to eq('https://abc123.hookd.example.com')
+        expect(hook.smtp).to eq('abc123@hookd.example.com')
+      end
+    end
+
+    context 'when the server runs no mail listener' do
+      before do
+        stub_request(:post, "#{server}/register")
+          .with(headers: { 'X-API-Key' => token })
+          .to_return(status: 200, body: hook_response.except('smtp').to_json,
+                     headers: { 'Content-Type' => 'application/json' })
+      end
+
+      it 'leaves smtp nil' do
+        expect(client.register.smtp).to be_nil
       end
     end
 
@@ -179,6 +194,12 @@ RSpec.describe Hookd::Client do
           'timestamp' => '2024-01-01T00:01:00Z',
           'source_ip' => '5.6.7.8',
           'data' => { 'method' => 'GET', 'path' => '/' }
+        },
+        {
+          'type' => 'smtp',
+          'timestamp' => '2024-01-01T00:02:00Z',
+          'source_ip' => '9.10.11.12',
+          'data' => { 'mail_from' => 'x@vendor.test', 'subject' => 'hi', 'tag' => 'vendor' }
         }
       ]
     end
@@ -197,7 +218,7 @@ RSpec.describe Hookd::Client do
       it 'returns array of Interaction objects' do
         interactions = client.poll(hook_id)
         expect(interactions).to be_an(Array)
-        expect(interactions.size).to eq(2)
+        expect(interactions.size).to eq(3)
 
         expect(interactions[0]).to be_a(Hookd::Interaction)
         expect(interactions[0].type).to eq('dns')
@@ -210,6 +231,12 @@ RSpec.describe Hookd::Client do
         expect(interactions[1].source_ip).to eq('5.6.7.8')
         expect(interactions[1].dns?).to be false
         expect(interactions[1].http?).to be true
+
+        expect(interactions[2].type).to eq('smtp')
+        expect(interactions[2].smtp?).to be true
+        expect(interactions[2].dns?).to be false
+        expect(interactions[2].http?).to be false
+        expect(interactions[2].data['tag']).to eq('vendor')
       end
     end
 

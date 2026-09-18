@@ -290,28 +290,10 @@ func (s *Server) handleACMETXTChallenge(qname string, m *dns.Msg) error {
 	return nil
 }
 
-// extractHookID extracts the hook ID from a domain name
+// extractHookID extracts the hook ID from a domain name.
 // Example: abc123.hookd.jomar.ovh -> abc123
 func (s *Server) extractHookID(qname string) string {
-	// Remove trailing dot
-	qname = strings.TrimSuffix(qname, ".")
-
-	// Resolvers randomize qname casing (DNS-0x20).
-	qname = strings.ToLower(qname)
-
-	// Check if it's a subdomain of our domain
-	suffix := "." + strings.ToLower(s.domain)
-	if !strings.HasSuffix(qname, suffix) {
-		return ""
-	}
-
-	// Extract the subdomain part
-	subdomain := strings.TrimSuffix(qname, suffix)
-
-	// Handle multi-level subdomains (take the first part). strings.Split always
-	// returns at least one element, so parts[0] is safe.
-	parts := strings.Split(subdomain, ".")
-	return parts[0]
+	return netutil.HookIDFromHost(qname, s.domain)
 }
 
 // getOutboundIP gets the preferred outbound IP of this machine

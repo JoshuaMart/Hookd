@@ -19,6 +19,7 @@ import (
 	"github.com/jomar/hookd/internal/dns"
 	"github.com/jomar/hookd/internal/eviction"
 	"github.com/jomar/hookd/internal/http"
+	"github.com/jomar/hookd/internal/smtp"
 	"github.com/jomar/hookd/internal/storage"
 )
 
@@ -73,7 +74,8 @@ func main() {
 		"version", version,
 		"domain", cfg.Server.Domain,
 		"dns_enabled", cfg.Server.DNS.Enabled,
-		"https_enabled", cfg.Server.HTTPS.Enabled)
+		"https_enabled", cfg.Server.HTTPS.Enabled,
+		"smtp_enabled", cfg.Server.SMTP.Enabled)
 
 	// Create ID generator
 	idGenerator := func() string {
@@ -140,6 +142,29 @@ func main() {
 		go func() {
 			if err := dnsServer.Start(ctx); err != nil {
 				logger.Error("dns server error", "error", err)
+				cancel()
+			}
+		}()
+	}
+
+	// Start SMTP server if enabled
+	if cfg.Server.SMTP.Enabled {
+		smtpServer, err := smtp.NewServer(
+			cfg.Server.Domain,
+			cfg.Server.SMTP,
+			cfg.Eviction.MaxInteractionBodyBytes,
+			storageManager,
+			logger,
+			idGenerator,
+		)
+		if err != nil {
+			logger.Error("failed to create smtp server", "error", err)
+			os.Exit(1)
+		}
+
+		go func() {
+			if err := smtpServer.Start(ctx); err != nil {
+				logger.Error("smtp server error", "error", err)
 				cancel()
 			}
 		}()
@@ -227,7 +252,7 @@ func generateID() string {
 
 // printHelp prints usage information
 func printHelp() {
-	fmt.Println("Hookd - High-performance DNS/HTTP interaction server")
+	fmt.Println("Hookd - High-performance DNS/HTTP/SMTP interaction server")
 	fmt.Println()
 	fmt.Println("Usage:")
 	fmt.Println("  hookd [options]")
@@ -244,4 +269,7 @@ func printHelp() {
 	fmt.Println()
 	fmt.Println("  # Override domain and ports")
 	fmt.Println("  hookd --config config.yaml --domain hookd.example.com --dns-port 53 --http-port 80")
+	fmt.Println()
+	fmt.Println("  # Enable inbound mail capture (requires server.smtp.enabled)")
+	fmt.Println("  hookd --config config.yaml --smtp-port 25")
 }

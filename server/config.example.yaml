@@ -43,6 +43,31 @@ server:
     #   - "1.1.1.1:53"
     #   - "8.8.8.8:53"
 
+  smtp:
+    # Inbound SMTP capture, which turns a hook into a disposable mailbox at
+    # <hookid>@hookd.domain.tld. Reception only: Hookd never sends, relays or
+    # bounces. Disabled by default — it binds a privileged port and exposes a
+    # public receiver, so it is opt-in.
+    #
+    # Nothing to add in DNS: the server already answers MX for every name under
+    # the domain. Check that your host does not filter inbound port 25.
+    enabled: false
+    # SMTP port (requires root or CAP_NET_BIND_SERVICE for port 25)
+    port: 25
+    # Local address the SMTP listener binds to. Empty binds all interfaces.
+    bind_address: ""
+    # Largest message accepted, advertised through the SIZE extension so a
+    # sender can give up before transferring the body. Above it: 552.
+    max_message_bytes: 262144
+    # Recipients accepted per message; past it, 452.
+    max_recipients: 10
+    # Concurrent sessions; past it, 421 and the connection is closed.
+    max_concurrent: 50
+    # Deadline for a single command or data line.
+    read_timeout: "60s"
+    # Deadline for a whole session, however busy it is.
+    session_timeout: "5m"
+
   api:
     # Authentication token for API access
     # If empty, a random token will be generated at startup
