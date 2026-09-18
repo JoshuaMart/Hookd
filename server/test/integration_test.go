@@ -4,14 +4,18 @@
 package test
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -22,6 +26,7 @@ import (
 	dnsserver "github.com/jomar/hookd/internal/dns"
 	"github.com/jomar/hookd/internal/eviction"
 	httpserver "github.com/jomar/hookd/internal/http"
+	smtpserver "github.com/jomar/hookd/internal/smtp"
 	"github.com/jomar/hookd/internal/storage"
 	"github.com/jomar/hookd/pkg/api"
 )
@@ -32,6 +37,7 @@ type testServer struct {
 	evictor     *eviction.Evictor
 	dnsServer   *dnsserver.Server
 	httpServer  *httpserver.Server
+	smtpServer  *smtpserver.Server
 	ctx         context.Context
 	cancel      context.CancelFunc
 	idGenerator func() string
@@ -50,6 +56,12 @@ func defaultTestConfig(dbPath string) *config.Config {
 	cfg.Server.PublicIP = "127.0.0.1"
 	cfg.Server.HTTP.Port = 18080
 	cfg.Server.HTTPS.Enabled = false
+	// Inbound mail on a non-privileged loopback port. Enabled here so a
+	// registered hook advertises its address; individual tests opt out by
+	// clearing it before startServer.
+	cfg.Server.SMTP.Enabled = true
+	cfg.Server.SMTP.Port = 12525
+	cfg.Server.SMTP.BindAddress = "127.0.0.1"
 	cfg.Server.API.AuthToken = "test-token-123"
 	cfg.Eviction.InteractionTTL = 1 * time.Hour
 	cfg.Eviction.MaxPerHook = 100
@@ -104,6 +116,28 @@ func startServer(t *testing.T, cfg *config.Config, idGenerator func() string) *t
 		}
 	}()
 
+	// Start SMTP server
+	var smtpServer *smtpserver.Server
+	if cfg.Server.SMTP.Enabled {
+		smtpServer, err = smtpserver.NewServer(
+			cfg.Server.Domain,
+			cfg.Server.SMTP,
+			cfg.Eviction.MaxInteractionBodyBytes,
+			storageManager,
+			logger,
+			idGenerator,
+		)
+		if err != nil {
+			t.Fatalf("failed to create SMTP server: %v", err)
+		}
+
+		go func() {
+			if err := smtpServer.Start(ctx); err != nil {
+				t.Logf("SMTP server error: %v", err)
+			}
+		}()
+	}
+
 	// Start HTTP server
 	httpServer := httpserver.NewServer(
 		cfg.Server,
@@ -131,6 +165,7 @@ func startServer(t *testing.T, cfg *config.Config, idGenerator func() string) *t
 		evictor:     evictor,
 		dnsServer:   dnsServer,
 		httpServer:  httpServer,
+		smtpServer:  smtpServer,
 		ctx:         ctx,
 		cancel:      cancel,
 		idGenerator: idGenerator,
@@ -138,11 +173,7 @@ func startServer(t *testing.T, cfg *config.Config, idGenerator func() string) *t
 }
 
 func setupTestServer(t *testing.T) *testServer {
-	idCounter := 0
-	idGenerator := func() string {
-		idCounter++
-		return fmt.Sprintf("test%d", idCounter)
-	}
+	idGenerator := sequentialIDs()
 	cfg := defaultTestConfig(filepath.Join(t.TempDir(), "longlived.db"))
 	return startServer(t, cfg, idGenerator)
 }
@@ -153,6 +184,21 @@ func (ts *testServer) cleanup() {
 		ts.storage.Close()
 	}
 	time.Sleep(100 * time.Millisecond)
+}
+
+// sequentialIDs returns a deterministic ID generator. It is shared by every
+// listener, each serving on its own goroutine, so the counter is guarded.
+func sequentialIDs() func() string {
+	var (
+		mu      sync.Mutex
+		counter int
+	)
+	return func() string {
+		mu.Lock()
+		defer mu.Unlock()
+		counter++
+		return fmt.Sprintf("test%d", counter)
+	}
 }
 
 func setupTestLogger() *slog.Logger {
@@ -325,11 +371,7 @@ func TestIntegration_Metrics(t *testing.T) {
 
 func TestIntegration_LongLivedSurvivesRestart(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "longlived.db")
-	idCounter := 0
-	idGenerator := func() string {
-		idCounter++
-		return fmt.Sprintf("test%d", idCounter)
-	}
+	idGenerator := sequentialIDs()
 
 	// First lifecycle: register a long-lived hook, then shut down.
 	ts1 := startServer(t, defaultTestConfig(dbPath), idGenerator)
@@ -562,6 +604,74 @@ func pollFull(port int, token, hookID string) (*api.PollResponse, error) {
 	return &result, nil
 }
 
+// deliverMail runs a whole SMTP transaction against the test listener and
+// returns the final reply.
+func deliverMail(port int, from, to, message string) (string, error) {
+	conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		return "", err
+	}
+	defer conn.Close()
+
+	if err := conn.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		return "", err
+	}
+	br := bufio.NewReader(conn)
+
+	readReply := func() (string, error) {
+		for {
+			line, err := br.ReadString('\n')
+			if err != nil {
+				return "", err
+			}
+			line = strings.TrimRight(line, "\r\n")
+			// Skip continuation lines; only the final one carries the verdict.
+			if len(line) < 4 || line[3] != '-' {
+				return line, nil
+			}
+		}
+	}
+
+	exchange := func(cmd string) (string, error) {
+		if cmd != "" {
+			if _, err := fmt.Fprintf(conn, "%s\r\n", cmd); err != nil {
+				return "", err
+			}
+		}
+		return readReply()
+	}
+
+	steps := []string{
+		"",                         // banner
+		"EHLO integration.test",    //
+		"MAIL FROM:<" + from + ">", //
+		"RCPT TO:<" + to + ">",     //
+		"DATA",                     //
+	}
+	for _, step := range steps {
+		reply, err := exchange(step)
+		if err != nil {
+			return "", err
+		}
+		if reply == "" || reply[0] != '2' && reply[0] != '3' {
+			return reply, fmt.Errorf("unexpected reply to %q: %s", step, reply)
+		}
+	}
+
+	if _, err := conn.Write([]byte(message + "\r\n.\r\n")); err != nil {
+		return "", err
+	}
+	final, err := readReply()
+	if err != nil {
+		return "", err
+	}
+
+	if _, err := exchange("QUIT"); err != nil {
+		return final, nil // the verdict is what matters
+	}
+	return final, nil
+}
+
 func performDNSQuery(port int, domain string) error {
 	c := new(dns.Client)
 	m := new(dns.Msg)
@@ -569,4 +679,122 @@ func performDNSQuery(port int, domain string) error {
 
 	_, _, err := c.Exchange(m, fmt.Sprintf("127.0.0.1:%d", port))
 	return err
+}
+
+func TestIntegration_SMTPInteraction(t *testing.T) {
+	ts := setupTestServer(t)
+	defer ts.cleanup()
+
+	hook, err := registerHook(ts.cfg.Server.HTTP.Port, ts.cfg.Server.API.AuthToken)
+	if err != nil {
+		t.Fatalf("failed to register hook: %v", err)
+	}
+
+	// The registration advertises a mail address, since the listener is up.
+	wantAddr := hook.ID + "@" + ts.cfg.Server.Domain
+	if hook.SMTP != wantAddr {
+		t.Fatalf("hook.SMTP = %q, want %q", hook.SMTP, wantAddr)
+	}
+
+	message := "From: signup@vendor.test\r\n" +
+		"Subject: Your verification code\r\n" +
+		"\r\n" +
+		"Your code is 123456.\r\n"
+
+	reply, err := deliverMail(ts.cfg.Server.SMTP.Port, "signup@vendor.test", hook.SMTP, message)
+	if err != nil {
+		t.Fatalf("failed to deliver mail: %v (reply %q)", err, reply)
+	}
+	if !strings.HasPrefix(reply, "250") {
+		t.Fatalf("final reply = %q, want a 250", reply)
+	}
+
+	// Give the capture a moment to land.
+	time.Sleep(100 * time.Millisecond)
+
+	interactions, err := pollHook(ts.cfg.Server.HTTP.Port, ts.cfg.Server.API.AuthToken, hook.ID)
+	if err != nil {
+		t.Fatalf("failed to poll hook: %v", err)
+	}
+	if len(interactions) != 1 {
+		t.Fatalf("got %d interactions, want 1", len(interactions))
+	}
+
+	got := interactions[0]
+	if got.Type != "smtp" {
+		t.Errorf("type = %q, want %q", got.Type, "smtp")
+	}
+	if subject, _ := got.Data["subject"].(string); subject != "Your verification code" {
+		t.Errorf("subject = %q, want %q", subject, "Your verification code")
+	}
+	if body, _ := got.Data["body"].(string); !strings.Contains(body, "Your code is 123456.") {
+		t.Errorf("body = %q, want it to contain the message text", body)
+	}
+	if mailFrom, _ := got.Data["mail_from"].(string); mailFrom != "signup@vendor.test" {
+		t.Errorf("mail_from = %q, want %q", mailFrom, "signup@vendor.test")
+	}
+}
+
+func TestIntegration_SMTPSubAddressTag(t *testing.T) {
+	ts := setupTestServer(t)
+	defer ts.cleanup()
+
+	hook, err := registerHook(ts.cfg.Server.HTTP.Port, ts.cfg.Server.API.AuthToken)
+	if err != nil {
+		t.Fatalf("failed to register hook: %v", err)
+	}
+
+	// One registration, unlimited labelled aliases: the tag shows which site
+	// leaked the address.
+	alias := hook.ID + "+carrefour@" + ts.cfg.Server.Domain
+	if _, err := deliverMail(ts.cfg.Server.SMTP.Port, "news@vendor.test", alias,
+		"Subject: offers\r\n\r\nbuy things\r\n"); err != nil {
+		t.Fatalf("failed to deliver mail: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	interactions, err := pollHook(ts.cfg.Server.HTTP.Port, ts.cfg.Server.API.AuthToken, hook.ID)
+	if err != nil {
+		t.Fatalf("failed to poll hook: %v", err)
+	}
+	if len(interactions) != 1 {
+		t.Fatalf("got %d interactions, want 1", len(interactions))
+	}
+	if tag, _ := interactions[0].Data["tag"].(string); tag != "carrefour" {
+		t.Errorf("tag = %q, want %q", tag, "carrefour")
+	}
+}
+
+func TestIntegration_SMTPRefusesRelay(t *testing.T) {
+	ts := setupTestServer(t)
+	defer ts.cleanup()
+
+	// The one rejection that matters: it is what separates a capture server
+	// from an open relay.
+	reply, err := deliverMail(ts.cfg.Server.SMTP.Port, "spammer@vendor.test",
+		"victim@example.org", "Subject: spam\r\n\r\nbody\r\n")
+	if err == nil {
+		t.Fatalf("expected the relay attempt to be refused, got reply %q", reply)
+	}
+	if !strings.HasPrefix(reply, "550") {
+		t.Errorf("reply = %q, want a 550", reply)
+	}
+}
+
+func TestIntegration_SMTPDisabledOmitsAddress(t *testing.T) {
+	idGenerator := sequentialIDs()
+	cfg := defaultTestConfig(filepath.Join(t.TempDir(), "longlived.db"))
+	cfg.Server.SMTP.Enabled = false
+
+	ts := startServer(t, cfg, idGenerator)
+	defer ts.cleanup()
+
+	hook, err := registerHook(ts.cfg.Server.HTTP.Port, ts.cfg.Server.API.AuthToken)
+	if err != nil {
+		t.Fatalf("failed to register hook: %v", err)
+	}
+	if hook.SMTP != "" {
+		t.Errorf("hook.SMTP = %q, want it empty when no listener is running", hook.SMTP)
+	}
 }

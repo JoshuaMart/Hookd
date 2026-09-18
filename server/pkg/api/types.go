@@ -8,12 +8,14 @@ type Hook struct {
 	DNS       string         `json:"dns"`
 	HTTP      string         `json:"http"`
 	HTTPS     string         `json:"https"`
+	SMTP      string         `json:"smtp,omitempty"`
 	CreatedAt time.Time      `json:"created_at"`
 	ExpiresAt time.Time      `json:"expires_at"`
 	Metadata  map[string]any `json:"metadata,omitempty"`
 }
 
-// Interaction represents a captured interaction (public API type)
+// Interaction represents a captured DNS, HTTP or SMTP interaction (public API
+// type)
 type Interaction struct {
 	ID        string                 `json:"id"`
 	Type      string                 `json:"type"`
@@ -64,6 +66,7 @@ type RegisterResponse struct {
 	DNS       string    `json:"dns,omitempty"`
 	HTTP      string    `json:"http,omitempty"`
 	HTTPS     string    `json:"https,omitempty"`
+	SMTP      string    `json:"smtp,omitempty"`
 	CreatedAt time.Time `json:"created_at,omitempty"`
 
 	// Multiple hooks response (when count>1)

@@ -28,21 +28,26 @@ const maxPollBatch = 1000
 
 // APIHandler handles API endpoints
 type APIHandler struct {
-	storage     storage.Manager
-	evictor     *eviction.Evictor
-	domain      string
-	longLived   config.LongLivedConfig
+	storage   storage.Manager
+	evictor   *eviction.Evictor
+	domain    string
+	longLived config.LongLivedConfig
+	// smtpEnabled mirrors server.smtp.enabled. A hook only carries a mail
+	// address when a listener is actually running, so a deployment without one
+	// never hands out an address that would black-hole.
+	smtpEnabled bool
 	logger      *slog.Logger
 	idGenerator func() string
 }
 
 // NewAPIHandler creates a new API handler
-func NewAPIHandler(storage storage.Manager, evictor *eviction.Evictor, domain string, longLived config.LongLivedConfig, logger *slog.Logger, idGenerator func() string) *APIHandler {
+func NewAPIHandler(storage storage.Manager, evictor *eviction.Evictor, domain string, longLived config.LongLivedConfig, smtpEnabled bool, logger *slog.Logger, idGenerator func() string) *APIHandler {
 	return &APIHandler{
 		storage:     storage,
 		evictor:     evictor,
 		domain:      domain,
 		longLived:   longLived,
+		smtpEnabled: smtpEnabled,
 		logger:      logger,
 		idGenerator: idGenerator,
 	}
@@ -170,7 +175,7 @@ type apiError struct {
 // omitting ttl. A value above it designates a long-lived hook, capped at
 // long_lived.max_ttl, and requires the long-lived store to be enabled.
 func (h *APIHandler) buildCreateOptions(ttl string, metadata map[string]any) (storage.CreateOptions, *apiError) {
-	opts := storage.CreateOptions{Metadata: metadata}
+	opts := storage.CreateOptions{Metadata: metadata, SMTPEnabled: h.smtpEnabled}
 
 	// Metadata is stored for ephemeral hooks too, so the size cap is enforced
 	// unconditionally (not gated on the long-lived feature). Fall back to a
@@ -386,6 +391,7 @@ func (h *APIHandler) HandleMetrics(w http.ResponseWriter, r *http.Request) {
 			"by_type": map[string]interface{}{
 				"dns":  stats.InteractionsDNS,
 				"http": stats.InteractionsHTTP,
+				"smtp": stats.InteractionsSMTP,
 			},
 		},
 		"evictions": map[string]interface{}{
