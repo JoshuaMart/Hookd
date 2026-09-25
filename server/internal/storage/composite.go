@@ -96,13 +96,23 @@ func (c *CompositeManager) AckInteractions(hookID string, through int64) (int, e
 
 // PollInteractionsBatch polls several hooks, routing each to its owning store.
 func (c *CompositeManager) PollInteractionsBatch(hookIDs []string) map[string]*PollResult {
-	results := make(map[string]*PollResult, len(hookIDs))
+	if c.longLived == nil {
+		return c.memory.PollInteractionsBatch(hookIDs)
+	}
+	memoryIDs := make([]string, 0, len(hookIDs))
+	var durableIDs []string
 	for _, id := range hookIDs {
-		if !c.Has(id) {
-			results[id] = &PollResult{Error: "Hook not found"}
-			continue
+		if c.longLived != nil && c.longLived.Has(id) {
+			durableIDs = append(durableIDs, id)
+		} else {
+			memoryIDs = append(memoryIDs, id)
 		}
-		results[id] = &PollResult{Interactions: c.PollInteractions(id)}
+	}
+	results := c.memory.PollInteractionsBatch(memoryIDs)
+	if len(durableIDs) > 0 {
+		for id, result := range c.longLived.PollInteractionsBatch(durableIDs) {
+			results[id] = result
+		}
 	}
 	return results
 }

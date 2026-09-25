@@ -268,13 +268,12 @@ func (m *MemoryManager) PollInteractions(hookID string) []*Interaction {
 	defer m.mu.Unlock()
 
 	interactions, exists := m.interactions[hookID]
-	if !exists {
+	if !exists || len(interactions) == 0 {
 		return []*Interaction{}
 	}
 
-	// Return a copy and clear the slice
-	result := make([]*Interaction, len(interactions))
-	copy(result, interactions)
+	// Transfer ownership of the slice; future inserts use a new backing array.
+	result := interactions
 
 	m.interactions[hookID] = make([]*Interaction, 0)
 
@@ -289,6 +288,10 @@ func (m *MemoryManager) PollInteractionsBatch(hookIDs []string) map[string]*Poll
 	results := make(map[string]*PollResult, len(hookIDs))
 
 	for _, hookID := range hookIDs {
+		// A duplicate must not overwrite the first drain with an empty result.
+		if _, seen := results[hookID]; seen {
+			continue
+		}
 		// Check if hook exists
 		if _, exists := m.hooks[hookID]; !exists {
 			results[hookID] = &PollResult{
@@ -309,9 +312,8 @@ func (m *MemoryManager) PollInteractionsBatch(hookIDs []string) map[string]*Poll
 			continue
 		}
 
-		// Return a copy and clear the slice
-		result := make([]*Interaction, len(interactions))
-		copy(result, interactions)
+		// Transfer ownership instead of allocating another pointer array.
+		result := interactions
 
 		m.interactions[hookID] = make([]*Interaction, 0)
 
