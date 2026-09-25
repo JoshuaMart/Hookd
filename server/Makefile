@@ -2,7 +2,7 @@
 
 # Binary name
 BINARY=hookd
-VERSION=1.5.0
+VERSION=1.6.0
 
 # Build variables
 BUILD_DIR=bin
