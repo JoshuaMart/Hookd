@@ -46,11 +46,24 @@ type ErrorResponse struct {
 // RegisterRequest represents the request body for /register. TTL is optional: a
 // value above the ephemeral hook TTL (e.g. "168h" or "7d") registers a durable
 // long-lived hook; omit it for an ephemeral hook. Metadata is stored with the
-// hook and echoed back when it is polled.
+// hook and echoed back when it is polled. Hooks registers one hook per entry,
+// each with its own ttl and metadata; it excludes the other fields.
 type RegisterRequest struct {
 	Count    int            `json:"count,omitempty"`
 	TTL      string         `json:"ttl,omitempty"`
 	Metadata map[string]any `json:"metadata,omitempty"`
+	Hooks    []HookSpec     `json:"hooks,omitempty"`
+}
+
+// HookSpec is one entry of RegisterRequest.Hooks.
+type HookSpec struct {
+	TTL      string         `json:"ttl,omitempty"`
+	Metadata map[string]any `json:"metadata,omitempty"`
+}
+
+// HooksResponse represents the response from /hooks.
+type HooksResponse struct {
+	Hooks []Hook `json:"hooks"`
 }
 
 // HookActivity summarises a long-lived hook that has pending interactions.

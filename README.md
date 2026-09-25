@@ -154,6 +154,12 @@ curl -X POST https://hookd.example.com/register \
   -H "X-API-Key: YOUR_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"ttl": "7d", "metadata": {"target": "acme", "field": "profile.bio"}}'
+
+# Several hooks, each with its own ttl and metadata (all or nothing, max 500)
+curl -X POST https://hookd.example.com/register \
+  -H "X-API-Key: YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"hooks": [{"ttl": "7d", "metadata": {"param": "bio"}}, {"ttl": "7d", "metadata": {"param": "name"}}]}'
 ```
 
 <details>
@@ -269,13 +275,25 @@ curl -X POST https://hookd.example.com/poll \
 
 Up to 1000 hook IDs per request.
 
+### `GET /hooks`
+
+List every **long-lived** hook without its interactions, oldest first — to
+rebuild your hook list if local state is lost. Takes the same
+`metadata.<key>=<value>` filter as `/activity`.
+
+```bash
+curl "https://hookd.example.com/hooks?metadata.run_id=0f3a" \
+  -H "X-API-Key: YOUR_TOKEN"
+```
+
 ### `GET /activity`
 
 List the **long-lived** hooks that currently have pending interactions — so you
 can discover which of your many long-lived hooks have fired without polling each
 one. Read the details with `GET /poll/:id`. The list is derived from state:
 a hook drops off once drained or acknowledged, and `last_seq` tells you whether
-it has anything past your cursor.
+it has anything past your cursor. Add `metadata.<key>=<value>` parameters to
+keep only matching hooks (e.g. `/activity?metadata.run_id=0f3a`).
 
 ```bash
 curl https://hookd.example.com/activity \

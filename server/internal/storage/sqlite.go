@@ -254,33 +254,79 @@ func (m *SQLiteManager) LongLivedCount() int {
 // MaxHooks invariant holds under concurrent registration and a persistence
 // failure is surfaced instead of yielding a hook that never captures.
 func (m *SQLiteManager) CreateLongLivedHook(domain string, opts CreateOptions, maxHooks int) (*Hook, error) {
+	hooks, err := m.CreateLongLivedHooks(domain, []CreateOptions{opts}, maxHooks)
+	if err != nil {
+		return nil, err
+	}
+	return hooks[0], nil
+}
+
+// CreateLongLivedHooks persists a batch in one transaction, under the same lock
+// as the cap check, so either every hook exists afterwards or none does.
+func (m *SQLiteManager) CreateLongLivedHooks(domain string, opts []CreateOptions, maxHooks int) ([]*Hook, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if maxHooks > 0 && len(m.known) >= maxHooks {
+	if maxHooks > 0 && len(m.known)+len(opts) > maxHooks {
 		return nil, ErrHookLimitReached
 	}
 
-	hook := newHook(m.idGenerator(), domain, opts)
+	tx, err := m.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("begin hook batch: %w", err)
+	}
+	defer tx.Rollback()
 
-	var meta sql.NullString
-	if opts.Metadata != nil {
-		b, err := json.Marshal(opts.Metadata)
-		if err != nil {
-			return nil, fmt.Errorf("encode metadata: %w", err)
+	hooks := make([]*Hook, 0, len(opts))
+	for _, o := range opts {
+		hook := newHook(m.idGenerator(), domain, o)
+
+		var meta sql.NullString
+		if o.Metadata != nil {
+			b, err := json.Marshal(o.Metadata)
+			if err != nil {
+				return nil, fmt.Errorf("encode metadata: %w", err)
+			}
+			meta = sql.NullString{String: string(b), Valid: true}
 		}
-		meta = sql.NullString{String: string(b), Valid: true}
+
+		if _, err := tx.Exec(
+			`INSERT INTO hooks (id, dns, http, https, smtp, created_at, expires_at, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			hook.ID, hook.DNS, hook.HTTP, hook.HTTPS, hook.SMTP, hook.CreatedAt.UnixNano(), expiryNanos(hook.ExpiresAt), meta,
+		); err != nil {
+			return nil, fmt.Errorf("persist long-lived hook: %w", err)
+		}
+		hooks = append(hooks, hook)
 	}
 
-	if _, err := m.db.Exec(
-		`INSERT INTO hooks (id, dns, http, https, smtp, created_at, expires_at, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		hook.ID, hook.DNS, hook.HTTP, hook.HTTPS, hook.SMTP, hook.CreatedAt.UnixNano(), expiryNanos(hook.ExpiresAt), meta,
-	); err != nil {
-		return nil, fmt.Errorf("persist long-lived hook: %w", err)
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit hook batch: %w", err)
 	}
+	for _, hook := range hooks {
+		m.known[hook.ID] = struct{}{}
+	}
+	return hooks, nil
+}
 
-	m.known[hook.ID] = struct{}{}
-	return hook, nil
+// LongLivedHooks returns every long-lived hook, oldest first.
+func (m *SQLiteManager) LongLivedHooks() ([]*Hook, error) {
+	rows, err := m.db.Query(
+		`SELECT id, dns, http, https, smtp, created_at, expires_at, metadata FROM hooks ORDER BY created_at, id`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var hooks []*Hook
+	for rows.Next() {
+		hook, err := scanHook(rows)
+		if err != nil {
+			return nil, err
+		}
+		hooks = append(hooks, hook)
+	}
+	return hooks, rows.Err()
 }
 
 // CreateHook satisfies the Manager interface. Production registration goes

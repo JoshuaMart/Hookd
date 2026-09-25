@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"strconv"
 	"time"
 	"unicode/utf8"
 )
@@ -165,4 +166,26 @@ func SMTPInteraction(id, sourceIP, helo, mailFrom, rcptTo, tag, subject, body st
 			"body":      body,
 		},
 	}
+}
+
+// MatchesMetadata reports whether every filter key is a top-level metadata key
+// whose scalar value, rendered as text, equals the filter value.
+func MatchesMetadata(metadata map[string]any, filter map[string]string) bool {
+	for key, want := range filter {
+		var got string
+		switch v := metadata[key].(type) {
+		case string:
+			got = v
+		case float64:
+			got = strconv.FormatFloat(v, 'f', -1, 64)
+		case bool:
+			got = strconv.FormatBool(v)
+		default:
+			return false
+		}
+		if got != want {
+			return false
+		}
+	}
+	return true
 }

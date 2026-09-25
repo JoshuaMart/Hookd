@@ -76,6 +76,11 @@ func (h *APIHandler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if req.Hooks != nil {
+		h.registerSpecs(w, r, req)
+		return
+	}
+
 	// Default to 1 if count not specified or invalid
 	if req.Count < 1 {
 		req.Count = 1
@@ -93,33 +98,17 @@ func (h *APIHandler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	longLived := opts.TTL > h.evictor.HookTTL()
-
-	// Reject an over-cap batch up front so no hooks are created when the request
-	// cannot be satisfied in full. Each create is still atomically capped below,
-	// which is what enforces the bound under concurrency.
-	if longLived {
-		if llm, ok := h.storage.(storage.LongLivedManager); ok {
-			if llm.LongLivedCount()+req.Count > h.longLived.MaxHooks {
-				respondJSON(w, http.StatusTooManyRequests, map[string]string{
-					"error": "long-lived hook limit reached",
-				})
-				return
-			}
-		}
+	batch := make([]storage.CreateOptions, req.Count)
+	for i := range batch {
+		batch[i] = opts
+	}
+	hooks, errResp := h.createHooks(batch)
+	if errResp != nil {
+		respondJSON(w, errResp.status, map[string]string{"error": errResp.message})
+		return
 	}
 
-	hooks := make([]interface{}, 0, req.Count)
-	for i := 0; i < req.Count; i++ {
-		hook, errResp := h.createHook(opts, longLived)
-		if errResp != nil {
-			respondJSON(w, errResp.status, map[string]string{"error": errResp.message})
-			return
-		}
-		hooks = append(hooks, hook)
-	}
-
-	h.logger.Info("hooks created", "count", req.Count, "long_lived", longLived, "client", r.RemoteAddr)
+	h.logger.Info("hooks created", "count", req.Count, "client", r.RemoteAddr)
 
 	// Single-hook registrations return the hook object directly for backward
 	// compatibility; batches return a hooks array.
@@ -130,34 +119,97 @@ func (h *APIHandler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, map[string]interface{}{"hooks": hooks})
 }
 
+// maxRegisterSpecs caps the hooks array of POST /register; each entry carries
+// its own metadata, so a crawl registers one per injection point.
+const maxRegisterSpecs = 500
+
+// registerSpecs serves POST /register with {"hooks": [{ttl, metadata}, ...]}:
+// one hook per entry, returned in order, all or nothing.
+func (h *APIHandler) registerSpecs(w http.ResponseWriter, r *http.Request, req registerRequest) {
+	fail := func(status int, msg string) {
+		respondJSON(w, status, map[string]string{"error": msg})
+	}
+	if req.Count != 0 || req.TTL != "" || req.Metadata != nil {
+		fail(http.StatusBadRequest, "hooks cannot be combined with count, ttl or metadata")
+		return
+	}
+	if len(req.Hooks) == 0 || len(req.Hooks) > maxRegisterSpecs {
+		fail(http.StatusBadRequest, fmt.Sprintf("hooks must hold 1 to %d entries", maxRegisterSpecs))
+		return
+	}
+
+	batch := make([]storage.CreateOptions, len(req.Hooks))
+	for i, spec := range req.Hooks {
+		opts, errResp := h.buildCreateOptions(spec.TTL, spec.Metadata)
+		if errResp != nil {
+			fail(errResp.status, fmt.Sprintf("hooks[%d]: %s", i, errResp.message))
+			return
+		}
+		batch[i] = opts
+	}
+
+	hooks, errResp := h.createHooks(batch)
+	if errResp != nil {
+		fail(errResp.status, errResp.message)
+		return
+	}
+
+	h.logger.Info("hooks created", "count", len(hooks), "client", r.RemoteAddr)
+	respondJSON(w, http.StatusOK, map[string]interface{}{"hooks": hooks})
+}
+
 // registerRequest is the optional body of POST /register.
 type registerRequest struct {
 	Count    int            `json:"count,omitempty"`
 	TTL      string         `json:"ttl,omitempty"`
 	Metadata map[string]any `json:"metadata,omitempty"`
+	Hooks    []hookSpec     `json:"hooks,omitempty"`
 }
 
-// createHook creates one hook, routing long-lived registrations through the
-// fallible, cap-enforcing path so a full store or a persistence failure surfaces
-// as a proper HTTP error instead of a hook that silently never captures.
-func (h *APIHandler) createHook(opts storage.CreateOptions, longLived bool) (*storage.Hook, *apiError) {
-	if !longLived {
-		return h.storage.CreateHook(h.domain, opts), nil
+// hookSpec is one entry of the hooks array of POST /register.
+type hookSpec struct {
+	TTL      string         `json:"ttl,omitempty"`
+	Metadata map[string]any `json:"metadata,omitempty"`
+}
+
+// createHooks creates a batch in order. Long-lived hooks go through one
+// cap-enforcing transaction first; ephemeral ones cannot fail, so nothing is
+// created unless the whole batch can be.
+func (h *APIHandler) createHooks(batch []storage.CreateOptions) ([]*storage.Hook, *apiError) {
+	var longLived []storage.CreateOptions
+	for _, opts := range batch {
+		if opts.TTL > h.evictor.HookTTL() {
+			longLived = append(longLived, opts)
+		}
 	}
 
-	llm, ok := h.storage.(storage.LongLivedManager)
-	if !ok {
-		return nil, &apiError{http.StatusBadRequest, "long-lived hooks are disabled"}
+	var persisted []*storage.Hook
+	if len(longLived) > 0 {
+		llm, ok := h.storage.(storage.LongLivedManager)
+		if !ok {
+			return nil, &apiError{http.StatusBadRequest, "long-lived hooks are disabled"}
+		}
+		var err error
+		persisted, err = llm.CreateLongLivedHooks(h.domain, longLived, h.longLived.MaxHooks)
+		if errors.Is(err, storage.ErrHookLimitReached) {
+			return nil, &apiError{http.StatusTooManyRequests, "long-lived hook limit reached"}
+		}
+		if err != nil {
+			h.logger.Error("failed to create long-lived hooks", "error", err)
+			return nil, &apiError{http.StatusInternalServerError, "failed to create hook"}
+		}
 	}
-	hook, err := llm.CreateLongLivedHook(h.domain, opts, h.longLived.MaxHooks)
-	if errors.Is(err, storage.ErrHookLimitReached) {
-		return nil, &apiError{http.StatusTooManyRequests, "long-lived hook limit reached"}
+
+	hooks := make([]*storage.Hook, 0, len(batch))
+	for _, opts := range batch {
+		if opts.TTL > h.evictor.HookTTL() {
+			hooks = append(hooks, persisted[0])
+			persisted = persisted[1:]
+			continue
+		}
+		hooks = append(hooks, h.storage.CreateHook(h.domain, opts))
 	}
-	if err != nil {
-		h.logger.Error("failed to create long-lived hook", "error", err)
-		return nil, &apiError{http.StatusInternalServerError, "failed to create hook"}
-	}
-	return hook, nil
+	return hooks, nil
 }
 
 // apiError bundles an HTTP status with a client-facing message.
@@ -506,6 +558,7 @@ func (h *APIHandler) ackOne(w http.ResponseWriter, r *http.Request, hookID strin
 // hooks have fired without polling each one; the details are then drained via
 // GET /poll/:id. It does not mutate state — a hook drops off this list once
 // drained or acknowledged; compare last_seq with a cursor to skip read ones.
+// metadata.<key>=<value> query parameters narrow it to matching hooks.
 func (h *APIHandler) HandleActivity(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		respondJSON(w, http.StatusMethodNotAllowed, map[string]string{
@@ -514,16 +567,63 @@ func (h *APIHandler) HandleActivity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	filter := metadataFilter(r)
 	activity := []storage.HookActivity{}
 	if llm, ok := h.storage.(storage.LongLivedManager); ok {
-		if found := llm.LongLivedActivity(); found != nil {
-			activity = found
+		for _, a := range llm.LongLivedActivity() {
+			if storage.MatchesMetadata(a.Hook.Metadata, filter) {
+				activity = append(activity, a)
+			}
 		}
 	}
 
 	respondJSON(w, http.StatusOK, map[string]interface{}{
 		"hooks": activity,
 	})
+}
+
+// HandleHooks handles GET /hooks: every long-lived hook, without interactions,
+// optionally narrowed by metadata.<key>=<value>. It lets a client rebuild its
+// hook list after losing local state.
+func (h *APIHandler) HandleHooks(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		respondJSON(w, http.StatusMethodNotAllowed, map[string]string{
+			"error": "Method not allowed",
+		})
+		return
+	}
+
+	filter := metadataFilter(r)
+	hooks := []*storage.Hook{}
+	if llm, ok := h.storage.(storage.LongLivedManager); ok {
+		all, err := llm.LongLivedHooks()
+		if err != nil {
+			// An empty list would read as "no hooks" to a client recovering state.
+			h.logger.Error("failed to list long-lived hooks", "error", err)
+			respondJSON(w, http.StatusInternalServerError, map[string]string{"error": "storage error"})
+			return
+		}
+		for _, hook := range all {
+			if storage.MatchesMetadata(hook.Metadata, filter) {
+				hooks = append(hooks, hook)
+			}
+		}
+	}
+
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"hooks": hooks,
+	})
+}
+
+// metadataFilter collects the metadata.<key>=<value> query parameters.
+func metadataFilter(r *http.Request) map[string]string {
+	filter := map[string]string{}
+	for name, values := range r.URL.Query() {
+		if key, ok := strings.CutPrefix(name, "metadata."); ok && key != "" && len(values) > 0 {
+			filter[key] = values[0]
+		}
+	}
+	return filter
 }
 
 // HandleMetrics handles GET /metrics

@@ -161,6 +161,22 @@ func (c *CompositeManager) CreateLongLivedHook(domain string, opts CreateOptions
 	return c.longLived.CreateLongLivedHook(domain, opts, maxHooks)
 }
 
+// CreateLongLivedHooks persists a batch of durable hooks atomically.
+func (c *CompositeManager) CreateLongLivedHooks(domain string, opts []CreateOptions, maxHooks int) ([]*Hook, error) {
+	if c.longLived == nil {
+		return nil, errors.New("long-lived hooks are disabled")
+	}
+	return c.longLived.CreateLongLivedHooks(domain, opts, maxHooks)
+}
+
+// LongLivedHooks lists every long-lived hook.
+func (c *CompositeManager) LongLivedHooks() ([]*Hook, error) {
+	if c.longLived == nil {
+		return nil, nil
+	}
+	return c.longLived.LongLivedHooks()
+}
+
 // LongLivedActivity lists long-lived hooks with pending interactions.
 func (c *CompositeManager) LongLivedActivity() []HookActivity {
 	if c.longLived == nil {

@@ -242,10 +242,45 @@ curl -X POST https://hookd.domain.tld/register \
 Long-lived responses include a non-zero `expires_at` and echo `metadata`.
 Registering past `long_lived.max_hooks` returns HTTP 429.
 
+**Request (one hook per entry, each with its own metadata):**
+```bash
+curl -X POST https://hookd.domain.tld/register \
+  -H "X-API-Key: YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"hooks": [
+        {"ttl": "7d", "metadata": {"endpoint_id": "e_412", "param": "bio"}},
+        {"ttl": "7d", "metadata": {"endpoint_id": "e_413", "param": "name"}}
+      ]}'
+```
+
+The response is always `{"hooks": [...]}`, in request order. Up to 500 entries;
+each takes the same `ttl` and `metadata` rules as above, and `hooks` cannot be
+combined with `count`, `ttl` or `metadata`. The batch is all or nothing: an
+invalid entry (reported as `hooks[i]: ...`) or a batch that would exceed
+`long_lived.max_hooks` creates no hook at all.
+
+#### GET /hooks
+
+List every long-lived hook, without its interactions, oldest first — to
+rebuild a client's hook list after it lost local state. Authenticated.
+
+```bash
+curl "https://hookd.domain.tld/hooks?metadata.run_id=0f3a" \
+  -H "X-API-Key: YOUR_TOKEN"
+# {"hooks": [{"id": "abc123", "dns": "...", "expires_at": "...", "metadata": {"run_id": "0f3a"}}]}
+```
+
+**Metadata filter:** each `metadata.<key>=<value>` parameter keeps only hooks
+whose top-level metadata `key` holds `value`. Strings compare as-is, numbers
+and booleans by their JSON text (`42`, `true`); nested objects never match.
+Several parameters must all match. The same filter applies to `GET /activity`.
+
 #### GET /activity
 
 List the long-lived hooks that currently have pending interactions, so you can
 discover which fired without polling each one. Authenticated; mutates nothing.
+Accepts the `metadata.<key>=<value>` filter described under `GET /hooks`, so
+several workers sharing a server each see only their own hooks.
 
 **Request:**
 ```bash

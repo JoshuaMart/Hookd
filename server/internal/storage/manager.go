@@ -88,6 +88,13 @@ type LongLivedManager interface {
 	// maxHooks <= 0 means "no cap".
 	CreateLongLivedHook(domain string, opts CreateOptions, maxHooks int) (*Hook, error)
 
+	// CreateLongLivedHooks is the all-or-nothing batch form: either every hook
+	// is persisted, in order, or none is.
+	CreateLongLivedHooks(domain string, opts []CreateOptions, maxHooks int) ([]*Hook, error)
+
+	// LongLivedHooks returns every long-lived hook, oldest first.
+	LongLivedHooks() ([]*Hook, error)
+
 	// LongLivedActivity returns the long-lived hooks that currently have pending
 	// interactions, so a client can discover which ones fired.
 	LongLivedActivity() []HookActivity

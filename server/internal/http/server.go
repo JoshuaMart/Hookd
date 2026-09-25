@@ -120,6 +120,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.Handle("/read", apiMW(http.HandlerFunc(apiHandler.HandleRead)))
 	mux.Handle("/ack", apiMW(http.HandlerFunc(apiHandler.HandleAck)))
 	mux.Handle("/activity", apiMW(http.HandlerFunc(apiHandler.HandleActivity)))
+	mux.Handle("/hooks", apiMW(http.HandlerFunc(apiHandler.HandleHooks)))
 
 	// Metrics endpoint (no auth), left unmounted when disabled.
 	if s.observability.MetricsEnabled {
