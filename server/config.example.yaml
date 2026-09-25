@@ -84,7 +84,8 @@ eviction:
   hook_ttl: "24h"
 
   # Maximum number of interactions per hook
-  # Older interactions are evicted when this limit is reached (FIFO)
+  # Older interactions are evicted first (FIFO): immediately on insertion
+  # for in-memory hooks, during periodic cleanup for SQLite hooks.
   max_per_hook: 1000
 
   # Captured HTTP bodies are truncated to this many bytes (the interaction is

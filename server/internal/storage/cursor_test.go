@@ -211,7 +211,7 @@ func TestSQLite_DrainReturnsUnnumberedRows(t *testing.T) {
 func TestSQLite_CursorErrorsSurface(t *testing.T) {
 	m := newTestSQLite(t, 1024)
 	hook := m.CreateHook("example.com", CreateOptions{TTL: time.Hour})
-	m.db.Close()
+	m.Close()
 
 	if _, err := m.ReadInteractions(hook.ID, 0); err == nil || errors.Is(err, ErrHookNotFound) {
 		t.Errorf("expected a storage error on read, got %v", err)

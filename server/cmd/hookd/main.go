@@ -85,6 +85,7 @@ func main() {
 	// Create storage manager: ephemeral hooks live in memory; when enabled,
 	// long-lived hooks are persisted to SQLite so they survive restarts.
 	memoryManager := storage.NewMemoryManager(idGenerator)
+	memoryManager.SetMaxPerHook(cfg.Eviction.MaxPerHook)
 	var longLived *storage.SQLiteManager
 	if cfg.LongLived.Enabled {
 		longLived, err = storage.NewSQLiteManager(

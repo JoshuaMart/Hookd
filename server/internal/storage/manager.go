@@ -122,6 +122,9 @@ type MemoryManager struct {
 	droppedThrough map[string]int64
 	mu             sync.RWMutex
 	idGenerator    func() string
+	maxPerHook     int
+	limitEvictions int
+	counts         Stats
 
 	// forceGC and heapInUseMB are injectable so the memory-pressure eviction
 	// logic can be tested deterministically without depending on the real heap.
@@ -140,6 +143,15 @@ func NewMemoryManager(idGenerator func() string) *MemoryManager {
 		forceGC:        runtime.GC,
 		heapInUseMB:    readHeapInUseMB,
 	}
+}
+
+// SetMaxPerHook enables immediate oldest-first eviction for in-memory hooks.
+// A non-positive limit disables it. Configure this before accepting captures;
+// existing entries are also trimmed by the periodic EnforcePerHookLimit pass.
+func (m *MemoryManager) SetMaxPerHook(max int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.maxPerHook = max
 }
 
 // readHeapInUseMB reports the heap currently in use, in megabytes, without
@@ -191,9 +203,19 @@ func (m *MemoryManager) AddInteraction(hookID string, interaction *Interaction) 
 		return
 	}
 
+	m.countInteraction(interaction, 1)
 	m.lastSeq[hookID]++
 	interaction.Seq = m.lastSeq[hookID]
-	m.interactions[hookID] = append(m.interactions[hookID], interaction)
+	entries := append(m.interactions[hookID], interaction)
+	if m.maxPerHook > 0 && len(entries) > m.maxPerHook {
+		drop := len(entries) - m.maxPerHook
+		m.noteDropped(hookID, entries[drop-1].Seq)
+		m.removeCounts(entries[:drop])
+		clear(entries[:drop])
+		entries = entries[drop:]
+		m.limitEvictions += drop
+	}
+	m.interactions[hookID] = entries
 }
 
 // ReadInteractions returns the interactions past the cursor without deleting them.
@@ -226,6 +248,8 @@ func (m *MemoryManager) AckInteractions(hookID string, through int64) (int, erro
 	for _, interaction := range interactions {
 		if interaction.Seq > through {
 			kept = append(kept, interaction)
+		} else {
+			m.countInteraction(interaction, -1)
 		}
 	}
 	m.interactions[hookID] = kept
@@ -246,13 +270,14 @@ func (m *MemoryManager) PollInteractions(hookID string) []*Interaction {
 	defer m.mu.Unlock()
 
 	interactions, exists := m.interactions[hookID]
-	if !exists {
+	if !exists || len(interactions) == 0 {
 		return []*Interaction{}
 	}
 
-	// Return a copy and clear the slice
-	result := make([]*Interaction, len(interactions))
-	copy(result, interactions)
+	m.removeCounts(interactions)
+
+	// Transfer ownership of the slice; future inserts use a new backing array.
+	result := interactions
 
 	m.interactions[hookID] = make([]*Interaction, 0)
 
@@ -267,6 +292,10 @@ func (m *MemoryManager) PollInteractionsBatch(hookIDs []string) map[string]*Poll
 	results := make(map[string]*PollResult, len(hookIDs))
 
 	for _, hookID := range hookIDs {
+		// A duplicate must not overwrite the first drain with an empty result.
+		if _, seen := results[hookID]; seen {
+			continue
+		}
 		// Check if hook exists
 		if _, exists := m.hooks[hookID]; !exists {
 			results[hookID] = &PollResult{
@@ -287,9 +316,10 @@ func (m *MemoryManager) PollInteractionsBatch(hookIDs []string) map[string]*Poll
 			continue
 		}
 
-		// Return a copy and clear the slice
-		result := make([]*Interaction, len(interactions))
-		copy(result, interactions)
+		m.removeCounts(interactions)
+
+		// Transfer ownership instead of allocating another pointer array.
+		result := interactions
 
 		m.interactions[hookID] = make([]*Interaction, 0)
 
@@ -309,18 +339,23 @@ func (m *MemoryManager) EvictInteractionsBefore(cutoff time.Time) int {
 
 	total := 0
 	for hookID, interactions := range m.interactions {
-		filtered := make([]*Interaction, 0, len(interactions))
+		filtered := interactions[:0]
 		for _, interaction := range interactions {
 			if interaction.Timestamp.Before(cutoff) {
 				total++
+				m.countInteraction(interaction, -1)
 				m.noteDropped(hookID, interaction.Seq)
 			} else {
 				filtered = append(filtered, interaction)
 			}
 		}
-		if len(filtered) != len(interactions) {
-			m.interactions[hookID] = filtered
+		// The returned read/poll slices never alias this backing array. Clear
+		// removed slots so the GC can reclaim their bodies and metadata.
+		clear(interactions[len(filtered):])
+		if len(filtered) == 0 {
+			filtered = nil
 		}
+		m.interactions[hookID] = filtered
 	}
 	return total
 }
@@ -343,6 +378,7 @@ func (m *MemoryManager) EvictExpiredHooks(now time.Time) int {
 
 // deleteHook removes a hook and all its state. Callers must hold m.mu.
 func (m *MemoryManager) deleteHook(id string) {
+	m.removeCounts(m.interactions[id])
 	delete(m.hooks, id)
 	delete(m.interactions, id)
 	delete(m.lastSeq, id)
@@ -350,15 +386,20 @@ func (m *MemoryManager) deleteHook(id string) {
 }
 
 // EnforcePerHookLimit trims each hook to at most max interactions, dropping the
-// oldest first (the slice is ordered by arrival), and returns the number removed.
+// oldest first (the slice is ordered by arrival). The return value also includes
+// insert-time evictions since the previous pass, for eviction metrics.
 func (m *MemoryManager) EnforcePerHookLimit(max int) int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	total := 0
+	// Include insert-time evictions exactly once so the evictor's existing
+	// limit metric continues to count every dropped interaction.
+	total := m.limitEvictions
+	m.limitEvictions = 0
 	for hookID, interactions := range m.interactions {
 		if len(interactions) > max {
 			drop := len(interactions) - max
+			m.removeCounts(interactions[:drop])
 			m.noteDropped(hookID, interactions[drop-1].Seq)
 			// Keep the newest max, copying into a fresh slice so the dropped
 			// entries can be garbage-collected.
@@ -439,40 +480,39 @@ func (m *MemoryManager) EvictByMemoryPressure(maxMemoryMB int) MemoryEvictionRes
 	return result
 }
 
-// Stats returns storage statistics
+// countInteraction and removeCounts update pending counts while m.mu is held.
+func (m *MemoryManager) countInteraction(it *Interaction, delta int) {
+	m.counts.InteractionsTotal += delta
+	switch it.Type {
+	case InteractionTypeDNS:
+		m.counts.InteractionsDNS += delta
+	case InteractionTypeHTTP:
+		m.counts.InteractionsHTTP += delta
+	case InteractionTypeSMTP:
+		m.counts.InteractionsSMTP += delta
+	}
+}
+
+func (m *MemoryManager) removeCounts(entries []*Interaction) {
+	for _, it := range entries {
+		m.countInteraction(it, -1)
+	}
+}
+
+// Stats snapshots counts under a short lock. Runtime sampling does not hold up
+// captures, and no work scales with the number of pending interactions.
 func (m *MemoryManager) Stats() Stats {
 	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	stats := Stats{
-		HooksActive: len(m.hooks),
-	}
-
-	for _, interactions := range m.interactions {
-		stats.InteractionsTotal += len(interactions)
-		for _, interaction := range interactions {
-			switch interaction.Type {
-			case InteractionTypeDNS:
-				stats.InteractionsDNS++
-			case InteractionTypeHTTP:
-				stats.InteractionsHTTP++
-			case InteractionTypeSMTP:
-				stats.InteractionsSMTP++
-			}
-		}
-	}
-
-	// Get detailed memory usage from Go runtime
+	stats := m.counts
+	stats.HooksActive = len(m.hooks)
+	m.mu.RUnlock()
 	var memStats runtime.MemStats
 	runtime.ReadMemStats(&memStats)
-
-	// Populate detailed memory stats
 	stats.Memory = MemoryStats{
 		AllocMB:     int(memStats.Alloc / (1024 * 1024)),
 		HeapInuseMB: int(memStats.HeapInuse / (1024 * 1024)),
 		SysMB:       int(memStats.Sys / (1024 * 1024)),
 		GCRuns:      memStats.NumGC,
 	}
-
 	return stats
 }

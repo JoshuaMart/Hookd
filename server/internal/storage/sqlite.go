@@ -3,6 +3,7 @@ package storage
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -48,6 +49,7 @@ CREATE INDEX IF NOT EXISTS idx_interactions_ts ON interactions(timestamp);
 // it owns so the composite manager can route captures without touching disk.
 type SQLiteManager struct {
 	db           *sql.DB
+	readDB       *sql.DB
 	idGenerator  func() string
 	maxBodyBytes int
 	logger       *slog.Logger
@@ -82,8 +84,8 @@ func NewSQLiteManager(dbPath string, idGenerator func() string, maxBodyBytes int
 	// Serialize access to the single database file. SQLite allows only one
 	// writer at a time; with an unbounded pool a deferred read→write transaction
 	// (e.g. PollInteractions) can hit SQLITE_BUSY_SNAPSHOT, which busy_timeout
-	// does not retry. One connection removes writer contention entirely. The hot
-	// capture path is in-memory, so long-lived throughput is not a bottleneck.
+	// does not retry. Keep read-modify-write transactions on one connection;
+	// read-only operations use a separate, bounded pool under WAL.
 	db.SetMaxOpenConns(1)
 
 	if _, err := db.Exec(sqliteSchema); err != nil {
@@ -111,6 +113,21 @@ func NewSQLiteManager(dbPath string, idGenerator func() string, maxBodyBytes int
 		return nil, fmt.Errorf("load hook index: %w", err)
 	}
 
+	// Readers never upgrade a transaction to a write. WAL lets them take a
+	// consistent snapshot without occupying the sole writer connection.
+	readers, err := sql.Open("sqlite", dsn+"&_pragma=query_only(ON)")
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("open sqlite readers: %w", err)
+	}
+	readers.SetMaxOpenConns(4)
+	readers.SetMaxIdleConns(4)
+	if err := readers.Ping(); err != nil {
+		_ = readers.Close()
+		_ = db.Close()
+		return nil, fmt.Errorf("initialize sqlite readers: %w", err)
+	}
+	m.readDB = readers
 	return m, nil
 }
 
@@ -230,7 +247,7 @@ func (m *SQLiteManager) loadIndex() error {
 
 // Close closes the underlying database.
 func (m *SQLiteManager) Close() error {
-	return m.db.Close()
+	return errors.Join(m.readDB.Close(), m.db.Close())
 }
 
 // Has reports whether the given hook ID is stored here. It is a fast in-memory
@@ -310,7 +327,7 @@ func (m *SQLiteManager) CreateLongLivedHooks(domain string, opts []CreateOptions
 
 // LongLivedHooks returns every long-lived hook, oldest first.
 func (m *SQLiteManager) LongLivedHooks() ([]*Hook, error) {
-	rows, err := m.db.Query(
+	rows, err := m.readDB.Query(
 		`SELECT id, dns, http, https, smtp, created_at, expires_at, metadata FROM hooks ORDER BY created_at, id`,
 	)
 	if err != nil {
@@ -347,7 +364,7 @@ func (m *SQLiteManager) GetHook(id string) (*Hook, bool) {
 	if !m.Has(id) {
 		return nil, false
 	}
-	row := m.db.QueryRow(
+	row := m.readDB.QueryRow(
 		`SELECT id, dns, http, https, smtp, created_at, expires_at, metadata FROM hooks WHERE id = ?`, id,
 	)
 	hook, err := scanHook(row)
@@ -464,7 +481,7 @@ func (m *SQLiteManager) ReadInteractions(hookID string, after int64) (CursorRead
 		return CursorRead{}, ErrHookNotFound
 	}
 
-	tx, err := m.db.Begin()
+	tx, err := m.readDB.Begin()
 	if err != nil {
 		return CursorRead{}, err
 	}
@@ -501,14 +518,63 @@ func (m *SQLiteManager) AckInteractions(hookID string, through int64) (int, erro
 // error, matching the in-memory manager's contract.
 func (m *SQLiteManager) PollInteractionsBatch(hookIDs []string) map[string]*PollResult {
 	results := make(map[string]*PollResult, len(hookIDs))
+	ids := make([]string, 0, len(hookIDs))
 	for _, id := range hookIDs {
-		if !m.Has(id) {
-			results[id] = &PollResult{Error: "Hook not found"}
+		if _, seen := results[id]; seen {
 			continue
 		}
-		results[id] = &PollResult{Interactions: m.PollInteractions(id)}
+		results[id] = &PollResult{Interactions: []*Interaction{}}
+		if !m.Has(id) {
+			results[id].Error = "Hook not found"
+			continue
+		}
+		ids = append(ids, id)
+	}
+	// Bound writer occupancy instead of holding one transaction for the entire
+	// API batch. Polling a chunk remains atomic with respect to captures.
+	const chunkSize = 64
+	for start := 0; start < len(ids); start += chunkSize {
+		chunk := ids[start:min(start+chunkSize, len(ids))]
+		polled, err := m.pollChunk(chunk)
+		if err != nil {
+			m.logger.Error("failed to poll interaction batch", "error", err)
+			for _, id := range chunk {
+				results[id] = &PollResult{Error: "storage error"}
+			}
+			continue
+		}
+		for id, interactions := range polled {
+			results[id] = &PollResult{Interactions: interactions}
+		}
 	}
 	return results
+}
+
+// pollChunk decodes before deleting/committing, so a corrupt row cannot be
+// silently drained. On any failure the whole chunk stays available for retry.
+func (m *SQLiteManager) pollChunk(ids []string) (map[string][]*Interaction, error) {
+	tx, err := m.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	results := make(map[string][]*Interaction, len(ids))
+	for _, id := range ids {
+		interactions, err := queryInteractions(tx, id, -1)
+		if err != nil {
+			return nil, err
+		}
+		if len(interactions) > 0 {
+			if _, err := tx.Exec(`DELETE FROM interactions WHERE hook_id = ?`, id); err != nil {
+				return nil, err
+			}
+		}
+		results[id] = interactions
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return results, nil
 }
 
 // Stats reports hook and interaction counts. Memory statistics are left zero;
@@ -520,7 +586,7 @@ func (m *SQLiteManager) Stats() Stats {
 	stats.HooksActive = len(m.known)
 	m.mu.RUnlock()
 
-	rows, err := m.db.Query(`SELECT type, COUNT(*) FROM interactions GROUP BY type`)
+	rows, err := m.readDB.Query(`SELECT type, COUNT(*) FROM interactions GROUP BY type`)
 	if err != nil {
 		m.logger.Error("failed to read interaction stats", "error", err)
 		return stats
@@ -677,7 +743,7 @@ func (m *SQLiteManager) EvictByMemoryPressure(_ int) MemoryEvictionResult {
 // LongLivedActivity returns the long-lived hooks that currently have pending
 // interactions, with their pending count and most recent interaction time.
 func (m *SQLiteManager) LongLivedActivity() []HookActivity {
-	rows, err := m.db.Query(`
+	rows, err := m.readDB.Query(`
 		SELECT h.id, h.dns, h.http, h.https, h.smtp, h.created_at, h.expires_at, h.metadata,
 		       COUNT(i.id), COALESCE(MAX(i.timestamp), 0), COALESCE(MAX(i.seq), 0)
 		FROM hooks h
