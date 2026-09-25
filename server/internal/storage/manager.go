@@ -309,18 +309,23 @@ func (m *MemoryManager) EvictInteractionsBefore(cutoff time.Time) int {
 
 	total := 0
 	for hookID, interactions := range m.interactions {
-		filtered := make([]*Interaction, 0, len(interactions))
+		filtered := interactions[:0]
 		for _, interaction := range interactions {
 			if interaction.Timestamp.Before(cutoff) {
 				total++
+
 				m.noteDropped(hookID, interaction.Seq)
 			} else {
 				filtered = append(filtered, interaction)
 			}
 		}
-		if len(filtered) != len(interactions) {
-			m.interactions[hookID] = filtered
+		// The returned read/poll slices never alias this backing array. Clear
+		// removed slots so the GC can reclaim their bodies and metadata.
+		clear(interactions[len(filtered):])
+		if len(filtered) == 0 {
+			filtered = nil
 		}
+		m.interactions[hookID] = filtered
 	}
 	return total
 }
