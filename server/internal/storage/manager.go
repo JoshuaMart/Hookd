@@ -124,6 +124,7 @@ type MemoryManager struct {
 	idGenerator    func() string
 	maxPerHook     int
 	limitEvictions int
+	counts         Stats
 
 	// forceGC and heapInUseMB are injectable so the memory-pressure eviction
 	// logic can be tested deterministically without depending on the real heap.
@@ -202,13 +203,14 @@ func (m *MemoryManager) AddInteraction(hookID string, interaction *Interaction) 
 		return
 	}
 
+	m.countInteraction(interaction, 1)
 	m.lastSeq[hookID]++
 	interaction.Seq = m.lastSeq[hookID]
 	entries := append(m.interactions[hookID], interaction)
 	if m.maxPerHook > 0 && len(entries) > m.maxPerHook {
 		drop := len(entries) - m.maxPerHook
 		m.noteDropped(hookID, entries[drop-1].Seq)
-
+		m.removeCounts(entries[:drop])
 		clear(entries[:drop])
 		entries = entries[drop:]
 		m.limitEvictions += drop
@@ -247,7 +249,7 @@ func (m *MemoryManager) AckInteractions(hookID string, through int64) (int, erro
 		if interaction.Seq > through {
 			kept = append(kept, interaction)
 		} else {
-
+			m.countInteraction(interaction, -1)
 		}
 	}
 	m.interactions[hookID] = kept
@@ -271,6 +273,8 @@ func (m *MemoryManager) PollInteractions(hookID string) []*Interaction {
 	if !exists || len(interactions) == 0 {
 		return []*Interaction{}
 	}
+
+	m.removeCounts(interactions)
 
 	// Transfer ownership of the slice; future inserts use a new backing array.
 	result := interactions
@@ -312,6 +316,8 @@ func (m *MemoryManager) PollInteractionsBatch(hookIDs []string) map[string]*Poll
 			continue
 		}
 
+		m.removeCounts(interactions)
+
 		// Transfer ownership instead of allocating another pointer array.
 		result := interactions
 
@@ -337,7 +343,7 @@ func (m *MemoryManager) EvictInteractionsBefore(cutoff time.Time) int {
 		for _, interaction := range interactions {
 			if interaction.Timestamp.Before(cutoff) {
 				total++
-
+				m.countInteraction(interaction, -1)
 				m.noteDropped(hookID, interaction.Seq)
 			} else {
 				filtered = append(filtered, interaction)
@@ -372,7 +378,7 @@ func (m *MemoryManager) EvictExpiredHooks(now time.Time) int {
 
 // deleteHook removes a hook and all its state. Callers must hold m.mu.
 func (m *MemoryManager) deleteHook(id string) {
-
+	m.removeCounts(m.interactions[id])
 	delete(m.hooks, id)
 	delete(m.interactions, id)
 	delete(m.lastSeq, id)
@@ -393,7 +399,7 @@ func (m *MemoryManager) EnforcePerHookLimit(max int) int {
 	for hookID, interactions := range m.interactions {
 		if len(interactions) > max {
 			drop := len(interactions) - max
-
+			m.removeCounts(interactions[:drop])
 			m.noteDropped(hookID, interactions[drop-1].Seq)
 			// Keep the newest max, copying into a fresh slice so the dropped
 			// entries can be garbage-collected.
@@ -474,40 +480,39 @@ func (m *MemoryManager) EvictByMemoryPressure(maxMemoryMB int) MemoryEvictionRes
 	return result
 }
 
-// Stats returns storage statistics
+// countInteraction and removeCounts update pending counts while m.mu is held.
+func (m *MemoryManager) countInteraction(it *Interaction, delta int) {
+	m.counts.InteractionsTotal += delta
+	switch it.Type {
+	case InteractionTypeDNS:
+		m.counts.InteractionsDNS += delta
+	case InteractionTypeHTTP:
+		m.counts.InteractionsHTTP += delta
+	case InteractionTypeSMTP:
+		m.counts.InteractionsSMTP += delta
+	}
+}
+
+func (m *MemoryManager) removeCounts(entries []*Interaction) {
+	for _, it := range entries {
+		m.countInteraction(it, -1)
+	}
+}
+
+// Stats snapshots counts under a short lock. Runtime sampling does not hold up
+// captures, and no work scales with the number of pending interactions.
 func (m *MemoryManager) Stats() Stats {
 	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	stats := Stats{
-		HooksActive: len(m.hooks),
-	}
-
-	for _, interactions := range m.interactions {
-		stats.InteractionsTotal += len(interactions)
-		for _, interaction := range interactions {
-			switch interaction.Type {
-			case InteractionTypeDNS:
-				stats.InteractionsDNS++
-			case InteractionTypeHTTP:
-				stats.InteractionsHTTP++
-			case InteractionTypeSMTP:
-				stats.InteractionsSMTP++
-			}
-		}
-	}
-
-	// Get detailed memory usage from Go runtime
+	stats := m.counts
+	stats.HooksActive = len(m.hooks)
+	m.mu.RUnlock()
 	var memStats runtime.MemStats
 	runtime.ReadMemStats(&memStats)
-
-	// Populate detailed memory stats
 	stats.Memory = MemoryStats{
 		AllocMB:     int(memStats.Alloc / (1024 * 1024)),
 		HeapInuseMB: int(memStats.HeapInuse / (1024 * 1024)),
 		SysMB:       int(memStats.Sys / (1024 * 1024)),
 		GCRuns:      memStats.NumGC,
 	}
-
 	return stats
 }
