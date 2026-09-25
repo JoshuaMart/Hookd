@@ -1,9 +1,0 @@
-{
-  "00-baseline": "43fd991013155c652b5f66ed98cf932049d97e10",
-  "01-cleanup": "1abad5d25655bf0ce3439ea96efe822747b5de5d",
-  "02-limit": "641f63264e11692fcc384255767b43897274ef0e",
-  "03-readers": "a24efba99207f91c081a36d6c6100e86d9fa0cd6",
-  "04-batch": "7e7f68576a8fe831a1bc8c6a8cc35b989d4ece05",
-  "06-metrics-index": "ab40c3adb8b8164a68b5d015205c688a96047a62",
-  "06-metrics": "b788e6f782aef66f07fb0151b0058ad561a9d3e3"
-}
