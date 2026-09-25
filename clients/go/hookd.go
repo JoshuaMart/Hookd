@@ -49,6 +49,12 @@ type RegisterOptions struct {
 	Metadata map[string]any
 }
 
+// HookSpec describes one hook of a RegisterBatch call.
+type HookSpec struct {
+	TTL      string         `json:"ttl,omitempty"`
+	Metadata map[string]any `json:"metadata,omitempty"`
+}
+
 // HookActivity summarises a long-lived hook that has pending interactions.
 type HookActivity struct {
 	Hook              Hook   `json:"hook"`
@@ -212,20 +218,8 @@ func (c *Client) RegisterHooks(opts RegisterOptions) ([]Hook, error) {
 	}
 
 	// Multiple hooks response
-	if raw, ok := data["hooks"]; ok {
-		rawHooks, ok := raw.([]any)
-		if !ok {
-			return nil, &Error{Message: "invalid hooks response format"}
-		}
-		hooks := make([]Hook, 0, len(rawHooks))
-		for _, rh := range rawHooks {
-			h, err := parseHook(rh)
-			if err != nil {
-				return nil, err
-			}
-			hooks = append(hooks, h)
-		}
-		return hooks, nil
+	if _, ok := data["hooks"]; ok {
+		return parseHookList(data)
 	}
 
 	// Single hook response
@@ -234,6 +228,29 @@ func (c *Client) RegisterHooks(opts RegisterOptions) ([]Hook, error) {
 		return nil, err
 	}
 	return []Hook{h}, nil
+}
+
+// RegisterBatch creates one hook per spec, each with its own TTL and metadata,
+// in one request. Hooks come back in spec order; the server creates all or none.
+func (c *Client) RegisterBatch(specs []HookSpec) ([]Hook, error) {
+	if len(specs) == 0 {
+		return nil, fmt.Errorf("specs must not be empty")
+	}
+	data, err := c.post("/register", map[string]any{"hooks": specs})
+	if err != nil {
+		return nil, err
+	}
+	return parseHookList(data)
+}
+
+// Hooks lists the long-lived hooks, without interactions, whose metadata
+// matches every key/value in the filter (nil lists all).
+func (c *Client) Hooks(metadata map[string]string) ([]Hook, error) {
+	data, err := c.get("/hooks" + metadataQuery(metadata))
+	if err != nil {
+		return nil, err
+	}
+	return parseHookList(data)
 }
 
 // Poll retrieves interactions for a single hook.
@@ -414,7 +431,13 @@ func (c *Client) Metrics() (Metrics, error) {
 // each one. Fetch the details with Read (or Poll to drain). Returns an empty slice when none have
 // fired (or the server has long-lived hooks disabled).
 func (c *Client) Activity() ([]HookActivity, error) {
-	data, err := c.get("/activity")
+	return c.ActivityMatching(nil)
+}
+
+// ActivityMatching is Activity restricted to hooks whose metadata matches every
+// key/value in the filter.
+func (c *Client) ActivityMatching(metadata map[string]string) ([]HookActivity, error) {
+	data, err := c.get("/activity" + metadataQuery(metadata))
 	if err != nil {
 		return nil, err
 	}
@@ -536,7 +559,36 @@ func (c *Client) doRequest(req *http.Request) (map[string]any, error) {
 	return result, nil
 }
 
+// metadataQuery encodes a metadata filter as metadata.<key>=<value> parameters.
+func metadataQuery(metadata map[string]string) string {
+	if len(metadata) == 0 {
+		return ""
+	}
+	q := url.Values{}
+	for k, v := range metadata {
+		q.Set("metadata."+k, v)
+	}
+	return "?" + q.Encode()
+}
+
 // Parsing helpers
+
+// parseHookList reads a {"hooks": [...]} response.
+func parseHookList(data map[string]any) ([]Hook, error) {
+	raw, ok := data["hooks"].([]any)
+	if !ok {
+		return nil, &Error{Message: "invalid hooks response format"}
+	}
+	hooks := make([]Hook, 0, len(raw))
+	for _, rh := range raw {
+		h, err := parseHook(rh)
+		if err != nil {
+			return nil, err
+		}
+		hooks = append(hooks, h)
+	}
+	return hooks, nil
+}
 
 func parseHook(raw any) (Hook, error) {
 	m, ok := raw.(map[string]any)

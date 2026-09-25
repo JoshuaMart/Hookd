@@ -210,6 +210,34 @@ long-lived hook), and `Metadata` (stored with the hook, echoed on poll).
 hooks, _ := client.RegisterHooks(hookd.RegisterOptions{TTL: "7d", Metadata: map[string]any{"k": "v"}})
 ```
 
+#### `(*Client) RegisterBatch(specs []HookSpec) ([]Hook, error)`
+
+Register one hook per `HookSpec{TTL, Metadata}` in a single request, e.g. one
+per injectable field, each carrying its own context. Hooks come back in spec
+order; the server creates all of them or none (up to 500 per call).
+
+```go
+hooks, err := client.RegisterBatch([]hookd.HookSpec{
+    {TTL: "7d", Metadata: map[string]any{"endpoint_id": "e_412", "param": "bio"}},
+    {TTL: "7d", Metadata: map[string]any{"endpoint_id": "e_413", "param": "name"}},
+})
+```
+
+#### `(*Client) Hooks(metadata map[string]string) ([]Hook, error)`
+
+List the long-lived hooks (without interactions) whose top-level metadata
+matches every key/value of the filter; `nil` lists all. Useful to rebuild your
+hook list after losing local state.
+
+```go
+hooks, _ := client.Hooks(map[string]string{"run_id": "0f3a"})
+```
+
+#### `(*Client) ActivityMatching(metadata map[string]string) ([]HookActivity, error)`
+
+`Activity` restricted to hooks matching the metadata filter, so workers sharing
+a server each see only their own hooks.
+
 #### `(*Client) Activity() ([]HookActivity, error)`
 
 List the long-lived hooks that currently have pending interactions. Returns an

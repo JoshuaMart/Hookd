@@ -782,3 +782,58 @@ func TestAckBatch(t *testing.T) {
 		t.Error("expected an error for an empty batch")
 	}
 }
+
+func TestRegisterBatch(t *testing.T) {
+	server, client := setupServer(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Hooks []HookSpec `json:"hooks"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body.Hooks) != 2 || body.Hooks[1].Metadata["param"] != "name" {
+			t.Errorf("unexpected body %+v (%v)", body, err)
+		}
+		writeJSON(t, w, map[string]any{"hooks": []any{
+			map[string]any{"id": "a", "metadata": map[string]any{"param": "bio"}},
+			map[string]any{"id": "b", "metadata": map[string]any{"param": "name"}},
+		}})
+	})
+	defer server.Close()
+
+	hooks, err := client.RegisterBatch([]HookSpec{
+		{TTL: "7d", Metadata: map[string]any{"param": "bio"}},
+		{TTL: "7d", Metadata: map[string]any{"param": "name"}},
+	})
+	if err != nil {
+		t.Fatalf("RegisterBatch: %v", err)
+	}
+	if len(hooks) != 2 || hooks[0].ID != "a" || hooks[1].Metadata["param"] != "name" {
+		t.Errorf("unexpected hooks %+v", hooks)
+	}
+	if _, err := client.RegisterBatch(nil); err == nil {
+		t.Error("expected an error for no specs")
+	}
+}
+
+func TestHooksAndActivityMatching(t *testing.T) {
+	server, client := setupServer(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("metadata.run_id"); got != "0f3a" {
+			t.Errorf("expected metadata.run_id filter, got %q", r.URL.RawQuery)
+		}
+		switch r.URL.Path {
+		case "/hooks":
+			writeJSON(t, w, map[string]any{"hooks": []any{map[string]any{"id": "a"}}})
+		case "/activity":
+			writeJSON(t, w, map[string]any{"hooks": []any{map[string]any{"hook": map[string]any{"id": "a"}, "last_seq": 4}}})
+		}
+	})
+	defer server.Close()
+
+	filter := map[string]string{"run_id": "0f3a"}
+	hooks, err := client.Hooks(filter)
+	if err != nil || len(hooks) != 1 || hooks[0].ID != "a" {
+		t.Errorf("unexpected hooks %+v (%v)", hooks, err)
+	}
+	activity, err := client.ActivityMatching(filter)
+	if err != nil || len(activity) != 1 || activity[0].LastSeq != 4 {
+		t.Errorf("unexpected activity %+v (%v)", activity, err)
+	}
+}
