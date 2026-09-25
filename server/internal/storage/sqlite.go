@@ -42,7 +42,6 @@ CREATE TABLE IF NOT EXISTS interactions (
 	seq        INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_interactions_ts ON interactions(timestamp);
-CREATE INDEX IF NOT EXISTS idx_interactions_type ON interactions(type);
 `
 
 // SQLiteManager persists long-lived hooks and their interactions to a SQLite
