@@ -117,6 +117,8 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.Handle("/register", apiMW(http.HandlerFunc(apiHandler.HandleRegister)))
 	mux.Handle("/poll", apiMW(http.HandlerFunc(apiHandler.HandlePollBatch)))
 	mux.Handle("/poll/", apiMW(http.HandlerFunc(apiHandler.HandlePoll)))
+	mux.Handle("/read", apiMW(http.HandlerFunc(apiHandler.HandleRead)))
+	mux.Handle("/ack", apiMW(http.HandlerFunc(apiHandler.HandleAck)))
 	mux.Handle("/activity", apiMW(http.HandlerFunc(apiHandler.HandleActivity)))
 
 	// Metrics endpoint (no auth), left unmounted when disabled.

@@ -25,7 +25,9 @@ CREATE TABLE IF NOT EXISTS hooks (
 	smtp       TEXT NOT NULL DEFAULT '',
 	created_at INTEGER NOT NULL,
 	expires_at INTEGER NOT NULL,
-	metadata   TEXT
+	metadata   TEXT,
+	last_seq        INTEGER NOT NULL DEFAULT 0,
+	dropped_through INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_hooks_expires ON hooks(expires_at);
 
@@ -35,9 +37,9 @@ CREATE TABLE IF NOT EXISTS interactions (
 	type       TEXT NOT NULL,
 	timestamp  INTEGER NOT NULL,
 	source_ip  TEXT,
-	data       TEXT NOT NULL
+	data       TEXT NOT NULL,
+	seq        INTEGER NOT NULL DEFAULT 0
 );
-CREATE INDEX IF NOT EXISTS idx_interactions_hook ON interactions(hook_id);
 CREATE INDEX IF NOT EXISTS idx_interactions_ts ON interactions(timestamp);
 `
 
@@ -114,22 +116,75 @@ func NewSQLiteManager(dbPath string, idGenerator func() string, maxBodyBytes int
 
 // migrate brings a database up to the current schema. Every step is idempotent.
 func migrate(db *sql.DB) error {
-	has, err := hasColumn(db, "hooks", "smtp")
-	if err != nil {
+	// Older rows keep '' for smtp: the store knows neither the domain nor
+	// whether SMTP is enabled, so backfilling could advertise a black hole.
+	for _, col := range []struct{ table, name, ddl string }{
+		{"hooks", "smtp", "TEXT NOT NULL DEFAULT ''"},
+		{"hooks", "last_seq", "INTEGER NOT NULL DEFAULT 0"},
+		{"hooks", "dropped_through", "INTEGER NOT NULL DEFAULT 0"},
+	} {
+		if _, err := addColumn(db, col.table, col.name, col.ddl); err != nil {
+			return err
+		}
+	}
+
+	if err := migrateSeq(db); err != nil {
 		return err
 	}
-	if !has {
-		// Older rows keep '': the store knows neither the domain nor whether
-		// SMTP is enabled, so backfilling could advertise a black hole.
-		if _, err := db.Exec(`ALTER TABLE hooks ADD COLUMN smtp TEXT NOT NULL DEFAULT ''`); err != nil {
-			return fmt.Errorf("add hooks.smtp: %w", err)
-		}
+
+	// (hook_id, seq) covers every lookup the hook_id index served.
+	if _, err := db.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_interactions_hook_seq ON interactions(hook_id, seq);
+		DROP INDEX IF EXISTS idx_interactions_hook;`); err != nil {
+		return fmt.Errorf("index interactions.seq: %w", err)
 	}
 	return nil
 }
 
+// migrateSeq adds interactions.seq and numbers pending rows in arrival order,
+// in one transaction so a crash cannot leave the column without its backfill.
+func migrateSeq(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	added, err := addColumn(tx, "interactions", "seq", "INTEGER NOT NULL DEFAULT 0")
+	if err != nil || !added {
+		return err
+	}
+	if _, err := tx.Exec(`
+		UPDATE interactions SET seq = n.rn FROM (
+			SELECT id, ROW_NUMBER() OVER (PARTITION BY hook_id ORDER BY timestamp, id) AS rn FROM interactions
+		) AS n WHERE interactions.id = n.id;
+		UPDATE hooks SET last_seq = (
+			SELECT COALESCE(MAX(seq), 0) FROM interactions WHERE hook_id = hooks.id);`); err != nil {
+		return fmt.Errorf("backfill interactions.seq: %w", err)
+	}
+	return tx.Commit()
+}
+
+// execQuerier is the subset of *sql.DB and *sql.Tx the migration helpers use.
+type execQuerier interface {
+	Exec(query string, args ...any) (sql.Result, error)
+	Query(query string, args ...any) (*sql.Rows, error)
+}
+
+// addColumn adds a column when missing and reports whether it did.
+func addColumn(db execQuerier, table, column, ddl string) (bool, error) {
+	has, err := hasColumn(db, table, column)
+	if err != nil || has {
+		return false, err
+	}
+	if _, err := db.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, ddl)); err != nil {
+		return false, fmt.Errorf("add %s.%s: %w", table, column, err)
+	}
+	return true, nil
+}
+
 // hasColumn reports whether a table already has the given column.
-func hasColumn(db *sql.DB, table, column string) (bool, error) {
+func hasColumn(db execQuerier, table, column string) (bool, error) {
 	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
 	if err != nil {
 		return false, err
@@ -273,15 +328,38 @@ func (m *SQLiteManager) AddInteraction(hookID string, interaction *Interaction) 
 		return
 	}
 
-	if _, err := m.db.Exec(
-		`INSERT INTO interactions (id, hook_id, type, timestamp, source_ip, data) VALUES (?, ?, ?, ?, ?, ?)`,
-		interaction.ID, hookID, string(interaction.Type), interaction.Timestamp.UnixNano(), interaction.SourceIP, string(data),
-	); err != nil {
-		// The hook can be cascade-deleted (expiry) between the Has() check above
-		// and this insert; the resulting FK failure means the hook is gone, so
-		// dropping the interaction is correct, not an error worth alerting on.
+	// The hook can be deleted (expiry) after the Has() check above; a missing
+	// row then means it is gone, so dropping the interaction is correct.
+	if err := m.insertInteraction(hookID, interaction, string(data)); err != nil {
 		m.logger.Debug("failed to persist interaction", "error", err, "hook_id", hookID)
 	}
+}
+
+// insertInteraction assigns the hook's next seq and stores the interaction.
+func (m *SQLiteManager) insertInteraction(hookID string, interaction *Interaction, data string) error {
+	tx, err := m.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var seq int64
+	if err := tx.QueryRow(
+		`UPDATE hooks SET last_seq = last_seq + 1 WHERE id = ? RETURNING last_seq`, hookID,
+	).Scan(&seq); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(
+		`INSERT INTO interactions (id, hook_id, type, timestamp, source_ip, data, seq) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		interaction.ID, hookID, string(interaction.Type), interaction.Timestamp.UnixNano(), interaction.SourceIP, data, seq,
+	); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	interaction.Seq = seq
+	return nil
 }
 
 // truncateBody caps the stored HTTP body at maxBodyBytes, flagging the entry so
@@ -314,7 +392,7 @@ func (m *SQLiteManager) PollInteractions(hookID string) []*Interaction {
 	}
 	defer tx.Rollback()
 
-	interactions, err := queryInteractions(tx, hookID)
+	interactions, err := queryInteractions(tx, hookID, -1)
 	if err != nil {
 		m.logger.Error("failed to read interactions", "error", err, "hook_id", hookID)
 		return []*Interaction{}
@@ -332,6 +410,45 @@ func (m *SQLiteManager) PollInteractions(hookID string) []*Interaction {
 		return []*Interaction{}
 	}
 	return interactions
+}
+
+// ReadInteractions returns the interactions past the cursor without deleting them.
+func (m *SQLiteManager) ReadInteractions(hookID string, after int64) (CursorRead, error) {
+	if !m.Has(hookID) {
+		return CursorRead{}, ErrHookNotFound
+	}
+
+	tx, err := m.db.Begin()
+	if err != nil {
+		return CursorRead{}, err
+	}
+	defer tx.Rollback()
+
+	var read CursorRead
+	err = tx.QueryRow(`SELECT dropped_through FROM hooks WHERE id = ?`, hookID).Scan(&read.DroppedThrough)
+	if err == sql.ErrNoRows {
+		return CursorRead{}, ErrHookNotFound
+	}
+	if err != nil {
+		return CursorRead{}, err
+	}
+	if read.Interactions, err = queryInteractions(tx, hookID, after); err != nil {
+		return CursorRead{}, err
+	}
+	return read, nil
+}
+
+// AckInteractions deletes the interactions up to and including through.
+func (m *SQLiteManager) AckInteractions(hookID string, through int64) (int, error) {
+	if !m.Has(hookID) {
+		return 0, ErrHookNotFound
+	}
+	res, err := m.db.Exec(`DELETE FROM interactions WHERE hook_id = ? AND seq <= ?`, hookID, through)
+	if err != nil {
+		return 0, err
+	}
+	n, err := res.RowsAffected()
+	return int(n), err
 }
 
 // PollInteractionsBatch polls several hooks. Unknown hooks yield a not-found
@@ -460,22 +577,50 @@ func (m *SQLiteManager) EnforcePerHookLimit(max int) int {
 
 	total := 0
 	for _, o := range overflows {
-		// Delete everything except the newest `max` rows for this hook.
-		res, err := m.db.Exec(
-			`DELETE FROM interactions WHERE hook_id = ? AND id NOT IN (
-				SELECT id FROM interactions WHERE hook_id = ? ORDER BY timestamp DESC, id DESC LIMIT ?
-			)`,
-			o.hookID, o.hookID, max,
-		)
+		n, err := m.trimHook(o.hookID, max)
 		if err != nil {
 			m.logger.Error("failed to enforce per-hook limit", "error", err, "hook_id", o.hookID)
 			continue
 		}
-		if n, err := res.RowsAffected(); err == nil {
-			total += int(n)
-		}
+		total += n
 	}
 	return total
+}
+
+// trimHook keeps the newest max interactions of a hook and records the highest
+// dropped seq so cursor readers can detect the loss.
+func (m *SQLiteManager) trimHook(hookID string, max int) (int, error) {
+	tx, err := m.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	var cutoff int64
+	err = tx.QueryRow(
+		`SELECT seq FROM interactions WHERE hook_id = ? ORDER BY seq DESC LIMIT 1 OFFSET ?`, hookID, max,
+	).Scan(&cutoff)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+
+	res, err := tx.Exec(`DELETE FROM interactions WHERE hook_id = ? AND seq <= ?`, hookID, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	if _, err := tx.Exec(
+		`UPDATE hooks SET dropped_through = MAX(dropped_through, ?) WHERE id = ?`, cutoff, hookID,
+	); err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
 }
 
 // EvictByMemoryPressure is a no-op: long-lived data lives on disk, not the heap.
@@ -488,7 +633,7 @@ func (m *SQLiteManager) EvictByMemoryPressure(_ int) MemoryEvictionResult {
 func (m *SQLiteManager) LongLivedActivity() []HookActivity {
 	rows, err := m.db.Query(`
 		SELECT h.id, h.dns, h.http, h.https, h.smtp, h.created_at, h.expires_at, h.metadata,
-		       COUNT(i.id), COALESCE(MAX(i.timestamp), 0)
+		       COUNT(i.id), COALESCE(MAX(i.timestamp), 0), COALESCE(MAX(i.seq), 0)
 		FROM hooks h
 		JOIN interactions i ON i.hook_id = h.id
 		GROUP BY h.id
@@ -509,10 +654,11 @@ func (m *SQLiteManager) LongLivedActivity() []HookActivity {
 			meta             sql.NullString
 			pendingCount     int
 			lastInteractNano int64
+			lastSeq          int64
 		)
 		if err := rows.Scan(
 			&hook.ID, &hook.DNS, &hook.HTTP, &hook.HTTPS, &hook.SMTP, &createdNanos, &expiresNanos, &meta,
-			&pendingCount, &lastInteractNano,
+			&pendingCount, &lastInteractNano, &lastSeq,
 		); err != nil {
 			m.logger.Error("failed to scan long-lived activity", "error", err)
 			return activity
@@ -523,6 +669,7 @@ func (m *SQLiteManager) LongLivedActivity() []HookActivity {
 			Hook:              &hook,
 			PendingCount:      pendingCount,
 			LastInteractionAt: time.Unix(0, lastInteractNano).UTC(),
+			LastSeq:           lastSeq,
 		})
 	}
 	return activity
@@ -558,12 +705,13 @@ func assignHookTimes(hook *Hook, createdNanos, expiresNanos int64, meta sql.Null
 	hook.Metadata = decodeMetadata(meta)
 }
 
-// queryInteractions reads all interactions for a hook in arrival order.
+// queryInteractions reads a hook's interactions past after, in seq order.
 func queryInteractions(q interface {
 	Query(query string, args ...any) (*sql.Rows, error)
-}, hookID string) ([]*Interaction, error) {
+}, hookID string, after int64) ([]*Interaction, error) {
 	rows, err := q.Query(
-		`SELECT id, type, timestamp, source_ip, data FROM interactions WHERE hook_id = ? ORDER BY timestamp, id`, hookID,
+		`SELECT id, seq, type, timestamp, source_ip, data FROM interactions WHERE hook_id = ? AND seq > ? ORDER BY seq, timestamp, id`,
+		hookID, after,
 	)
 	if err != nil {
 		return nil, err
@@ -579,7 +727,7 @@ func queryInteractions(q interface {
 			sourceIP sql.NullString
 			dataJSON string
 		)
-		if err := rows.Scan(&it.ID, &typ, &tsNanos, &sourceIP, &dataJSON); err != nil {
+		if err := rows.Scan(&it.ID, &it.Seq, &typ, &tsNanos, &sourceIP, &dataJSON); err != nil {
 			return nil, err
 		}
 		it.Type = InteractionType(typ)

@@ -28,7 +28,8 @@ Lightweight interaction server for capturing out-of-band DNS, HTTP and SMTP call
         |  │                          sender, subject, tag, IP   │
         |  └─────────────────────────────────────────────────────┘
         v
-4. Poll — GET /poll/{id} retrieves captured interactions (and clears them)
+4. Poll — GET /poll/{id} retrieves captured interactions (and clears them,
+           unless read with a cursor and acknowledged separately)
         |
         v
 5. Evict — background cleanup: TTL expiry, per-hook limits, memory pressure
@@ -176,7 +177,8 @@ curl -X POST https://hookd.example.com/register \
 ### `GET /poll/:id`
 
 Retrieve and clear all interactions for a hook. For a hook registered with
-metadata, the response also echoes it.
+metadata, the response also echoes it. To read without clearing, see
+[cursor reads](#get-pollidafterseq-and-delete-pollidthroughseq).
 
 ```bash
 curl https://hookd.example.com/poll/abc123 \
@@ -191,6 +193,7 @@ curl https://hookd.example.com/poll/abc123 \
   "interactions": [
     {
       "id": "int_xyz",
+      "seq": 1,
       "type": "dns",
       "timestamp": "2025-10-01T10:31:00Z",
       "source_ip": "1.2.3.4",
@@ -201,6 +204,7 @@ curl https://hookd.example.com/poll/abc123 \
     },
     {
       "id": "int_abc",
+      "seq": 2,
       "type": "http",
       "timestamp": "2025-10-01T10:32:00Z",
       "source_ip": "5.6.7.8",
@@ -213,6 +217,7 @@ curl https://hookd.example.com/poll/abc123 \
     },
     {
       "id": "int_def",
+      "seq": 3,
       "type": "smtp",
       "timestamp": "2025-10-01T10:33:00Z",
       "source_ip": "9.10.11.12",
@@ -231,9 +236,29 @@ curl https://hookd.example.com/poll/abc123 \
 
 </details>
 
+### `GET /poll/:id?after=<seq>` and `DELETE /poll/:id?through=<seq>`
+
+Every interaction carries a `seq` that increases per hook. A cursor read returns
+the interactions past `after` **without deleting them**; acknowledge them once
+your own storage has committed, so a crash in between loses nothing.
+
+```bash
+curl "https://hookd.example.com/poll/abc123?after=0" -H "X-API-Key: YOUR_TOKEN"
+# {"interactions": [... "seq": 1 ..., ... "seq": 2 ...], "dropped_through": 0}
+
+curl -X DELETE "https://hookd.example.com/poll/abc123?through=2" -H "X-API-Key: YOUR_TOKEN"
+# {"acknowledged": 2}
+```
+
+Unacknowledged interactions still fall under the per-hook limit and TTL
+eviction. `dropped_through` is the highest `seq` evicted before being
+acknowledged: above your cursor, interactions were lost.
+
 ### `POST /poll`
 
-Batch poll multiple hooks in one request.
+Batch poll multiple hooks in one request. For the cursor equivalents, use
+`POST /read` with `{"after": {"abc123": 2}}` and `POST /ack` with
+`{"through": {"abc123": 5}}`.
 
 ```bash
 curl -X POST https://hookd.example.com/poll \
@@ -248,8 +273,9 @@ Up to 1000 hook IDs per request.
 
 List the **long-lived** hooks that currently have pending interactions — so you
 can discover which of your many long-lived hooks have fired without polling each
-one. Drain the details with `GET /poll/:id`. The list is derived from state:
-a hook drops off once polled.
+one. Read the details with `GET /poll/:id`. The list is derived from state:
+a hook drops off once drained or acknowledged, and `last_seq` tells you whether
+it has anything past your cursor.
 
 ```bash
 curl https://hookd.example.com/activity \
@@ -271,7 +297,8 @@ curl https://hookd.example.com/activity \
         "metadata": {"target": "acme", "field": "profile.bio"}
       },
       "pending_count": 3,
-      "last_interaction_at": "2025-10-03T14:12:00Z"
+      "last_interaction_at": "2025-10-03T14:12:00Z",
+      "last_seq": 7
     }
   ]
 }

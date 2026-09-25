@@ -18,16 +18,24 @@ type Hook struct {
 // type)
 type Interaction struct {
 	ID        string                 `json:"id"`
+	Seq       int64                  `json:"seq"`
 	Type      string                 `json:"type"`
 	Timestamp time.Time              `json:"timestamp"`
 	SourceIP  string                 `json:"source_ip"`
 	Data      map[string]interface{} `json:"data"`
 }
 
-// PollResponse represents the response from /poll/:id
+// PollResponse represents the response from /poll/:id. DroppedThrough is set
+// on ?after= reads: above the cursor, interactions were evicted unread.
 type PollResponse struct {
-	Interactions []Interaction  `json:"interactions"`
-	Metadata     map[string]any `json:"metadata,omitempty"`
+	Interactions   []Interaction  `json:"interactions"`
+	Metadata       map[string]any `json:"metadata,omitempty"`
+	DroppedThrough *int64         `json:"dropped_through,omitempty"`
+}
+
+// AckResponse represents the response from DELETE /poll/:id?through=
+type AckResponse struct {
+	Acknowledged int `json:"acknowledged"`
 }
 
 // ErrorResponse represents an error response
@@ -50,6 +58,7 @@ type HookActivity struct {
 	Hook              Hook      `json:"hook"`
 	PendingCount      int       `json:"pending_count"`
 	LastInteractionAt time.Time `json:"last_interaction_at"`
+	LastSeq           int64     `json:"last_seq"`
 }
 
 // ActivityResponse represents the response from /activity.

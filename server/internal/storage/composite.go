@@ -84,6 +84,16 @@ func (c *CompositeManager) PollInteractions(hookID string) []*Interaction {
 	return c.routeFor(hookID).PollInteractions(hookID)
 }
 
+// ReadInteractions reads past a cursor from the hook's owning store.
+func (c *CompositeManager) ReadInteractions(hookID string, after int64) (CursorRead, error) {
+	return c.routeFor(hookID).ReadInteractions(hookID, after)
+}
+
+// AckInteractions acknowledges interactions in the hook's owning store.
+func (c *CompositeManager) AckInteractions(hookID string, through int64) (int, error) {
+	return c.routeFor(hookID).AckInteractions(hookID, through)
+}
+
 // PollInteractionsBatch polls several hooks, routing each to its owning store.
 func (c *CompositeManager) PollInteractionsBatch(hookIDs []string) map[string]*PollResult {
 	results := make(map[string]*PollResult, len(hookIDs))

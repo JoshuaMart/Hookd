@@ -30,6 +30,14 @@ type Manager interface {
 	// PollInteractionsBatch retrieves and deletes interactions for multiple hooks
 	PollInteractionsBatch(hookIDs []string) map[string]*PollResult
 
+	// ReadInteractions returns the interactions with a seq above after, without
+	// deleting them. It returns ErrHookNotFound for an unknown hook.
+	ReadInteractions(hookID string, after int64) (CursorRead, error)
+
+	// AckInteractions deletes the interactions with a seq up to through and
+	// returns how many were removed. It returns ErrHookNotFound for an unknown hook.
+	AckInteractions(hookID string, through int64) (int, error)
+
 	// Stats returns storage statistics
 	Stats() Stats
 
@@ -61,6 +69,9 @@ type MemoryEvictionResult struct {
 	HooksEvicted        int
 	InteractionsEvicted int
 }
+
+// ErrHookNotFound is returned by cursor operations on an unknown hook.
+var ErrHookNotFound = errors.New("hook not found")
 
 // ErrHookLimitReached is returned by CreateLongLivedHook when the configured
 // long-lived hook cap has been reached.
@@ -99,8 +110,11 @@ type Stats struct {
 type MemoryManager struct {
 	hooks        map[string]*Hook
 	interactions map[string][]*Interaction
-	mu           sync.RWMutex
-	idGenerator  func() string
+	// Per-hook cursor state: last assigned seq, highest seq evicted unacked.
+	lastSeq        map[string]int64
+	droppedThrough map[string]int64
+	mu             sync.RWMutex
+	idGenerator    func() string
 
 	// forceGC and heapInUseMB are injectable so the memory-pressure eviction
 	// logic can be tested deterministically without depending on the real heap.
@@ -111,11 +125,13 @@ type MemoryManager struct {
 // NewMemoryManager creates a new in-memory storage manager
 func NewMemoryManager(idGenerator func() string) *MemoryManager {
 	return &MemoryManager{
-		hooks:        make(map[string]*Hook),
-		interactions: make(map[string][]*Interaction),
-		idGenerator:  idGenerator,
-		forceGC:      runtime.GC,
-		heapInUseMB:  readHeapInUseMB,
+		hooks:          make(map[string]*Hook),
+		interactions:   make(map[string][]*Interaction),
+		lastSeq:        make(map[string]int64),
+		droppedThrough: make(map[string]int64),
+		idGenerator:    idGenerator,
+		forceGC:        runtime.GC,
+		heapInUseMB:    readHeapInUseMB,
 	}
 }
 
@@ -168,7 +184,53 @@ func (m *MemoryManager) AddInteraction(hookID string, interaction *Interaction) 
 		return
 	}
 
+	m.lastSeq[hookID]++
+	interaction.Seq = m.lastSeq[hookID]
 	m.interactions[hookID] = append(m.interactions[hookID], interaction)
+}
+
+// ReadInteractions returns the interactions past the cursor without deleting them.
+func (m *MemoryManager) ReadInteractions(hookID string, after int64) (CursorRead, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if _, exists := m.hooks[hookID]; !exists {
+		return CursorRead{}, ErrHookNotFound
+	}
+	result := make([]*Interaction, 0)
+	for _, interaction := range m.interactions[hookID] {
+		if interaction.Seq > after {
+			result = append(result, interaction)
+		}
+	}
+	return CursorRead{Interactions: result, DroppedThrough: m.droppedThrough[hookID]}, nil
+}
+
+// AckInteractions deletes the interactions up to and including through.
+func (m *MemoryManager) AckInteractions(hookID string, through int64) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if _, exists := m.hooks[hookID]; !exists {
+		return 0, ErrHookNotFound
+	}
+	interactions := m.interactions[hookID]
+	kept := make([]*Interaction, 0, len(interactions))
+	for _, interaction := range interactions {
+		if interaction.Seq > through {
+			kept = append(kept, interaction)
+		}
+	}
+	m.interactions[hookID] = kept
+	return len(interactions) - len(kept), nil
+}
+
+// noteDropped records that interactions up to seq were evicted unacknowledged.
+// Callers must hold m.mu.
+func (m *MemoryManager) noteDropped(hookID string, seq int64) {
+	if seq > m.droppedThrough[hookID] {
+		m.droppedThrough[hookID] = seq
+	}
 }
 
 // PollInteractions retrieves and deletes interactions for a hook
@@ -244,6 +306,7 @@ func (m *MemoryManager) EvictInteractionsBefore(cutoff time.Time) int {
 		for _, interaction := range interactions {
 			if interaction.Timestamp.Before(cutoff) {
 				total++
+				m.noteDropped(hookID, interaction.Seq)
 			} else {
 				filtered = append(filtered, interaction)
 			}
@@ -264,12 +327,19 @@ func (m *MemoryManager) EvictExpiredHooks(now time.Time) int {
 	total := 0
 	for id, hook := range m.hooks {
 		if !hook.ExpiresAt.IsZero() && hook.ExpiresAt.Before(now) {
-			delete(m.hooks, id)
-			delete(m.interactions, id)
+			m.deleteHook(id)
 			total++
 		}
 	}
 	return total
+}
+
+// deleteHook removes a hook and all its state. Callers must hold m.mu.
+func (m *MemoryManager) deleteHook(id string) {
+	delete(m.hooks, id)
+	delete(m.interactions, id)
+	delete(m.lastSeq, id)
+	delete(m.droppedThrough, id)
 }
 
 // EnforcePerHookLimit trims each hook to at most max interactions, dropping the
@@ -282,6 +352,7 @@ func (m *MemoryManager) EnforcePerHookLimit(max int) int {
 	for hookID, interactions := range m.interactions {
 		if len(interactions) > max {
 			drop := len(interactions) - max
+			m.noteDropped(hookID, interactions[drop-1].Seq)
 			// Keep the newest max, copying into a fresh slice so the dropped
 			// entries can be garbage-collected.
 			m.interactions[hookID] = append([]*Interaction(nil), interactions[drop:]...)
@@ -348,8 +419,7 @@ func (m *MemoryManager) EvictByMemoryPressure(maxMemoryMB int) MemoryEvictionRes
 
 		m.mu.Lock()
 		result.InteractionsEvicted += len(m.interactions[hook.ID])
-		delete(m.hooks, hook.ID)
-		delete(m.interactions, hook.ID)
+		m.deleteHook(hook.ID)
 		m.mu.Unlock()
 		result.HooksEvicted++
 	}
