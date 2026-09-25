@@ -3,9 +3,12 @@
 module Hookd
   # Represents a captured DNS, HTTP or SMTP interaction
   class Interaction
-    attr_reader :type, :timestamp, :source_ip, :data
+    # seq increases per hook and is the cursor for Client#read and #ack.
+    attr_reader :id, :seq, :type, :timestamp, :source_ip, :data
 
-    def initialize(type:, timestamp:, source_ip:, data:)
+    def initialize(type:, timestamp:, source_ip:, data:, id: nil, seq: nil)
+      @id = id
+      @seq = seq
       @type = type
       @timestamp = timestamp
       @source_ip = source_ip
@@ -15,6 +18,8 @@ module Hookd
     # Create an Interaction from API response hash
     def self.from_hash(hash)
       new(
+        id: hash['id'],
+        seq: hash['seq'],
         type: hash['type'],
         timestamp: hash['timestamp'],
         source_ip: hash['source_ip'],
@@ -38,11 +43,12 @@ module Hookd
     end
 
     def to_s
-      "#<Hookd::Interaction type=#{type} timestamp=#{timestamp} source_ip=#{source_ip}>"
+      "#<Hookd::Interaction seq=#{seq} type=#{type} timestamp=#{timestamp} source_ip=#{source_ip}>"
     end
 
     def inspect
-      "#<Hookd::Interaction:#{object_id.to_s(16)} @type=#{type.inspect}, @timestamp=#{timestamp.inspect}, " \
+      "#<Hookd::Interaction:#{object_id.to_s(16)} @id=#{id.inspect}, @seq=#{seq.inspect}, " \
+        "@type=#{type.inspect}, @timestamp=#{timestamp.inspect}, " \
         "@source_ip=#{source_ip.inspect}, @data=#{data.inspect}>"
     end
   end
