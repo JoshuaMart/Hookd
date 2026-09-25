@@ -46,7 +46,7 @@ func TestSQLite_LongLivedHooks(t *testing.T) {
 		t.Errorf("expected metadata to round-trip, got %v", hooks[0].Metadata)
 	}
 
-	m.db.Close()
+	m.Close()
 	if _, err := m.LongLivedHooks(); err == nil {
 		t.Error("expected a storage error to surface")
 	}
