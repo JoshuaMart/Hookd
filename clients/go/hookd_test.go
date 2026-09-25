@@ -665,3 +665,120 @@ func TestClient_StatusErrorsBeatSizeLimit(t *testing.T) {
 		t.Fatalf("expected AuthenticationError to win over the size limit, got %#v", err)
 	}
 }
+
+func TestRead(t *testing.T) {
+	server, client := setupServer(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/poll/abc" || r.URL.Query().Get("after") != "4" {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL)
+		}
+		writeJSON(t, w, map[string]any{
+			"interactions":    []any{map[string]any{"id": "i5", "seq": 5, "type": "dns"}},
+			"dropped_through": 2,
+			"metadata":        map[string]any{"field": "bio"},
+		})
+	})
+	defer server.Close()
+
+	read, err := client.Read("abc", 4)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if len(read.Interactions) != 1 || read.Interactions[0].Seq != 5 || read.Interactions[0].ID != "i5" {
+		t.Errorf("unexpected interactions %+v", read.Interactions)
+	}
+	if read.DroppedThrough != 2 || read.Lost(4) || !read.Lost(1) {
+		t.Errorf("unexpected loss reporting: dropped_through=%d", read.DroppedThrough)
+	}
+	if read.Metadata["field"] != "bio" {
+		t.Errorf("expected metadata echoed, got %v", read.Metadata)
+	}
+}
+
+func TestReadRejectsNegativeCursor(t *testing.T) {
+	client := NewClient("http://unused", "t")
+	if _, err := client.Read("abc", -1); err == nil {
+		t.Error("expected an error for a negative cursor")
+	}
+	if _, err := client.Ack("abc", -1); err == nil {
+		t.Error("expected an error for a negative through")
+	}
+}
+
+func TestAck(t *testing.T) {
+	server, client := setupServer(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete || r.URL.Path != "/poll/abc" || r.URL.Query().Get("through") != "7" {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL)
+		}
+		writeJSON(t, w, map[string]any{"acknowledged": 3})
+	})
+	defer server.Close()
+
+	n, err := client.Ack("abc", 7)
+	if err != nil || n != 3 {
+		t.Errorf("expected 3 acknowledged, got %d (%v)", n, err)
+	}
+}
+
+func TestAckServerError(t *testing.T) {
+	server, client := setupServer(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+	defer server.Close()
+
+	var serverErr *ServerError
+	if _, err := client.Ack("abc", 1); !errors.As(err, &serverErr) {
+		t.Errorf("expected ServerError, got %v", err)
+	}
+}
+
+func TestReadBatch(t *testing.T) {
+	server, client := setupServer(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/read" {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL)
+		}
+		var body map[string]map[string]int64
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body["after"]["abc"] != 1 {
+			t.Errorf("unexpected body %v (%v)", body, err)
+		}
+		writeJSON(t, w, map[string]any{"results": map[string]any{
+			"abc":     map[string]any{"interactions": []any{map[string]any{"seq": 2}}, "dropped_through": 0},
+			"missing": map[string]any{"error": "Hook not found"},
+		}})
+	})
+	defer server.Close()
+
+	results, err := client.ReadBatch(map[string]int64{"abc": 1, "missing": 0})
+	if err != nil {
+		t.Fatalf("ReadBatch: %v", err)
+	}
+	if got := results["abc"]; len(got.Interactions) != 1 || got.Interactions[0].Seq != 2 {
+		t.Errorf("unexpected result %+v", got)
+	}
+	if results["missing"].Error != "Hook not found" || results["missing"].Interactions == nil {
+		t.Errorf("unexpected missing result %+v", results["missing"])
+	}
+}
+
+func TestAckBatch(t *testing.T) {
+	server, client := setupServer(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/ack" {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL)
+		}
+		writeJSON(t, w, map[string]any{"results": map[string]any{
+			"abc":     map[string]any{"acknowledged": 2},
+			"missing": map[string]any{"acknowledged": 0, "error": "Hook not found"},
+		}})
+	})
+	defer server.Close()
+
+	results, err := client.AckBatch(map[string]int64{"abc": 2, "missing": 1})
+	if err != nil {
+		t.Fatalf("AckBatch: %v", err)
+	}
+	if results["abc"].Acknowledged != 2 || results["missing"].Error == "" {
+		t.Errorf("unexpected results %+v", results)
+	}
+	if _, err := client.AckBatch(nil); err == nil {
+		t.Error("expected an error for an empty batch")
+	}
+}
