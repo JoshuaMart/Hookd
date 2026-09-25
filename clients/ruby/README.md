@@ -164,7 +164,35 @@ Raises:
 - `Hookd::ServerError` - Server error (5xx)
 - `Hookd::ConnectionError` - Connection failed
 
-##### `#activity`
+##### `#register_batch(specs)`
+
+Register one hook per spec in a single request — e.g. one per injectable field,
+each carrying its own context. Hooks come back in spec order; the server
+creates all of them or none (up to 500 per call).
+
+```ruby
+hooks = client.register_batch([
+  { ttl: "7d", metadata: { endpoint_id: "e_412", param: "bio" } },
+  { ttl: "7d", metadata: { endpoint_id: "e_413", param: "name" } }
+])
+# => [#<Hookd::Hook ...>, #<Hookd::Hook ...>]
+```
+
+##### `#hooks(metadata: nil)`
+
+List the long-lived hooks (without interactions) whose top-level metadata
+matches every key/value given; omit `metadata` to list all. Useful to rebuild
+your hook list after losing local state.
+
+```ruby
+client.hooks(metadata: { run_id: "0f3a" })
+```
+
+##### `#activity(metadata: nil)`
+
+Pass `metadata:` to keep only matching hooks, so workers sharing a server each
+see only their own.
+
 
 List the long-lived hooks that currently have pending interactions, so you can
 discover which fired without polling each one; fetch the details with `#read`

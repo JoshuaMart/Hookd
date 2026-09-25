@@ -2,6 +2,7 @@
 
 require 'httpx'
 require 'json'
+require 'uri'
 
 module Hookd
   # HTTP client for interacting with Hookd server
@@ -44,6 +45,26 @@ module Hookd
       raise ArgumentError, 'count must be a positive integer' if count && (!count.is_a?(Integer) || count < 1)
 
       parse_register_response(post('/register', register_body(count, ttl, metadata)))
+    end
+
+    # Register one hook per spec in a single request, each with its own ttl and
+    # metadata. The server creates all of them or none.
+    # @param specs [Array<Hash>] entries of { ttl: String or nil, metadata: Hash or nil }
+    # @return [Array<Hookd::Hook>] hooks in spec order
+    # @raise [ArgumentError] if specs is empty or not an array
+    def register_batch(specs)
+      raise ArgumentError, 'specs must be a non-empty array' unless specs.is_a?(Array) && !specs.empty?
+
+      body = specs.map { |spec| register_body(nil, spec[:ttl], spec[:metadata]) || {} }
+      hook_list(post('/register', { hooks: body }))
+    end
+
+    # List long-lived hooks, without interactions, whose metadata matches every
+    # key/value of the filter
+    # @param metadata [Hash, nil] filter on top-level metadata keys
+    # @return [Array<Hookd::Hook>]
+    def hooks(metadata: nil)
+      hook_list(get("/hooks#{metadata_query(metadata)}"))
     end
 
     # Poll for interactions on a hook
@@ -157,8 +178,9 @@ module Hookd
     # @raise [Hookd::AuthenticationError] if authentication fails
     # @raise [Hookd::ServerError] if server returns 5xx
     # @raise [Hookd::ConnectionError] if connection fails
-    def activity
-      response = get('/activity')
+    # @param metadata [Hash, nil] keep only hooks whose metadata matches
+    def activity(metadata: nil)
+      response = get("/activity#{metadata_query(metadata)}")
 
       hooks = response['hooks']
       return [] if hooks.nil? || hooks.empty? || !hooks.is_a?(Array)
@@ -201,6 +223,19 @@ module Hookd
 
       response = @http.post(url, **options)
       handle_response(response)
+    end
+
+    def metadata_query(metadata)
+      return '' if metadata.nil? || metadata.empty?
+
+      "?#{URI.encode_www_form(metadata.to_h { |k, v| ["metadata.#{k}", v.to_s] })}"
+    end
+
+    def hook_list(response)
+      hooks = response['hooks']
+      raise Error, 'Invalid response format: missing hooks' unless hooks.is_a?(Array)
+
+      hooks.map { |h| Hook.from_hash(h) }
     end
 
     def validate_cursor(seq, name)

@@ -690,4 +690,41 @@ RSpec.describe Hookd::Client do
       end
     end
   end
+
+  describe 'batch registration and metadata filters' do
+    let(:json_headers) { { 'Content-Type' => 'application/json' } }
+
+    it 'registers one hook per spec, in order' do
+      stub_request(:post, "#{server}/register")
+        .with(body: { hooks: [{ ttl: '7d', metadata: { param: 'bio' } }, { metadata: { param: 'name' } }] }.to_json)
+        .to_return(status: 200, headers: json_headers, body: {
+          'hooks' => [{ 'id' => 'a', 'metadata' => { 'param' => 'bio' } },
+                      { 'id' => 'b', 'metadata' => { 'param' => 'name' } }]
+        }.to_json)
+
+      hooks = client.register_batch([{ ttl: '7d', metadata: { param: 'bio' } }, { metadata: { param: 'name' } }])
+      expect(hooks.map(&:id)).to eq(%w[a b])
+      expect(hooks.last.metadata).to eq('param' => 'name')
+    end
+
+    it 'rejects an empty batch' do
+      expect { client.register_batch([]) }.to raise_error(ArgumentError)
+    end
+
+    it 'lists hooks matching a metadata filter' do
+      stub_request(:get, "#{server}/hooks?metadata.run_id=0f3a")
+        .to_return(status: 200, headers: json_headers, body: { 'hooks' => [{ 'id' => 'a' }] }.to_json)
+
+      expect(client.hooks(metadata: { run_id: '0f3a' }).map(&:id)).to eq(['a'])
+    end
+
+    it 'filters activity by metadata' do
+      stub_request(:get, "#{server}/activity?metadata.run_id=0f3a")
+        .to_return(status: 200, headers: json_headers, body: {
+          'hooks' => [{ 'hook' => { 'id' => 'a' }, 'pending_count' => 1, 'last_seq' => 2 }]
+        }.to_json)
+
+      expect(client.activity(metadata: { run_id: '0f3a' }).first.last_seq).to eq(2)
+    end
+  end
 end

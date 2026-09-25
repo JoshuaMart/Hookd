@@ -24,4 +24,4 @@ Metrics/ParameterLists:
 # The client mirrors the server's API surface (one method per endpoint), so it
 # grows with the API; a modestly higher class-length limit fits that shape.
 Metrics/ClassLength:
-  Max: 170
+  Max: 200
