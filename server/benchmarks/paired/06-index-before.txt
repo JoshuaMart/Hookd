@@ -1,0 +1,54 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/jomar/hookd/internal/storage
+cpu: Apple M4 Pro
+BenchmarkMemoryStats-4   	    2385	    121426 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMemoryAdd-4     	 4330644	        68.99 ns/op	     113 B/op	       1 allocs/op
+BenchmarkSQLiteStats-4   	     136	   2234922 ns/op	     560 B/op	      20 allocs/op
+BenchmarkSQLiteAdd-4     	    5076	     56397 ns/op	    2225 B/op	      56 allocs/op
+PASS
+goos: darwin
+goarch: arm64
+pkg: github.com/jomar/hookd/internal/storage
+cpu: Apple M4 Pro
+BenchmarkMemoryStats-4   	    2443	    125356 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMemoryAdd-4     	 4192263	        70.03 ns/op	     113 B/op	       1 allocs/op
+BenchmarkSQLiteStats-4   	     135	   2217045 ns/op	     560 B/op	      20 allocs/op
+BenchmarkSQLiteAdd-4     	    4773	     55221 ns/op	    2223 B/op	      56 allocs/op
+PASS
+goos: darwin
+goarch: arm64
+pkg: github.com/jomar/hookd/internal/storage
+cpu: Apple M4 Pro
+BenchmarkMemoryStats-4   	    2422	    128103 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMemoryAdd-4     	 4294491	        67.65 ns/op	     113 B/op	       1 allocs/op
+BenchmarkSQLiteStats-4   	     134	   2190612 ns/op	     560 B/op	      20 allocs/op
+BenchmarkSQLiteAdd-4     	    4982	     54742 ns/op	    2219 B/op	      56 allocs/op
+PASS
+goos: darwin
+goarch: arm64
+pkg: github.com/jomar/hookd/internal/storage
+cpu: Apple M4 Pro
+BenchmarkMemoryStats-4   	    2365	    121958 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMemoryAdd-4     	 4439439	        67.88 ns/op	     113 B/op	       1 allocs/op
+BenchmarkSQLiteStats-4   	     134	   2247797 ns/op	     560 B/op	      20 allocs/op
+BenchmarkSQLiteAdd-4     	    5070	     59367 ns/op	    2214 B/op	      56 allocs/op
+PASS
+goos: darwin
+goarch: arm64
+pkg: github.com/jomar/hookd/internal/storage
+cpu: Apple M4 Pro
+BenchmarkMemoryStats-4   	    2272	    128760 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMemoryAdd-4     	 4374434	        70.42 ns/op	     113 B/op	       1 allocs/op
+BenchmarkSQLiteStats-4   	     132	   2364369 ns/op	     560 B/op	      20 allocs/op
+BenchmarkSQLiteAdd-4     	    5074	     57022 ns/op	    2217 B/op	      56 allocs/op
+PASS
+goos: darwin
+goarch: arm64
+pkg: github.com/jomar/hookd/internal/storage
+cpu: Apple M4 Pro
+BenchmarkMemoryStats-4   	    2280	    129937 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMemoryAdd-4     	 4293032	        69.46 ns/op	     113 B/op	       1 allocs/op
+BenchmarkSQLiteStats-4   	     133	   2233825 ns/op	     560 B/op	      20 allocs/op
+BenchmarkSQLiteAdd-4     	    4588	     56763 ns/op	    2218 B/op	      56 allocs/op
+PASS

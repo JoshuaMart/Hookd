@@ -1,0 +1,42 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/jomar/hookd/internal/storage
+cpu: Apple M4 Pro
+BenchmarkSQLiteAdd-4     	    5326	     54871 ns/op	    2225 B/op	      56 allocs/op
+BenchmarkSQLiteMixed-4   	     642	    435794 ns/op	    124703 writer-ns/op	 1458462 B/op	    2154 allocs/op
+PASS
+goos: darwin
+goarch: arm64
+pkg: github.com/jomar/hookd/internal/storage
+cpu: Apple M4 Pro
+BenchmarkSQLiteAdd-4     	    4688	     54742 ns/op	    2226 B/op	      56 allocs/op
+BenchmarkSQLiteMixed-4   	     670	    415554 ns/op	    126389 writer-ns/op	 1457893 B/op	    2142 allocs/op
+PASS
+goos: darwin
+goarch: arm64
+pkg: github.com/jomar/hookd/internal/storage
+cpu: Apple M4 Pro
+BenchmarkSQLiteAdd-4     	    4822	     54330 ns/op	    2212 B/op	      56 allocs/op
+BenchmarkSQLiteMixed-4   	     679	    405693 ns/op	    128089 writer-ns/op	 1457905 B/op	    2136 allocs/op
+PASS
+goos: darwin
+goarch: arm64
+pkg: github.com/jomar/hookd/internal/storage
+cpu: Apple M4 Pro
+BenchmarkSQLiteAdd-4     	    4659	     54870 ns/op	    2221 B/op	      56 allocs/op
+BenchmarkSQLiteMixed-4   	     674	    420402 ns/op	    125764 writer-ns/op	 1457924 B/op	    2146 allocs/op
+PASS
+goos: darwin
+goarch: arm64
+pkg: github.com/jomar/hookd/internal/storage
+cpu: Apple M4 Pro
+BenchmarkSQLiteAdd-4     	    4902	     54751 ns/op	    2215 B/op	      56 allocs/op
+BenchmarkSQLiteMixed-4   	     666	    414780 ns/op	    124329 writer-ns/op	 1458098 B/op	    2145 allocs/op
+PASS
+goos: darwin
+goarch: arm64
+pkg: github.com/jomar/hookd/internal/storage
+cpu: Apple M4 Pro
+BenchmarkSQLiteAdd-4     	    4768	     55790 ns/op	    2225 B/op	      56 allocs/op
+BenchmarkSQLiteMixed-4   	     693	    437071 ns/op	    124630 writer-ns/op	 1458403 B/op	    2154 allocs/op
+PASS

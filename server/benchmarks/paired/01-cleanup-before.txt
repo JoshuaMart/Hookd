@@ -1,0 +1,36 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/jomar/hookd/internal/storage
+cpu: Apple M4 Pro
+BenchmarkMemoryCleanup-4   	    1032	    290780 ns/op	  819200 B/op	     100 allocs/op
+PASS
+goos: darwin
+goarch: arm64
+pkg: github.com/jomar/hookd/internal/storage
+cpu: Apple M4 Pro
+BenchmarkMemoryCleanup-4   	    1009	    289572 ns/op	  819200 B/op	     100 allocs/op
+PASS
+goos: darwin
+goarch: arm64
+pkg: github.com/jomar/hookd/internal/storage
+cpu: Apple M4 Pro
+BenchmarkMemoryCleanup-4   	    1011	    289960 ns/op	  819200 B/op	     100 allocs/op
+PASS
+goos: darwin
+goarch: arm64
+pkg: github.com/jomar/hookd/internal/storage
+cpu: Apple M4 Pro
+BenchmarkMemoryCleanup-4   	     994	    292534 ns/op	  819200 B/op	     100 allocs/op
+PASS
+goos: darwin
+goarch: arm64
+pkg: github.com/jomar/hookd/internal/storage
+cpu: Apple M4 Pro
+BenchmarkMemoryCleanup-4   	     992	    289919 ns/op	  819200 B/op	     100 allocs/op
+PASS
+goos: darwin
+goarch: arm64
+pkg: github.com/jomar/hookd/internal/storage
+cpu: Apple M4 Pro
+BenchmarkMemoryCleanup-4   	     988	    292655 ns/op	  819200 B/op	     100 allocs/op
+PASS

@@ -1,0 +1,6 @@
+{
+  "go": "go version go1.27.1 darwin/arm64",
+  "platform": "Darwin 27.0.0 arm64",
+  "repetitions": 6,
+  "GOMAXPROCS": 4
+}

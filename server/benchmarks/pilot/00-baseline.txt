@@ -1,0 +1,64 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/jomar/hookd/internal/storage
+cpu: Apple M4 Pro
+BenchmarkMemoryCleanup-4   	     615	    296555 ns/op	  819200 B/op	     100 allocs/op
+BenchmarkMemoryCleanup-4   	     572	    306198 ns/op	  819200 B/op	     100 allocs/op
+BenchmarkMemoryCleanup-4   	     585	    290017 ns/op	  819200 B/op	     100 allocs/op
+BenchmarkMemoryCleanup-4   	     590	    295842 ns/op	  819200 B/op	     100 allocs/op
+BenchmarkMemoryCleanup-4   	     546	    295325 ns/op	  819200 B/op	     100 allocs/op
+BenchmarkMemoryCleanup-4   	     584	    294030 ns/op	  819200 B/op	     100 allocs/op
+BenchmarkMemoryStats-4     	    1461	    119474 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMemoryStats-4     	    1516	    122002 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMemoryStats-4     	    1508	    119612 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMemoryStats-4     	    1456	    123467 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMemoryStats-4     	    1490	    121166 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMemoryStats-4     	    1486	    119195 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMemoryBurst-4     	      34	   5132869 ns/op	  40960000 body-bytes/op	     10000 retained/op	45766804 B/op	   50020 allocs/op
+BenchmarkMemoryBurst-4     	      32	   4939682 ns/op	  40960000 body-bytes/op	     10000 retained/op	45766799 B/op	   50020 allocs/op
+BenchmarkMemoryBurst-4     	      30	   5442076 ns/op	  40960000 body-bytes/op	     10000 retained/op	45766797 B/op	   50020 allocs/op
+BenchmarkMemoryBurst-4     	      33	   5342035 ns/op	  40960000 body-bytes/op	     10000 retained/op	45766792 B/op	   50020 allocs/op
+BenchmarkMemoryBurst-4     	      34	   5143224 ns/op	  40960000 body-bytes/op	     10000 retained/op	45766791 B/op	   50020 allocs/op
+BenchmarkMemoryBurst-4     	      34	   4864533 ns/op	  40960000 body-bytes/op	     10000 retained/op	45766791 B/op	   50020 allocs/op
+BenchmarkMemoryAdd-4       	 2918038	        61.17 ns/op	     121 B/op	       1 allocs/op
+BenchmarkMemoryAdd-4       	 2660378	        69.30 ns/op	     121 B/op	       1 allocs/op
+BenchmarkMemoryAdd-4       	 2525767	        65.60 ns/op	     121 B/op	       1 allocs/op
+BenchmarkMemoryAdd-4       	 2868267	        62.64 ns/op	     121 B/op	       1 allocs/op
+BenchmarkMemoryAdd-4       	 2855305	        62.68 ns/op	     121 B/op	       1 allocs/op
+BenchmarkMemoryAdd-4       	 2895463	        63.13 ns/op	     121 B/op	       1 allocs/op
+BenchmarkSQLiteStats-4     	      81	   2117836 ns/op	     560 B/op	      20 allocs/op
+BenchmarkSQLiteStats-4     	      82	   2114086 ns/op	     561 B/op	      20 allocs/op
+BenchmarkSQLiteStats-4     	      80	   2099953 ns/op	     561 B/op	      20 allocs/op
+BenchmarkSQLiteStats-4     	      78	   2093339 ns/op	     560 B/op	      20 allocs/op
+BenchmarkSQLiteStats-4     	      80	   2100396 ns/op	     561 B/op	      20 allocs/op
+BenchmarkSQLiteStats-4     	      79	   2100337 ns/op	     560 B/op	      20 allocs/op
+BenchmarkSQLiteAdd-4       	    3006	     55269 ns/op	    2229 B/op	      56 allocs/op
+BenchmarkSQLiteAdd-4       	    3115	     55020 ns/op	    2215 B/op	      56 allocs/op
+BenchmarkSQLiteAdd-4       	    3186	     54522 ns/op	    2215 B/op	      56 allocs/op
+BenchmarkSQLiteAdd-4       	    3180	     54681 ns/op	    2215 B/op	      56 allocs/op
+BenchmarkSQLiteAdd-4       	    3182	     54846 ns/op	    2216 B/op	      56 allocs/op
+BenchmarkSQLiteAdd-4       	    3126	     54289 ns/op	    2215 B/op	      56 allocs/op
+BenchmarkSQLiteMixed-4     	     296	    597605 ns/op	   2266811 writer-ns/op	 1452120 B/op	    1989 allocs/op
+BenchmarkSQLiteMixed-4     	     292	    599128 ns/op	   2571639 writer-ns/op	 1452002 B/op	    1988 allocs/op
+BenchmarkSQLiteMixed-4     	     304	    589871 ns/op	   2185946 writer-ns/op	 1452316 B/op	    1990 allocs/op
+BenchmarkSQLiteMixed-4     	     306	    674607 ns/op	   2516153 writer-ns/op	 1452181 B/op	    1990 allocs/op
+BenchmarkSQLiteMixed-4     	     254	    664489 ns/op	   2859299 writer-ns/op	 1451790 B/op	    1987 allocs/op
+BenchmarkSQLiteMixed-4     	     268	    659883 ns/op	   2599499 writer-ns/op	 1451937 B/op	    1989 allocs/op
+PASS
+goos: darwin
+goarch: arm64
+pkg: github.com/jomar/hookd/internal/storage
+cpu: Apple M4 Pro
+BenchmarkCompositePollBatch/durable=false-4         	      20	      6342 ns/op	    9144 B/op	     204 allocs/op
+BenchmarkCompositePollBatch/durable=false-4         	      20	      6052 ns/op	    9144 B/op	     204 allocs/op
+BenchmarkCompositePollBatch/durable=false-4         	      20	      7431 ns/op	    9144 B/op	     204 allocs/op
+BenchmarkCompositePollBatch/durable=false-4         	      20	      6125 ns/op	    9144 B/op	     204 allocs/op
+BenchmarkCompositePollBatch/durable=false-4         	      20	      6188 ns/op	    9144 B/op	     204 allocs/op
+BenchmarkCompositePollBatch/durable=false-4         	      20	      7652 ns/op	    9144 B/op	     204 allocs/op
+BenchmarkCompositePollBatch/durable=true-4          	      20	   4568519 ns/op	  268353 B/op	    6746 allocs/op
+BenchmarkCompositePollBatch/durable=true-4          	      20	   4680900 ns/op	  265676 B/op	    6740 allocs/op
+BenchmarkCompositePollBatch/durable=true-4          	      20	   4465917 ns/op	  265955 B/op	    6742 allocs/op
+BenchmarkCompositePollBatch/durable=true-4          	      20	   4522079 ns/op	  266602 B/op	    6743 allocs/op
+BenchmarkCompositePollBatch/durable=true-4          	      20	   4420996 ns/op	  265420 B/op	    6741 allocs/op
+BenchmarkCompositePollBatch/durable=true-4          	      20	   4437158 ns/op	  265635 B/op	    6743 allocs/op
+PASS

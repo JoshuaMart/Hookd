@@ -1,0 +1,36 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/jomar/hookd/internal/storage
+cpu: Apple M4 Pro
+BenchmarkCompositePollBatch/durable=true-4         	      50	   2007249 ns/op	  255053 B/op	    6150 allocs/op
+PASS
+goos: darwin
+goarch: arm64
+pkg: github.com/jomar/hookd/internal/storage
+cpu: Apple M4 Pro
+BenchmarkCompositePollBatch/durable=true-4         	      50	   1980086 ns/op	  254723 B/op	    6149 allocs/op
+PASS
+goos: darwin
+goarch: arm64
+pkg: github.com/jomar/hookd/internal/storage
+cpu: Apple M4 Pro
+BenchmarkCompositePollBatch/durable=true-4         	      50	   1985043 ns/op	  255063 B/op	    6150 allocs/op
+PASS
+goos: darwin
+goarch: arm64
+pkg: github.com/jomar/hookd/internal/storage
+cpu: Apple M4 Pro
+BenchmarkCompositePollBatch/durable=true-4         	      50	   1994955 ns/op	  254611 B/op	    6148 allocs/op
+PASS
+goos: darwin
+goarch: arm64
+pkg: github.com/jomar/hookd/internal/storage
+cpu: Apple M4 Pro
+BenchmarkCompositePollBatch/durable=true-4         	      50	   1998903 ns/op	  255216 B/op	    6150 allocs/op
+PASS
+goos: darwin
+goarch: arm64
+pkg: github.com/jomar/hookd/internal/storage
+cpu: Apple M4 Pro
+BenchmarkCompositePollBatch/durable=true-4         	      50	   1973775 ns/op	  254835 B/op	    6149 allocs/op
+PASS

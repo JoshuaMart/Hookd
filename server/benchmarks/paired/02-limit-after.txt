@@ -1,0 +1,42 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/jomar/hookd/internal/storage
+cpu: Apple M4 Pro
+BenchmarkMemoryBurst-4   	      57	   4716170 ns/op	   4096000 body-bytes/op	      1000 retained/op	45674676 B/op	   50029 allocs/op
+BenchmarkMemoryAdd-4     	 4478109	        67.15 ns/op	     121 B/op	       1 allocs/op
+PASS
+goos: darwin
+goarch: arm64
+pkg: github.com/jomar/hookd/internal/storage
+cpu: Apple M4 Pro
+BenchmarkMemoryBurst-4   	      63	   4775505 ns/op	   4096000 body-bytes/op	      1000 retained/op	45674645 B/op	   50029 allocs/op
+BenchmarkMemoryAdd-4     	 4457938	        66.71 ns/op	     121 B/op	       1 allocs/op
+PASS
+goos: darwin
+goarch: arm64
+pkg: github.com/jomar/hookd/internal/storage
+cpu: Apple M4 Pro
+BenchmarkMemoryBurst-4   	      63	   4710913 ns/op	   4096000 body-bytes/op	      1000 retained/op	45674665 B/op	   50029 allocs/op
+BenchmarkMemoryAdd-4     	 4462870	        67.04 ns/op	     121 B/op	       1 allocs/op
+PASS
+goos: darwin
+goarch: arm64
+pkg: github.com/jomar/hookd/internal/storage
+cpu: Apple M4 Pro
+BenchmarkMemoryBurst-4   	      63	   4707727 ns/op	   4096000 body-bytes/op	      1000 retained/op	45674638 B/op	   50029 allocs/op
+BenchmarkMemoryAdd-4     	 4478244	        67.45 ns/op	     121 B/op	       1 allocs/op
+PASS
+goos: darwin
+goarch: arm64
+pkg: github.com/jomar/hookd/internal/storage
+cpu: Apple M4 Pro
+BenchmarkMemoryBurst-4   	      63	   4662085 ns/op	   4096000 body-bytes/op	      1000 retained/op	45674668 B/op	   50029 allocs/op
+BenchmarkMemoryAdd-4     	 4471477	        67.15 ns/op	     121 B/op	       1 allocs/op
+PASS
+goos: darwin
+goarch: arm64
+pkg: github.com/jomar/hookd/internal/storage
+cpu: Apple M4 Pro
+BenchmarkMemoryBurst-4   	      54	   4704755 ns/op	   4096000 body-bytes/op	      1000 retained/op	45674670 B/op	   50029 allocs/op
+BenchmarkMemoryAdd-4     	 4445684	        67.62 ns/op	     121 B/op	       1 allocs/op
+PASS

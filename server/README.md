@@ -372,6 +372,11 @@ for ephemeral hooks, `eviction.interaction_ttl`). When eviction drops them,
 `dropped_through` reports the highest `seq` lost: a value above your cursor
 means interactions were never read.
 
+For in-memory hooks, the per-hook limit is enforced on insertion. SQLite hooks
+are trimmed during periodic cleanup. Insert-time evictions are included in the
+eviction counters at the next cleanup pass. The per-hook limit bounds retained
+interaction counts, not total process memory.
+
 Batch forms (`POST /read`, `POST /ack`) take a map of hook ID to seq, up to
 1000 entries. A failed storage operation returns 500 (or a per-hook `error` in
 batch), never an empty success, so retry rather than advance the cursor:
@@ -694,3 +699,8 @@ sudo chown hookd:hookd /var/lib/hookd/certs
 ```bash
 sudo journalctl -u hookd -f
 ```
+
+## Performance measurements
+
+See [the storage benchmark report](benchmarks/README.md) for per-change measurements,
+tradeoffs, raw results, and a script that rebuilds and compares the recorded revisions.
