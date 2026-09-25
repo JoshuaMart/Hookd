@@ -122,6 +122,8 @@ type MemoryManager struct {
 	droppedThrough map[string]int64
 	mu             sync.RWMutex
 	idGenerator    func() string
+	maxPerHook     int
+	limitEvictions int
 
 	// forceGC and heapInUseMB are injectable so the memory-pressure eviction
 	// logic can be tested deterministically without depending on the real heap.
@@ -140,6 +142,15 @@ func NewMemoryManager(idGenerator func() string) *MemoryManager {
 		forceGC:        runtime.GC,
 		heapInUseMB:    readHeapInUseMB,
 	}
+}
+
+// SetMaxPerHook enables immediate oldest-first eviction for in-memory hooks.
+// A non-positive limit disables it. Configure this before accepting captures;
+// existing entries are also trimmed by the periodic EnforcePerHookLimit pass.
+func (m *MemoryManager) SetMaxPerHook(max int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.maxPerHook = max
 }
 
 // readHeapInUseMB reports the heap currently in use, in megabytes, without
@@ -193,7 +204,16 @@ func (m *MemoryManager) AddInteraction(hookID string, interaction *Interaction) 
 
 	m.lastSeq[hookID]++
 	interaction.Seq = m.lastSeq[hookID]
-	m.interactions[hookID] = append(m.interactions[hookID], interaction)
+	entries := append(m.interactions[hookID], interaction)
+	if m.maxPerHook > 0 && len(entries) > m.maxPerHook {
+		drop := len(entries) - m.maxPerHook
+		m.noteDropped(hookID, entries[drop-1].Seq)
+
+		clear(entries[:drop])
+		entries = entries[drop:]
+		m.limitEvictions += drop
+	}
+	m.interactions[hookID] = entries
 }
 
 // ReadInteractions returns the interactions past the cursor without deleting them.
@@ -226,6 +246,8 @@ func (m *MemoryManager) AckInteractions(hookID string, through int64) (int, erro
 	for _, interaction := range interactions {
 		if interaction.Seq > through {
 			kept = append(kept, interaction)
+		} else {
+
 		}
 	}
 	m.interactions[hookID] = kept
@@ -348,6 +370,7 @@ func (m *MemoryManager) EvictExpiredHooks(now time.Time) int {
 
 // deleteHook removes a hook and all its state. Callers must hold m.mu.
 func (m *MemoryManager) deleteHook(id string) {
+
 	delete(m.hooks, id)
 	delete(m.interactions, id)
 	delete(m.lastSeq, id)
@@ -355,15 +378,20 @@ func (m *MemoryManager) deleteHook(id string) {
 }
 
 // EnforcePerHookLimit trims each hook to at most max interactions, dropping the
-// oldest first (the slice is ordered by arrival), and returns the number removed.
+// oldest first (the slice is ordered by arrival). The return value also includes
+// insert-time evictions since the previous pass, for eviction metrics.
 func (m *MemoryManager) EnforcePerHookLimit(max int) int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	total := 0
+	// Include insert-time evictions exactly once so the evictor's existing
+	// limit metric continues to count every dropped interaction.
+	total := m.limitEvictions
+	m.limitEvictions = 0
 	for hookID, interactions := range m.interactions {
 		if len(interactions) > max {
 			drop := len(interactions) - max
+
 			m.noteDropped(hookID, interactions[drop-1].Seq)
 			// Keep the newest max, copying into a fresh slice so the dropped
 			// entries can be garbage-collected.

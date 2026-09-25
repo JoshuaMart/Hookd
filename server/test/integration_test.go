@@ -76,6 +76,7 @@ func startServer(t *testing.T, cfg *config.Config, idGenerator func() string) *t
 	logger := setupTestLogger()
 
 	memoryManager := storage.NewMemoryManager(idGenerator)
+	memoryManager.SetMaxPerHook(cfg.Eviction.MaxPerHook)
 	var longLived *storage.SQLiteManager
 	if cfg.LongLived.Enabled {
 		var err error
