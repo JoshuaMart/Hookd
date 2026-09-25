@@ -360,7 +360,8 @@ RSpec.describe Hookd::Client do
               'metadata' => { 'n' => '1' }
             },
             'pending_count' => 3,
-            'last_interaction_at' => '2025-10-03T14:12:00Z'
+            'last_interaction_at' => '2025-10-03T14:12:00Z',
+            'last_seq' => 7
           }
         ]
       }
@@ -381,6 +382,7 @@ RSpec.describe Hookd::Client do
         expect(activity.first.hook.id).to eq('abc123')
         expect(activity.first.pending_count).to eq(3)
         expect(activity.first.last_interaction_at).to eq('2025-10-03T14:12:00Z')
+        expect(activity.first.last_seq).to eq(7)
       end
     end
 
@@ -599,6 +601,130 @@ RSpec.describe Hookd::Client do
           expect(e.message.bytesize).to be <= Hookd::Client::ERROR_BODY_EXCERPT_BYTES + 64
         }
       end
+    end
+  end
+
+  describe 'cursor reads' do
+    let(:json_headers) { { 'Content-Type' => 'application/json' } }
+
+    describe '#read' do
+      before do
+        stub_request(:get, "#{server}/poll/abc123?after=4")
+          .with(headers: { 'X-API-Key' => token })
+          .to_return(status: 200, headers: json_headers, body: {
+            'interactions' => [{ 'id' => 'i5', 'seq' => 5, 'type' => 'dns', 'data' => {} }],
+            'dropped_through' => 2,
+            'metadata' => { 'field' => 'bio' }
+          }.to_json)
+      end
+
+      it 'returns the interactions past the cursor with loss reporting' do
+        read = client.read('abc123', after: 4)
+        expect(read).to be_a(Hookd::CursorRead)
+        expect(read.interactions.map(&:seq)).to eq([5])
+        expect(read.interactions.first.id).to eq('i5')
+        expect(read.dropped_through).to eq(2)
+        expect(read.lost?(4)).to be(false)
+        expect(read.lost?(1)).to be(true)
+        expect(read.metadata).to eq('field' => 'bio')
+      end
+
+      it 'rejects a negative or missing cursor' do
+        expect { client.read('abc123', after: -1) }.to raise_error(ArgumentError)
+        expect { client.read('abc123', after: nil) }.to raise_error(ArgumentError)
+      end
+    end
+
+    describe '#ack' do
+      it 'deletes through the given seq' do
+        stub_request(:delete, "#{server}/poll/abc123?through=7")
+          .with(headers: { 'X-API-Key' => token })
+          .to_return(status: 200, headers: json_headers, body: { 'acknowledged' => 3 }.to_json)
+
+        expect(client.ack('abc123', through: 7)).to eq(3)
+      end
+
+      it 'raises on a server error instead of reporting success' do
+        stub_request(:delete, "#{server}/poll/abc123?through=7").to_return(status: 500, body: '{}')
+
+        expect { client.ack('abc123', through: 7) }.to raise_error(Hookd::ServerError)
+      end
+    end
+
+    describe '#read_batch' do
+      it 'reads several hooks in one request' do
+        stub_request(:post, "#{server}/read")
+          .with(body: { 'after' => { 'abc123' => 1, 'missing' => 0 } }.to_json)
+          .to_return(status: 200, headers: json_headers, body: {
+            'results' => {
+              'abc123' => { 'interactions' => [{ 'seq' => 2, 'type' => 'dns' }], 'dropped_through' => 0 },
+              'missing' => { 'error' => 'Hook not found' }
+            }
+          }.to_json)
+
+        results = client.read_batch('abc123' => 1, 'missing' => 0)
+        expect(results['abc123'][:interactions].map(&:seq)).to eq([2])
+        expect(results['abc123'][:dropped_through]).to eq(0)
+        expect(results['missing'][:error]).to eq('Hook not found')
+        expect(results['missing'][:interactions]).to eq([])
+      end
+
+      it 'rejects an empty batch' do
+        expect { client.read_batch({}) }.to raise_error(ArgumentError)
+      end
+    end
+
+    describe '#ack_batch' do
+      it 'acknowledges several hooks in one request' do
+        stub_request(:post, "#{server}/ack")
+          .with(body: { 'through' => { 'abc123' => 2 } }.to_json)
+          .to_return(status: 200, headers: json_headers, body: {
+            'results' => { 'abc123' => { 'acknowledged' => 2 } }
+          }.to_json)
+
+        expect(client.ack_batch('abc123' => 2)).to eq('abc123' => { acknowledged: 2, error: nil })
+      end
+
+      it 'rejects a negative seq' do
+        expect { client.ack_batch('abc123' => -1) }.to raise_error(ArgumentError)
+      end
+    end
+  end
+
+  describe 'batch registration and metadata filters' do
+    let(:json_headers) { { 'Content-Type' => 'application/json' } }
+
+    it 'registers one hook per spec, in order' do
+      stub_request(:post, "#{server}/register")
+        .with(body: { hooks: [{ ttl: '7d', metadata: { param: 'bio' } }, { metadata: { param: 'name' } }] }.to_json)
+        .to_return(status: 200, headers: json_headers, body: {
+          'hooks' => [{ 'id' => 'a', 'metadata' => { 'param' => 'bio' } },
+                      { 'id' => 'b', 'metadata' => { 'param' => 'name' } }]
+        }.to_json)
+
+      hooks = client.register_batch([{ ttl: '7d', metadata: { param: 'bio' } }, { metadata: { param: 'name' } }])
+      expect(hooks.map(&:id)).to eq(%w[a b])
+      expect(hooks.last.metadata).to eq('param' => 'name')
+    end
+
+    it 'rejects an empty batch' do
+      expect { client.register_batch([]) }.to raise_error(ArgumentError)
+    end
+
+    it 'lists hooks matching a metadata filter' do
+      stub_request(:get, "#{server}/hooks?metadata.run_id=0f3a")
+        .to_return(status: 200, headers: json_headers, body: { 'hooks' => [{ 'id' => 'a' }] }.to_json)
+
+      expect(client.hooks(metadata: { run_id: '0f3a' }).map(&:id)).to eq(['a'])
+    end
+
+    it 'filters activity by metadata' do
+      stub_request(:get, "#{server}/activity?metadata.run_id=0f3a")
+        .to_return(status: 200, headers: json_headers, body: {
+          'hooks' => [{ 'hook' => { 'id' => 'a' }, 'pending_count' => 1, 'last_seq' => 2 }]
+        }.to_json)
+
+      expect(client.activity(metadata: { run_id: '0f3a' }).first.last_seq).to eq(2)
     end
   end
 end

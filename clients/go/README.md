@@ -130,6 +130,35 @@ for _, a := range activity {
 }
 ```
 
+### Cursor Reads Example
+
+`Poll` deletes what it returns, so a crash before you store the result loses it.
+`Read` leaves the interactions on the server; `Ack` them once your own write
+has committed. Keep the cursor (the last `Seq` stored) on your side.
+
+```go
+read, err := client.Read(hookID, cursor)
+if err != nil {
+    return err
+}
+if read.Lost(cursor) {
+    log.Printf("hook %s: interactions up to seq %d were evicted unread", hookID, read.DroppedThrough)
+}
+if len(read.Interactions) == 0 {
+    return nil
+}
+last := read.Interactions[len(read.Interactions)-1].Seq
+if err := store(read.Interactions); err != nil {
+    return err // nothing acknowledged: the next Read returns them again
+}
+cursor = last
+_, err = client.Ack(hookID, last)
+return err
+```
+
+`ReadBatch` and `AckBatch` do the same for many hooks, keyed by hook ID. Use
+`HookActivity.LastSeq` to skip hooks with nothing past your cursor.
+
 ### Configuration
 
 The client requires two parameters:
@@ -181,6 +210,34 @@ long-lived hook), and `Metadata` (stored with the hook, echoed on poll).
 hooks, _ := client.RegisterHooks(hookd.RegisterOptions{TTL: "7d", Metadata: map[string]any{"k": "v"}})
 ```
 
+#### `(*Client) RegisterBatch(specs []HookSpec) ([]Hook, error)`
+
+Register one hook per `HookSpec{TTL, Metadata}` in a single request, e.g. one
+per injectable field, each carrying its own context. Hooks come back in spec
+order; the server creates all of them or none (up to 500 per call).
+
+```go
+hooks, err := client.RegisterBatch([]hookd.HookSpec{
+    {TTL: "7d", Metadata: map[string]any{"endpoint_id": "e_412", "param": "bio"}},
+    {TTL: "7d", Metadata: map[string]any{"endpoint_id": "e_413", "param": "name"}},
+})
+```
+
+#### `(*Client) Hooks(metadata map[string]string) ([]Hook, error)`
+
+List the long-lived hooks (without interactions) whose top-level metadata
+matches every key/value of the filter; `nil` lists all. Useful to rebuild your
+hook list after losing local state.
+
+```go
+hooks, _ := client.Hooks(map[string]string{"run_id": "0f3a"})
+```
+
+#### `(*Client) ActivityMatching(metadata map[string]string) ([]HookActivity, error)`
+
+`Activity` restricted to hooks matching the metadata filter, so workers sharing
+a server each see only their own hooks.
+
 #### `(*Client) Activity() ([]HookActivity, error)`
 
 List the long-lived hooks that currently have pending interactions. Returns an
@@ -213,6 +270,22 @@ for hookID, result := range results {
 
 Returns: Map of hook ID to `BatchResult` (containing `Interactions` and `Error`)
 
+#### `(*Client) Read(hookID string, after int64) (*CursorRead, error)`
+
+Return the interactions with a `Seq` above `after`, without deleting them.
+
+#### `(*Client) Ack(hookID string, through int64) (int, error)`
+
+Delete the interactions with a `Seq` up to `through`; returns how many were removed.
+
+#### `(*Client) ReadBatch(after map[string]int64) (map[string]BatchResult, error)`
+
+`Read` for several hooks in one request, keyed by hook ID.
+
+#### `(*Client) AckBatch(through map[string]int64) (map[string]AckResult, error)`
+
+`Ack` for several hooks in one request, keyed by hook ID.
+
 #### `(*Client) Metrics() (Metrics, error)`
 
 Get server metrics.
@@ -244,11 +317,14 @@ fmt.Printf("Total hooks: %v\n", metrics["total_hooks"])
 | `Hook`              | Hook   | The long-lived hook that fired       |
 | `PendingCount`      | int    | Number of interactions awaiting poll |
 | `LastInteractionAt` | string | Timestamp of the most recent one     |
+| `LastSeq`           | int64  | Seq of the most recent one           |
 
 #### `Interaction`
 
 | Field      | Type            | Description                    |
 |------------|-----------------|--------------------------------|
+| `ID`       | string          | Interaction identifier         |
+| `Seq`      | int64           | Per-hook sequence number (cursor) |
 | `Type`     | string          | "dns", "http" or "smtp"        |
 | `Timestamp`| string          | When the interaction occurred  |
 | `SourceIP` | string          | Source IP address               |
@@ -264,7 +340,26 @@ Methods:
 | Field          | Type           | Description                     |
 |----------------|----------------|---------------------------------|
 | `Interactions` | []Interaction  | Captured interactions           |
+| `DroppedThrough` | int64        | Highest seq evicted unread (`ReadBatch` only) |
 | `Error`        | string         | Error message (empty if none)   |
+
+#### `CursorRead`
+
+| Field            | Type           | Description                               |
+|------------------|----------------|-------------------------------------------|
+| `Interactions`   | []Interaction  | Interactions past the cursor              |
+| `DroppedThrough` | int64          | Highest seq evicted before acknowledgement |
+| `Metadata`       | map[string]any | Metadata attached at registration         |
+
+Methods:
+- `Lost(after int64) bool` - True if interactions past `after` were evicted unread
+
+#### `AckResult`
+
+| Field          | Type   | Description                   |
+|----------------|--------|-------------------------------|
+| `Acknowledged` | int    | Interactions removed          |
+| `Error`        | string | Error message (empty if none) |
 
 ### Error Handling
 

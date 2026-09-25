@@ -665,3 +665,175 @@ func TestClient_StatusErrorsBeatSizeLimit(t *testing.T) {
 		t.Fatalf("expected AuthenticationError to win over the size limit, got %#v", err)
 	}
 }
+
+func TestRead(t *testing.T) {
+	server, client := setupServer(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/poll/abc" || r.URL.Query().Get("after") != "4" {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL)
+		}
+		writeJSON(t, w, map[string]any{
+			"interactions":    []any{map[string]any{"id": "i5", "seq": 5, "type": "dns"}},
+			"dropped_through": 2,
+			"metadata":        map[string]any{"field": "bio"},
+		})
+	})
+	defer server.Close()
+
+	read, err := client.Read("abc", 4)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if len(read.Interactions) != 1 || read.Interactions[0].Seq != 5 || read.Interactions[0].ID != "i5" {
+		t.Errorf("unexpected interactions %+v", read.Interactions)
+	}
+	if read.DroppedThrough != 2 || read.Lost(4) || !read.Lost(1) {
+		t.Errorf("unexpected loss reporting: dropped_through=%d", read.DroppedThrough)
+	}
+	if read.Metadata["field"] != "bio" {
+		t.Errorf("expected metadata echoed, got %v", read.Metadata)
+	}
+}
+
+func TestReadRejectsNegativeCursor(t *testing.T) {
+	client := NewClient("http://unused", "t")
+	if _, err := client.Read("abc", -1); err == nil {
+		t.Error("expected an error for a negative cursor")
+	}
+	if _, err := client.Ack("abc", -1); err == nil {
+		t.Error("expected an error for a negative through")
+	}
+}
+
+func TestAck(t *testing.T) {
+	server, client := setupServer(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete || r.URL.Path != "/poll/abc" || r.URL.Query().Get("through") != "7" {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL)
+		}
+		writeJSON(t, w, map[string]any{"acknowledged": 3})
+	})
+	defer server.Close()
+
+	n, err := client.Ack("abc", 7)
+	if err != nil || n != 3 {
+		t.Errorf("expected 3 acknowledged, got %d (%v)", n, err)
+	}
+}
+
+func TestAckServerError(t *testing.T) {
+	server, client := setupServer(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+	defer server.Close()
+
+	var serverErr *ServerError
+	if _, err := client.Ack("abc", 1); !errors.As(err, &serverErr) {
+		t.Errorf("expected ServerError, got %v", err)
+	}
+}
+
+func TestReadBatch(t *testing.T) {
+	server, client := setupServer(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/read" {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL)
+		}
+		var body map[string]map[string]int64
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body["after"]["abc"] != 1 {
+			t.Errorf("unexpected body %v (%v)", body, err)
+		}
+		writeJSON(t, w, map[string]any{"results": map[string]any{
+			"abc":     map[string]any{"interactions": []any{map[string]any{"seq": 2}}, "dropped_through": 0},
+			"missing": map[string]any{"error": "Hook not found"},
+		}})
+	})
+	defer server.Close()
+
+	results, err := client.ReadBatch(map[string]int64{"abc": 1, "missing": 0})
+	if err != nil {
+		t.Fatalf("ReadBatch: %v", err)
+	}
+	if got := results["abc"]; len(got.Interactions) != 1 || got.Interactions[0].Seq != 2 {
+		t.Errorf("unexpected result %+v", got)
+	}
+	if results["missing"].Error != "Hook not found" || results["missing"].Interactions == nil {
+		t.Errorf("unexpected missing result %+v", results["missing"])
+	}
+}
+
+func TestAckBatch(t *testing.T) {
+	server, client := setupServer(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/ack" {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL)
+		}
+		writeJSON(t, w, map[string]any{"results": map[string]any{
+			"abc":     map[string]any{"acknowledged": 2},
+			"missing": map[string]any{"acknowledged": 0, "error": "Hook not found"},
+		}})
+	})
+	defer server.Close()
+
+	results, err := client.AckBatch(map[string]int64{"abc": 2, "missing": 1})
+	if err != nil {
+		t.Fatalf("AckBatch: %v", err)
+	}
+	if results["abc"].Acknowledged != 2 || results["missing"].Error == "" {
+		t.Errorf("unexpected results %+v", results)
+	}
+	if _, err := client.AckBatch(nil); err == nil {
+		t.Error("expected an error for an empty batch")
+	}
+}
+
+func TestRegisterBatch(t *testing.T) {
+	server, client := setupServer(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Hooks []HookSpec `json:"hooks"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body.Hooks) != 2 || body.Hooks[1].Metadata["param"] != "name" {
+			t.Errorf("unexpected body %+v (%v)", body, err)
+		}
+		writeJSON(t, w, map[string]any{"hooks": []any{
+			map[string]any{"id": "a", "metadata": map[string]any{"param": "bio"}},
+			map[string]any{"id": "b", "metadata": map[string]any{"param": "name"}},
+		}})
+	})
+	defer server.Close()
+
+	hooks, err := client.RegisterBatch([]HookSpec{
+		{TTL: "7d", Metadata: map[string]any{"param": "bio"}},
+		{TTL: "7d", Metadata: map[string]any{"param": "name"}},
+	})
+	if err != nil {
+		t.Fatalf("RegisterBatch: %v", err)
+	}
+	if len(hooks) != 2 || hooks[0].ID != "a" || hooks[1].Metadata["param"] != "name" {
+		t.Errorf("unexpected hooks %+v", hooks)
+	}
+	if _, err := client.RegisterBatch(nil); err == nil {
+		t.Error("expected an error for no specs")
+	}
+}
+
+func TestHooksAndActivityMatching(t *testing.T) {
+	server, client := setupServer(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("metadata.run_id"); got != "0f3a" {
+			t.Errorf("expected metadata.run_id filter, got %q", r.URL.RawQuery)
+		}
+		switch r.URL.Path {
+		case "/hooks":
+			writeJSON(t, w, map[string]any{"hooks": []any{map[string]any{"id": "a"}}})
+		case "/activity":
+			writeJSON(t, w, map[string]any{"hooks": []any{map[string]any{"hook": map[string]any{"id": "a"}, "last_seq": 4}}})
+		}
+	})
+	defer server.Close()
+
+	filter := map[string]string{"run_id": "0f3a"}
+	hooks, err := client.Hooks(filter)
+	if err != nil || len(hooks) != 1 || hooks[0].ID != "a" {
+		t.Errorf("unexpected hooks %+v (%v)", hooks, err)
+	}
+	activity, err := client.ActivityMatching(filter)
+	if err != nil || len(activity) != 1 || activity[0].LastSeq != 4 {
+		t.Errorf("unexpected activity %+v (%v)", activity, err)
+	}
+}

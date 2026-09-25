@@ -164,10 +164,39 @@ Raises:
 - `Hookd::ServerError` - Server error (5xx)
 - `Hookd::ConnectionError` - Connection failed
 
-##### `#activity`
+##### `#register_batch(specs)`
+
+Register one hook per spec in a single request — e.g. one per injectable field,
+each carrying its own context. Hooks come back in spec order; the server
+creates all of them or none (up to 500 per call).
+
+```ruby
+hooks = client.register_batch([
+  { ttl: "7d", metadata: { endpoint_id: "e_412", param: "bio" } },
+  { ttl: "7d", metadata: { endpoint_id: "e_413", param: "name" } }
+])
+# => [#<Hookd::Hook ...>, #<Hookd::Hook ...>]
+```
+
+##### `#hooks(metadata: nil)`
+
+List the long-lived hooks (without interactions) whose top-level metadata
+matches every key/value given; omit `metadata` to list all. Useful to rebuild
+your hook list after losing local state.
+
+```ruby
+client.hooks(metadata: { run_id: "0f3a" })
+```
+
+##### `#activity(metadata: nil)`
+
+Pass `metadata:` to keep only matching hooks, so workers sharing a server each
+see only their own.
+
 
 List the long-lived hooks that currently have pending interactions, so you can
-discover which fired without polling each one; drain the details with `#poll`.
+discover which fired without polling each one; fetch the details with `#read`
+(or `#poll` to drain). Skip hooks whose `last_seq` is not above your cursor.
 
 ```ruby
 client.activity.each do |a|
@@ -248,6 +277,39 @@ Raises:
 - **Efficiency**: Automatic connection reuse with HTTPX
 - **Atomic**: Consistent snapshot of all hooks
 
+##### `#read(hook_id, after:)` and `#ack(hook_id, through:)`
+
+`#poll` deletes what it returns, so a crash before you store the result loses
+it. `#read` leaves the interactions on the server; `#ack` them once your own
+write has committed. Keep the cursor (the last `seq` stored) on your side.
+
+```ruby
+read = client.read(hook_id, after: cursor)
+warn "interactions up to seq #{read.dropped_through} were evicted unread" if read.lost?(cursor)
+
+unless read.interactions.empty?
+  last = read.interactions.last.seq
+  store(read.interactions)          # raises: nothing acknowledged, read again later
+  client.ack(hook_id, through: last) # => number of interactions removed
+  cursor = last
+end
+```
+
+`#read` returns a `Hookd::CursorRead`; `#ack` returns the number removed. Both
+raise `Hookd::NotFoundError` for an unknown hook and `Hookd::ServerError` when
+the server fails, so a failed ack is never mistaken for success.
+
+##### `#read_batch(cursors)` and `#ack_batch(cursors)`
+
+The same for many hooks in one request, keyed by hook ID:
+
+```ruby
+client.read_batch("abc123" => 4, "def456" => 0)
+# => { "abc123" => { interactions: [...], dropped_through: 0, error: nil }, ... }
+client.ack_batch("abc123" => 6)
+# => { "abc123" => { acknowledged: 2, error: nil } }
+```
+
 ##### `#metrics`
 
 Get server metrics (requires authentication).
@@ -281,12 +343,27 @@ Attributes:
 - `hook` (`Hookd::Hook`) - The long-lived hook that fired
 - `pending_count` (Integer) - Number of interactions awaiting poll
 - `last_interaction_at` (String) - Timestamp of the most recent interaction
+- `last_seq` (Integer) - Seq of the most recent interaction
+
+#### `Hookd::CursorRead`
+
+Returned by `#read`.
+
+Attributes:
+- `interactions` (Array<`Hookd::Interaction`>) - Interactions past the cursor
+- `dropped_through` (Integer) - Highest seq evicted before acknowledgement
+- `metadata` (Hash, nil) - Metadata attached at registration
+
+Methods:
+- `#lost?(after)` - True if interactions past `after` were evicted unread
 
 #### `Hookd::Interaction`
 
 Represents a captured DNS, HTTP or SMTP interaction.
 
 Attributes:
+- `id` (String) - Interaction identifier
+- `seq` (Integer) - Per-hook sequence number, the cursor for `#read` / `#ack`
 - `type` (String) - Interaction type ("dns", "http" or "smtp")
 - `timestamp` (String) - When the interaction was captured
 - `data` (Hash) - Interaction details

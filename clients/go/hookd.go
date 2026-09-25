@@ -7,10 +7,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"time"
 )
 
-const Version = "1.2.0"
+const Version = "1.3.0"
 
 // DefaultMaxResponseBytes caps the buffered response body. It is generous
 // because a poll can legitimately return many interactions with full bodies.
@@ -48,15 +49,26 @@ type RegisterOptions struct {
 	Metadata map[string]any
 }
 
+// HookSpec describes one hook of a RegisterBatch call.
+type HookSpec struct {
+	TTL      string         `json:"ttl,omitempty"`
+	Metadata map[string]any `json:"metadata,omitempty"`
+}
+
 // HookActivity summarises a long-lived hook that has pending interactions.
 type HookActivity struct {
 	Hook              Hook   `json:"hook"`
 	PendingCount      int    `json:"pending_count"`
 	LastInteractionAt string `json:"last_interaction_at"`
+	// LastSeq is the newest seq held: at or below a cursor, nothing is new.
+	LastSeq int64 `json:"last_seq"`
 }
 
 // Interaction represents a DNS, HTTP or SMTP interaction captured by a hook.
 type Interaction struct {
+	ID string `json:"id"`
+	// Seq increases per hook; it is the cursor for Read and Ack.
+	Seq       int64          `json:"seq"`
 	Type      string         `json:"type"`
 	Timestamp string         `json:"timestamp"`
 	SourceIP  string         `json:"source_ip"`
@@ -73,8 +85,28 @@ func (i *Interaction) IsHTTP() bool { return i.Type == "http" }
 func (i *Interaction) IsSMTP() bool { return i.Type == "smtp" }
 
 // BatchResult holds the poll result for a single hook in a batch poll.
+// DroppedThrough is set by ReadBatch only.
 type BatchResult struct {
+	Interactions   []Interaction
+	DroppedThrough int64
+	Error          string
+}
+
+// CursorRead is the result of a non-destructive Read.
+type CursorRead struct {
 	Interactions []Interaction
+	// DroppedThrough is the highest seq the server evicted before it was
+	// acknowledged; see Lost.
+	DroppedThrough int64
+	Metadata       map[string]any
+}
+
+// Lost reports whether interactions past the cursor were evicted unread.
+func (r *CursorRead) Lost(after int64) bool { return r.DroppedThrough > after }
+
+// AckResult holds the outcome of acknowledging a single hook in AckBatch.
+type AckResult struct {
+	Acknowledged int
 	Error        string
 }
 
@@ -186,20 +218,8 @@ func (c *Client) RegisterHooks(opts RegisterOptions) ([]Hook, error) {
 	}
 
 	// Multiple hooks response
-	if raw, ok := data["hooks"]; ok {
-		rawHooks, ok := raw.([]any)
-		if !ok {
-			return nil, &Error{Message: "invalid hooks response format"}
-		}
-		hooks := make([]Hook, 0, len(rawHooks))
-		for _, rh := range rawHooks {
-			h, err := parseHook(rh)
-			if err != nil {
-				return nil, err
-			}
-			hooks = append(hooks, h)
-		}
-		return hooks, nil
+	if _, ok := data["hooks"]; ok {
+		return parseHookList(data)
 	}
 
 	// Single hook response
@@ -208,6 +228,29 @@ func (c *Client) RegisterHooks(opts RegisterOptions) ([]Hook, error) {
 		return nil, err
 	}
 	return []Hook{h}, nil
+}
+
+// RegisterBatch creates one hook per spec, each with its own TTL and metadata,
+// in one request. Hooks come back in spec order; the server creates all or none.
+func (c *Client) RegisterBatch(specs []HookSpec) ([]Hook, error) {
+	if len(specs) == 0 {
+		return nil, fmt.Errorf("specs must not be empty")
+	}
+	data, err := c.post("/register", map[string]any{"hooks": specs})
+	if err != nil {
+		return nil, err
+	}
+	return parseHookList(data)
+}
+
+// Hooks lists the long-lived hooks, without interactions, whose metadata
+// matches every key/value in the filter (nil lists all).
+func (c *Client) Hooks(metadata map[string]string) ([]Hook, error) {
+	data, err := c.get("/hooks" + metadataQuery(metadata))
+	if err != nil {
+		return nil, err
+	}
+	return parseHookList(data)
 }
 
 // Poll retrieves interactions for a single hook.
@@ -223,6 +266,111 @@ func (c *Client) Poll(hookID string) ([]Interaction, error) {
 	}
 
 	return parseInteractions(raw)
+}
+
+// Read returns the interactions with a seq above after without deleting them.
+// Acknowledge them with Ack once they are stored.
+func (c *Client) Read(hookID string, after int64) (*CursorRead, error) {
+	if after < 0 {
+		return nil, fmt.Errorf("after must not be negative")
+	}
+	data, err := c.get(fmt.Sprintf("/poll/%s?after=%d", url.PathEscape(hookID), after))
+	if err != nil {
+		return nil, err
+	}
+
+	read := &CursorRead{Interactions: []Interaction{}, DroppedThrough: toInt64(data["dropped_through"])}
+	if raw, ok := data["interactions"]; ok {
+		if read.Interactions, err = parseInteractions(raw); err != nil {
+			return nil, err
+		}
+	}
+	if meta, ok := data["metadata"].(map[string]any); ok {
+		read.Metadata = meta
+	}
+	return read, nil
+}
+
+// Ack deletes the interactions with a seq up to through and returns how many
+// were removed.
+func (c *Client) Ack(hookID string, through int64) (int, error) {
+	if through < 0 {
+		return 0, fmt.Errorf("through must not be negative")
+	}
+	data, err := c.delete(fmt.Sprintf("/poll/%s?through=%d", url.PathEscape(hookID), through))
+	if err != nil {
+		return 0, err
+	}
+	return int(toInt64(data["acknowledged"])), nil
+}
+
+// ReadBatch reads several hooks past their cursors (hook ID to seq) in one
+// request, without deleting anything.
+func (c *Client) ReadBatch(after map[string]int64) (map[string]BatchResult, error) {
+	entries, err := c.cursorBatch("/read", "after", after)
+	if err != nil {
+		return nil, err
+	}
+
+	results := make(map[string]BatchResult, len(entries))
+	for id, entry := range entries {
+		br := BatchResult{Interactions: []Interaction{}, DroppedThrough: toInt64(entry["dropped_through"])}
+		br.Error, _ = entry["error"].(string)
+		if raw, ok := entry["interactions"]; ok {
+			if ints, err := parseInteractions(raw); err == nil {
+				br.Interactions = ints
+			}
+		}
+		results[id] = br
+	}
+	return results, nil
+}
+
+// AckBatch acknowledges several hooks (hook ID to seq) in one request.
+func (c *Client) AckBatch(through map[string]int64) (map[string]AckResult, error) {
+	entries, err := c.cursorBatch("/ack", "through", through)
+	if err != nil {
+		return nil, err
+	}
+
+	results := make(map[string]AckResult, len(entries))
+	for id, entry := range entries {
+		ar := AckResult{Acknowledged: int(toInt64(entry["acknowledged"]))}
+		ar.Error, _ = entry["error"].(string)
+		results[id] = ar
+	}
+	return results, nil
+}
+
+// cursorBatch posts {field: cursors} and returns the per-hook result objects.
+func (c *Client) cursorBatch(path, field string, cursors map[string]int64) (map[string]map[string]any, error) {
+	if len(cursors) == 0 {
+		return nil, fmt.Errorf("%s must not be empty", field)
+	}
+	for _, seq := range cursors {
+		if seq < 0 {
+			return nil, fmt.Errorf("%s values must not be negative", field)
+		}
+	}
+
+	data, err := c.post(path, map[string]any{field: cursors})
+	if err != nil {
+		return nil, err
+	}
+	raw, ok := data["results"].(map[string]any)
+	if !ok {
+		return nil, &Error{Message: "invalid batch results format"}
+	}
+
+	entries := make(map[string]map[string]any, len(raw))
+	for id, r := range raw {
+		entry, ok := r.(map[string]any)
+		if !ok {
+			entry = map[string]any{"error": "invalid result format"}
+		}
+		entries[id] = entry
+	}
+	return entries, nil
 }
 
 // PollBatch retrieves interactions for multiple hooks in a single request.
@@ -280,10 +428,16 @@ func (c *Client) Metrics() (Metrics, error) {
 
 // Activity lists the long-lived hooks that currently have pending interactions,
 // so callers can discover which of their long-lived hooks fired without polling
-// each one. Drain the details with Poll. Returns an empty slice when none have
+// each one. Fetch the details with Read (or Poll to drain). Returns an empty slice when none have
 // fired (or the server has long-lived hooks disabled).
 func (c *Client) Activity() ([]HookActivity, error) {
-	data, err := c.get("/activity")
+	return c.ActivityMatching(nil)
+}
+
+// ActivityMatching is Activity restricted to hooks whose metadata matches every
+// key/value in the filter.
+func (c *Client) ActivityMatching(metadata map[string]string) ([]HookActivity, error) {
+	data, err := c.get("/activity" + metadataQuery(metadata))
 	if err != nil {
 		return nil, err
 	}
@@ -316,6 +470,16 @@ func (c *Client) Activity() ([]HookActivity, error) {
 
 func (c *Client) get(path string) (map[string]any, error) {
 	req, err := http.NewRequest(http.MethodGet, c.server+path, nil)
+	if err != nil {
+		return nil, &ConnectionError{Message: fmt.Sprintf("failed to create request: %v", err)}
+	}
+	req.Header.Set("X-API-Key", c.token)
+
+	return c.doRequest(req)
+}
+
+func (c *Client) delete(path string) (map[string]any, error) {
+	req, err := http.NewRequest(http.MethodDelete, c.server+path, nil)
 	if err != nil {
 		return nil, &ConnectionError{Message: fmt.Sprintf("failed to create request: %v", err)}
 	}
@@ -395,7 +559,36 @@ func (c *Client) doRequest(req *http.Request) (map[string]any, error) {
 	return result, nil
 }
 
+// metadataQuery encodes a metadata filter as metadata.<key>=<value> parameters.
+func metadataQuery(metadata map[string]string) string {
+	if len(metadata) == 0 {
+		return ""
+	}
+	q := url.Values{}
+	for k, v := range metadata {
+		q.Set("metadata."+k, v)
+	}
+	return "?" + q.Encode()
+}
+
 // Parsing helpers
+
+// parseHookList reads a {"hooks": [...]} response.
+func parseHookList(data map[string]any) ([]Hook, error) {
+	raw, ok := data["hooks"].([]any)
+	if !ok {
+		return nil, &Error{Message: "invalid hooks response format"}
+	}
+	hooks := make([]Hook, 0, len(raw))
+	for _, rh := range raw {
+		h, err := parseHook(rh)
+		if err != nil {
+			return nil, err
+		}
+		hooks = append(hooks, h)
+	}
+	return hooks, nil
+}
 
 func parseHook(raw any) (Hook, error) {
 	m, ok := raw.(map[string]any)
@@ -413,6 +606,12 @@ func parseHook(raw any) (Hook, error) {
 		return Hook{}, &Error{Message: "failed to parse hook"}
 	}
 	return h, nil
+}
+
+// toInt64 reads a JSON number decoded as float64; seqs stay far below 2^53.
+func toInt64(v any) int64 {
+	f, _ := v.(float64)
+	return int64(f)
 }
 
 func parseInteractions(raw any) ([]Interaction, error) {

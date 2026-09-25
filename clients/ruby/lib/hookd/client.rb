@@ -2,6 +2,7 @@
 
 require 'httpx'
 require 'json'
+require 'uri'
 
 module Hookd
   # HTTP client for interacting with Hookd server
@@ -46,6 +47,26 @@ module Hookd
       parse_register_response(post('/register', register_body(count, ttl, metadata)))
     end
 
+    # Register one hook per spec in a single request, each with its own ttl and
+    # metadata. The server creates all of them or none.
+    # @param specs [Array<Hash>] entries of { ttl: String or nil, metadata: Hash or nil }
+    # @return [Array<Hookd::Hook>] hooks in spec order
+    # @raise [ArgumentError] if specs is empty or not an array
+    def register_batch(specs)
+      raise ArgumentError, 'specs must be a non-empty array' unless specs.is_a?(Array) && !specs.empty?
+
+      body = specs.map { |spec| register_body(nil, spec[:ttl], spec[:metadata]) || {} }
+      hook_list(post('/register', { hooks: body }))
+    end
+
+    # List long-lived hooks, without interactions, whose metadata matches every
+    # key/value of the filter
+    # @param metadata [Hash, nil] filter on top-level metadata keys
+    # @return [Array<Hookd::Hook>]
+    def hooks(metadata: nil)
+      hook_list(get("/hooks#{metadata_query(metadata)}"))
+    end
+
     # Poll for interactions on a hook
     # @param hook_id [String] the hook ID to poll
     # @return [Array<Hookd::Interaction>] array of interactions (may be empty)
@@ -86,6 +107,60 @@ module Hookd
       raise Error, "Invalid response format: #{e.message}"
     end
 
+    # Read interactions past a cursor without deleting them; acknowledge them
+    # with #ack once stored.
+    # @param hook_id [String] the hook ID to read
+    # @param after [Integer] return interactions with a seq above this
+    # @return [Hookd::CursorRead]
+    # @raise [Hookd::NotFoundError] if hook not found
+    # @raise [Hookd::ServerError] if server returns 5xx
+    # @raise [ArgumentError] if after is invalid
+    def read(hook_id, after:)
+      validate_cursor(after, 'after')
+      response = get("/poll/#{hook_id}?after=#{after}")
+
+      CursorRead.new(
+        interactions: map_interactions(response['interactions']),
+        dropped_through: response['dropped_through'] || 0,
+        metadata: response['metadata']
+      )
+    end
+
+    # Delete interactions up to and including a seq
+    # @param hook_id [String] the hook ID
+    # @param through [Integer] the last seq stored by the caller
+    # @return [Integer] number of interactions removed
+    # @raise [Hookd::NotFoundError] if hook not found
+    # @raise [Hookd::ServerError] if server returns 5xx
+    # @raise [ArgumentError] if through is invalid
+    def ack(hook_id, through:)
+      validate_cursor(through, 'through')
+      handle_response(@http.delete("#{@server}/poll/#{hook_id}?through=#{through}"))['acknowledged']
+    end
+
+    # Read several hooks past their cursors in one request
+    # @param cursors [Hash<String, Integer>] hook ID to seq
+    # @return [Hash<String, Hash>] hook ID to
+    #   { interactions: [...], dropped_through: Integer, error: String or nil }
+    def read_batch(cursors)
+      cursor_batch('/read', 'after', cursors).transform_values do |result|
+        {
+          interactions: map_interactions(result['interactions']),
+          dropped_through: result['dropped_through'] || 0,
+          error: result['error']
+        }
+      end
+    end
+
+    # Acknowledge several hooks in one request
+    # @param cursors [Hash<String, Integer>] hook ID to seq
+    # @return [Hash<String, Hash>] hook ID to { acknowledged: Integer, error: String or nil }
+    def ack_batch(cursors)
+      cursor_batch('/ack', 'through', cursors).transform_values do |result|
+        { acknowledged: result['acknowledged'] || 0, error: result['error'] }
+      end
+    end
+
     # Get server metrics (requires authentication)
     # @return [Hash] metrics data
     # @raise [Hookd::AuthenticationError] if authentication fails
@@ -97,14 +172,15 @@ module Hookd
 
     # List long-lived hooks that currently have pending interactions, so you can
     # discover which of your long-lived hooks fired without polling each one.
-    # Drain the details with #poll. Returns an empty array when none have fired
+    # Fetch the details with #read (or #poll to drain). Returns an empty array when none have fired
     # (or the server has long-lived hooks disabled).
     # @return [Array<Hookd::HookActivity>]
     # @raise [Hookd::AuthenticationError] if authentication fails
     # @raise [Hookd::ServerError] if server returns 5xx
     # @raise [Hookd::ConnectionError] if connection fails
-    def activity
-      response = get('/activity')
+    # @param metadata [Hash, nil] keep only hooks whose metadata matches
+    def activity(metadata: nil)
+      response = get("/activity#{metadata_query(metadata)}")
 
       hooks = response['hooks']
       return [] if hooks.nil? || hooks.empty? || !hooks.is_a?(Array)
@@ -147,6 +223,33 @@ module Hookd
 
       response = @http.post(url, **options)
       handle_response(response)
+    end
+
+    def metadata_query(metadata)
+      return '' if metadata.nil? || metadata.empty?
+
+      "?#{URI.encode_www_form(metadata.to_h { |k, v| ["metadata.#{k}", v.to_s] })}"
+    end
+
+    def hook_list(response)
+      hooks = response['hooks']
+      raise Error, 'Invalid response format: missing hooks' unless hooks.is_a?(Array)
+
+      hooks.map { |h| Hook.from_hash(h) }
+    end
+
+    def validate_cursor(seq, name)
+      raise ArgumentError, "#{name} must be a non-negative integer" unless seq.is_a?(Integer) && seq >= 0
+    end
+
+    def cursor_batch(path, field, cursors)
+      raise ArgumentError, "#{field} must be a non-empty hash" unless cursors.is_a?(Hash) && !cursors.empty?
+
+      cursors.each_value { |seq| validate_cursor(seq, field) }
+      results = post(path, { field => cursors })['results']
+      raise Error, 'Invalid response format: missing results' unless results.is_a?(Hash)
+
+      results
     end
 
     def validate_hook_ids(hook_ids)

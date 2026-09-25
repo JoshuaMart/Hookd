@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"strconv"
 	"time"
 	"unicode/utf8"
 )
@@ -74,7 +75,9 @@ const (
 
 // Interaction represents a captured DNS or HTTP interaction
 type Interaction struct {
-	ID        string                 `json:"id"`
+	ID string `json:"id"`
+	// Seq is assigned by the store on capture and increases per hook.
+	Seq       int64                  `json:"seq"`
 	Type      InteractionType        `json:"type"`
 	Timestamp time.Time              `json:"timestamp"`
 	SourceIP  string                 `json:"source_ip"`
@@ -92,7 +95,17 @@ type MemoryStats struct {
 // PollResult represents the result of polling a single hook
 type PollResult struct {
 	Interactions []*Interaction `json:"interactions"`
-	Error        string         `json:"error,omitempty"`
+	// Set on cursor reads: the highest seq evicted before being acknowledged.
+	DroppedThrough *int64 `json:"dropped_through,omitempty"`
+	Error          string `json:"error,omitempty"`
+}
+
+// CursorRead is a non-destructive read of a hook's interactions past a cursor.
+type CursorRead struct {
+	Interactions []*Interaction
+	// DroppedThrough is the highest seq evicted before being acknowledged; a
+	// value above the caller's cursor means interactions were lost.
+	DroppedThrough int64
 }
 
 // HookActivity summarises a long-lived hook that has pending interactions. It
@@ -102,6 +115,7 @@ type HookActivity struct {
 	Hook              *Hook     `json:"hook"`
 	PendingCount      int       `json:"pending_count"`
 	LastInteractionAt time.Time `json:"last_interaction_at"`
+	LastSeq           int64     `json:"last_seq"`
 }
 
 // DNSInteraction creates a DNS interaction
@@ -152,4 +166,26 @@ func SMTPInteraction(id, sourceIP, helo, mailFrom, rcptTo, tag, subject, body st
 			"body":      body,
 		},
 	}
+}
+
+// MatchesMetadata reports whether every filter key is a top-level metadata key
+// whose scalar value, rendered as text, equals the filter value.
+func MatchesMetadata(metadata map[string]any, filter map[string]string) bool {
+	for key, want := range filter {
+		var got string
+		switch v := metadata[key].(type) {
+		case string:
+			got = v
+		case float64:
+			got = strconv.FormatFloat(v, 'f', -1, 64)
+		case bool:
+			got = strconv.FormatBool(v)
+		default:
+			return false
+		}
+		if got != want {
+			return false
+		}
+	}
+	return true
 }

@@ -94,7 +94,9 @@ it survives restarts — the right model for stored-XSS detection, where a paylo
 may fire days after injection and an in-memory-only server would drop the
 interaction silently after a restart. Long-lived hooks are bounded by
 `long_lived.max_ttl` and `long_lived.max_hooks`; discover which ones have fired
-with `GET /activity`, then drain them with `GET /poll/:id`.
+with `GET /activity`, then read them with `GET /poll/:id` — preferably with a
+cursor (see [Cursor reads](#cursor-reads-and-acknowledgement)), so nothing is
+deleted before you have stored it.
 
 ### Mail capture (optional)
 
@@ -240,10 +242,45 @@ curl -X POST https://hookd.domain.tld/register \
 Long-lived responses include a non-zero `expires_at` and echo `metadata`.
 Registering past `long_lived.max_hooks` returns HTTP 429.
 
+**Request (one hook per entry, each with its own metadata):**
+```bash
+curl -X POST https://hookd.domain.tld/register \
+  -H "X-API-Key: YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"hooks": [
+        {"ttl": "7d", "metadata": {"endpoint_id": "e_412", "param": "bio"}},
+        {"ttl": "7d", "metadata": {"endpoint_id": "e_413", "param": "name"}}
+      ]}'
+```
+
+The response is always `{"hooks": [...]}`, in request order. Up to 500 entries;
+each takes the same `ttl` and `metadata` rules as above, and `hooks` cannot be
+combined with `count`, `ttl` or `metadata`. The batch is all or nothing: an
+invalid entry (reported as `hooks[i]: ...`) or a batch that would exceed
+`long_lived.max_hooks` creates no hook at all.
+
+#### GET /hooks
+
+List every long-lived hook, without its interactions, oldest first — to
+rebuild a client's hook list after it lost local state. Authenticated.
+
+```bash
+curl "https://hookd.domain.tld/hooks?metadata.run_id=0f3a" \
+  -H "X-API-Key: YOUR_TOKEN"
+# {"hooks": [{"id": "abc123", "dns": "...", "expires_at": "...", "metadata": {"run_id": "0f3a"}}]}
+```
+
+**Metadata filter:** each `metadata.<key>=<value>` parameter keeps only hooks
+whose top-level metadata `key` holds `value`. Strings compare as-is, numbers
+and booleans by their JSON text (`42`, `true`); nested objects never match.
+Several parameters must all match. The same filter applies to `GET /activity`.
+
 #### GET /activity
 
 List the long-lived hooks that currently have pending interactions, so you can
 discover which fired without polling each one. Authenticated; mutates nothing.
+Accepts the `metadata.<key>=<value>` filter described under `GET /hooks`, so
+several workers sharing a server each see only their own hooks.
 
 **Request:**
 ```bash
@@ -258,15 +295,20 @@ curl https://hookd.domain.tld/activity \
     {
       "hook": { "id": "abc123", "expires_at": "2025-10-08T10:30:00Z", "metadata": {"field": "profile.bio"} },
       "pending_count": 3,
-      "last_interaction_at": "2025-10-03T14:12:00Z"
+      "last_interaction_at": "2025-10-03T14:12:00Z",
+      "last_seq": 7
     }
   ]
 }
 ```
 
+`pending_count` counts interactions not yet drained or acknowledged; a hook
+whose `last_seq` does not exceed your cursor has nothing new.
+
 #### GET /poll/:id
 
-Retrieve and delete interactions for a single hook. For a hook registered with
+Retrieve and delete interactions for a single hook (see
+[Cursor reads](#cursor-reads-and-acknowledgement) for the non-destructive form). For a hook registered with
 metadata, the response also echoes it under `metadata`.
 
 **Request:**
@@ -281,6 +323,7 @@ curl https://hookd.domain.tld/poll/abc123 \
   "interactions": [
     {
       "id": "int_xyz789",
+      "seq": 1,
       "type": "dns",
       "timestamp": "2025-10-01T10:31:15Z",
       "source_ip": "1.2.3.4",
@@ -291,6 +334,7 @@ curl https://hookd.domain.tld/poll/abc123 \
     },
     {
       "id": "int_abc456",
+      "seq": 2,
       "type": "http",
       "timestamp": "2025-10-01T10:32:00Z",
       "source_ip": "5.6.7.8",
@@ -305,6 +349,39 @@ curl https://hookd.domain.tld/poll/abc123 \
     }
   ]
 }
+```
+
+#### Cursor reads and acknowledgement
+
+Draining deletes interactions before the client has stored them; if the client
+crashes in between, they are gone. A cursor read avoids this: every interaction
+carries a `seq` that increases per hook, `GET /poll/:id?after=<seq>` returns the
+interactions past it without deleting anything, and the client acknowledges
+with `DELETE /poll/:id?through=<seq>` once its own write has committed.
+
+```bash
+curl "https://hookd.domain.tld/poll/abc123?after=0" -H "X-API-Key: YOUR_TOKEN"
+# {"interactions": [{"id": "...", "seq": 1, ...}, {"id": "...", "seq": 2, ...}], "dropped_through": 0}
+
+curl -X DELETE "https://hookd.domain.tld/poll/abc123?through=2" -H "X-API-Key: YOUR_TOKEN"
+# {"acknowledged": 2}
+```
+
+Unacknowledged interactions still count against `eviction.max_per_hook` (and,
+for ephemeral hooks, `eviction.interaction_ttl`). When eviction drops them,
+`dropped_through` reports the highest `seq` lost: a value above your cursor
+means interactions were never read.
+
+Batch forms (`POST /read`, `POST /ack`) take a map of hook ID to seq, up to
+1000 entries. A failed storage operation returns 500 (or a per-hook `error` in
+batch), never an empty success, so retry rather than advance the cursor:
+
+```bash
+curl -X POST https://hookd.domain.tld/read -H "X-API-Key: YOUR_TOKEN" \
+  -d '{"after": {"abc123": 2, "def456": 0}}'
+curl -X POST https://hookd.domain.tld/ack -H "X-API-Key: YOUR_TOKEN" \
+  -d '{"through": {"abc123": 5}}'
+# {"results": {"abc123": {"acknowledged": 3}}}
 ```
 
 #### POST /poll
