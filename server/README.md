@@ -569,6 +569,12 @@ GOOS=darwin GOARCH=amd64 go build -o hookd-darwin-amd64 cmd/hookd/main.go
 
 - **DNS Server**: Captures DNS queries on port 53 (UDP/TCP)
 - **HTTP/HTTPS Server**: Captures HTTP requests with wildcard vhost
+- A registered hook also accepts names with leading labels before its ID,
+  such as `allowed.example.<hook-id>.hookd.example.com`. The DNS, HTTP and SMTP
+  collectors associate these requests (or `anything@<name>` recipients) with
+  `<hook-id>` when the first label is not itself a registered hook. Plain
+  HTTP is needed for these multi-level names unless the deployment has a
+  certificate covering them.
 - **API Server**: REST API for hook management
 - **Storage Manager**: Composite storage — in-memory for ephemeral hooks, SQLite
   for durable long-lived hooks — routed transparently by TTL and hook ID

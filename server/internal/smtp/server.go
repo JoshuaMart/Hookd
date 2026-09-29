@@ -363,7 +363,7 @@ func (ss *session) rcpt(rest string) bool {
 		return ss.reply("452 4.5.3 Too many recipients")
 	}
 
-	id, tag, inDomain := hookIDFromRecipient(addr, ss.srv.domain)
+	id, tag, inDomain := hookIDFromRecipient(addr, ss.srv.domain, ss.srv.storage.Has)
 	if !inDomain {
 		return ss.reply("550 5.7.1 Relay access denied")
 	}

@@ -4,6 +4,7 @@ import "testing"
 
 func TestHookIDFromRecipient(t *testing.T) {
 	const domain = "hookd.example.com"
+	has := func(id string) bool { return id == "a3f9c2d1" }
 
 	tests := []struct {
 		name    string
@@ -28,7 +29,8 @@ func TestHookIDFromRecipient(t *testing.T) {
 
 		{"subdomain fallback", "anything@a3f9c2d1.hookd.example.com", "a3f9c2d1", "", true},
 		{"subdomain fallback with tag", "any+tag@a3f9c2d1.hookd.example.com", "a3f9c2d1", "tag", true},
-		{"deep subdomain", "any@x.a3f9c2d1.hookd.example.com", "x", "", true},
+		{"prefixed subdomain", "any@x.y.a3f9c2d1.hookd.example.com", "a3f9c2d1", "", true},
+		{"prefixed subdomain, unknown tail", "any@x.y.hookd.example.com", "x", "", true},
 
 		{"source route", "<@relay.example.net:a3f9c2d1@hookd.example.com>", "a3f9c2d1", "", true},
 		{"source route without a colon", "<@relay.example.net>", "", "", false},
@@ -49,7 +51,7 @@ func TestHookIDFromRecipient(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			id, tag, ok := hookIDFromRecipient(tt.addr, domain)
+			id, tag, ok := hookIDFromRecipient(tt.addr, domain, has)
 			if ok != tt.wantOK {
 				t.Fatalf("hookIDFromRecipient(%q) ok = %v, want %v", tt.addr, ok, tt.wantOK)
 			}

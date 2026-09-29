@@ -261,6 +261,20 @@ func TestSubdomainFallbackRoutes(t *testing.T) {
 	}
 }
 
+func TestPrefixedSubdomainRoutes(t *testing.T) {
+	srv, store := newTestServer(t, testConfig())
+	hook := store.CreateHook(testDomain, storage.CreateOptions{SMTPEnabled: true})
+
+	c := dial(t, srv)
+	c.greet()
+	c.deliver("x@vendor.test", "anything@allowed.example."+hook.ID+"."+testDomain, "Subject: hi\r\n\r\nbody")
+	c.expect("250")
+
+	if n := len(store.PollInteractions(hook.ID)); n != 1 {
+		t.Fatalf("got %d interactions, want 1", n)
+	}
+}
+
 func TestRelayIsRefused(t *testing.T) {
 	srv, _ := newTestServer(t, testConfig())
 

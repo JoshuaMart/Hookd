@@ -34,3 +34,32 @@ func HookIDFromHost(host, domain string) string {
 	// always returns at least one element, so parts[0] is safe.
 	return strings.Split(subdomain, ".")[0]
 }
+
+// HookIDFromHostTail returns the label immediately before domain. A caller
+// may prepend its own DNS labels to a registered hook, for example
+// allowed.example.<hook-id>.hookd.example; the registered ID is then the tail.
+// Callers must verify that the returned ID exists before storing an event.
+func HookIDFromHostTail(host, domain string) string {
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	suffix := "." + strings.ToLower(strings.TrimSuffix(domain, "."))
+	if !strings.HasSuffix(host, suffix) {
+		return ""
+	}
+	subdomain := strings.TrimSuffix(host, suffix)
+	parts := strings.Split(subdomain, ".")
+	return parts[len(parts)-1]
+}
+
+// ResolveHookID picks the hook a host belongs to: the first label when it is
+// registered, else the tail label when that one is, else the first label so
+// callers keep their usual handling of unknown hooks.
+func ResolveHookID(host, domain string, has func(string) bool) string {
+	id := HookIDFromHost(host, domain)
+	if has(id) {
+		return id
+	}
+	if tail := HookIDFromHostTail(host, domain); has(tail) {
+		return tail
+	}
+	return id
+}
