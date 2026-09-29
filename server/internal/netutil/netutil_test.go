@@ -56,3 +56,37 @@ func TestHookIDFromHostTrailingDotDomain(t *testing.T) {
 		t.Errorf("HookIDFromHost with dotted domain = %q, want %q", got, "abc123")
 	}
 }
+
+func TestHookIDFromHostTail(t *testing.T) {
+	for _, tc := range []struct {
+		host string
+		want string
+	}{
+		{"allowed.bucket.example.abc123.hookd.example.com", "abc123"},
+		{"AbC123.HoOkD.ExAmPlE.CoM.", "abc123"},
+		{"hookd.example.com", ""},
+		{"abc123.evil.com", ""},
+	} {
+		if got := HookIDFromHostTail(tc.host, "hookd.example.com"); got != tc.want {
+			t.Errorf("HookIDFromHostTail(%q) = %q, want %q", tc.host, got, tc.want)
+		}
+	}
+}
+
+func TestResolveHookID(t *testing.T) {
+	has := func(id string) bool { return id == "abc123" || id == "first" }
+	for _, tc := range []struct {
+		host string
+		want string
+	}{
+		{"abc123.hookd.example.com", "abc123"},
+		{"x.y.abc123.hookd.example.com", "abc123"},
+		{"first.abc123.hookd.example.com", "first"},
+		{"x.unknown.hookd.example.com", "x"},
+		{"abc123.evil.com", ""},
+	} {
+		if got := ResolveHookID(tc.host, "hookd.example.com", has); got != tc.want {
+			t.Errorf("ResolveHookID(%q) = %q, want %q", tc.host, got, tc.want)
+		}
+	}
+}

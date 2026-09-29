@@ -186,6 +186,35 @@ func TestServer_HandleDNSRequest_TypeA(t *testing.T) {
 	}
 }
 
+func TestServer_HandleDNSRequest_RegisteredHookAfterPrefixLabels(t *testing.T) {
+	idGen := func() string { return "test-id" }
+	manager := storage.NewMemoryManager(idGen)
+	server, err := NewServer("example.com", 5353, "203.0.113.7", "", manager, acme.NewProvider(slog.Default()), slog.Default(), idGen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hook := manager.CreateHook("example.com", storage.CreateOptions{})
+	qname := "allowed.bucket.example." + hook.ID + ".example.com."
+	m := new(dns.Msg)
+	m.SetQuestion(qname, dns.TypeA)
+	w := &mockResponseWriter{remoteAddr: &net.UDPAddr{IP: net.ParseIP("198.51.100.4"), Port: 12345}}
+	server.handleDNSRequest(w, m)
+	if w.msg == nil || len(w.msg.Answer) != 1 {
+		t.Fatal("prefixed hook name did not resolve")
+	}
+	interactions := manager.PollInteractions(hook.ID)
+	if len(interactions) != 1 || interactions[0].Data["qname"] != qname {
+		t.Fatalf("prefixed DNS request was not attributed to registered hook: %+v", interactions)
+	}
+
+	m = new(dns.Msg)
+	m.SetQuestion("allowed.bucket.example.unknown.example.com.", dns.TypeA)
+	server.handleDNSRequest(w, m)
+	if stats := manager.Stats(); stats.InteractionsTotal != 0 {
+		t.Errorf("stored %d interactions for an unknown prefixed name, want 0", stats.InteractionsTotal)
+	}
+}
+
 func TestServer_HandleDNSRequest_TypeTXT(t *testing.T) {
 	idGen := func() string { return "test-id" }
 	manager := storage.NewMemoryManager(idGen)

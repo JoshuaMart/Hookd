@@ -460,6 +460,35 @@ func TestCaptureHandler_ExtractHookID(t *testing.T) {
 	}
 }
 
+func TestCaptureHandler_RegisteredHookAfterPrefixLabels(t *testing.T) {
+	idGen := func() string { return "event-id" }
+	manager := storage.NewMemoryManager(idGen)
+	hook := manager.CreateHook("example.com", storage.CreateOptions{})
+	handler := NewCaptureHandler(manager, "example.com", slog.Default(), idGen, 0)
+
+	for _, host := range []string{
+		"allowed.bucket.example." + hook.ID + ".example.com",
+		"allowed.bucket.example." + hook.ID + ".example.com:8080",
+		"allowed.bucket.example.unknown.example.com",
+	} {
+		req := httptest.NewRequest(http.MethodGet, "/mapta-control-123", nil)
+		req.Host = host
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s: unexpected status %d", host, w.Code)
+		}
+	}
+
+	if stats := manager.Stats(); stats.InteractionsTotal != 2 {
+		t.Errorf("stored %d interactions, want 2", stats.InteractionsTotal)
+	}
+	interactions := manager.PollInteractions(hook.ID)
+	if len(interactions) != 2 || interactions[0].Data["path"] != "/mapta-control-123" {
+		t.Fatalf("prefixed HTTP requests were not attributed to registered hook: %+v", interactions)
+	}
+}
+
 func TestRespondJSON(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
 		w := httptest.NewRecorder()

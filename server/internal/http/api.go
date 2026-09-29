@@ -729,8 +729,7 @@ func NewCaptureHandler(storage storage.Manager, domain string, logger *slog.Logg
 // ServeHTTP handles all wildcard HTTP requests
 func (h *CaptureHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Extract hook ID from Host header
-	host := r.Host
-	hookID := h.extractHookID(host)
+	hookID := netutil.ResolveHookID(stripPort(r.Host), h.domain, h.storage.Has)
 
 	if hookID == "" {
 		// Not a valid hook subdomain
@@ -807,10 +806,14 @@ func (h *CaptureHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // extractHookID extracts the hook ID from a host header.
 // Example: abc123.hookd.jomar.ovh -> abc123
 func (h *CaptureHandler) extractHookID(host string) string {
-	// Remove port if present. An IPv6 literal is mangled by this, but such a
-	// host never matches the domain suffix anyway.
+	return netutil.HookIDFromHost(stripPort(host), h.domain)
+}
+
+// stripPort removes a port from a Host header. An IPv6 literal is mangled by
+// this, but such a host never matches the domain suffix anyway.
+func stripPort(host string) string {
 	if idx := strings.Index(host, ":"); idx != -1 {
-		host = host[:idx]
+		return host[:idx]
 	}
-	return netutil.HookIDFromHost(host, h.domain)
+	return host
 }
