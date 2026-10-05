@@ -19,15 +19,18 @@ name: Snyk Security
 
 on:
   push:
-    branches: ["main" ]
+    branches: ["main"]
   pull_request:
     branches: ["main"]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
   snyk:
+    # GitHub does not expose SNYK_TOKEN to fork or Dependabot pull requests.
+    if: github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')
     permissions:
       contents: read # for actions/checkout to fetch code
       security-events: write # for github/codeql-action/upload-sarif to upload SARIF results
@@ -36,23 +39,73 @@ jobs:
     env:
       SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.26.x"
+          check-latest: true
+          cache-dependency-path: server/go.sum
+
+      - name: Show Go runtime used by Snyk
+        run: go version
+
       - name: Set up Snyk CLI to check for security issues
-        # Snyk can be used to break the build when it detects security issues.
-        # In this case we want to upload the SAST issues to GitHub Code Scanning
         uses: snyk/actions/setup@806182742461562b67788a64410098c9d9b96adb
 
-        # Runs Snyk Code (SAST) analysis and uploads result into GitHub.
-        # Use || true to not fail the pipeline
+      # Run both scans and publish their reports before enforcing failures.
       - name: Snyk Code test
-        run: snyk code test --sarif > snyk-code.sarif # || true
+        id: snyk_code
+        continue-on-error: true
+        run: |
+          set +e
+          snyk code test --sarif > snyk-code.sarif
+          scan_status=$?
+          echo "exit_code=$scan_status" >> "$GITHUB_OUTPUT"
+          exit "$scan_status"
 
-        # Runs Snyk Open Source (SCA) analysis and uploads result to Snyk.
-      - name: Snyk Open Source monitor
-        run: snyk monitor --all-projects
+      - name: Snyk Open Source test
+        id: snyk_open_source
+        continue-on-error: true
+        run: |
+          set +e
+          snyk test --all-projects --sarif-file-output=snyk-open-source.sarif
+          scan_status=$?
+          echo "exit_code=$scan_status" >> "$GITHUB_OUTPUT"
+          exit "$scan_status"
 
-        # Push the Snyk Code results into GitHub Code Scanning tab
-      - name: Upload result to GitHub Code Scanning
-        uses: github/codeql-action/upload-sarif@v3
+      - name: Upload code results to GitHub Code Scanning
+        if: always() && (steps.snyk_code.outputs.exit_code == '0' || steps.snyk_code.outputs.exit_code == '1') && hashFiles('snyk-code.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: snyk-code.sarif
+          category: snyk-code
+
+      - name: Upload dependency results to GitHub Code Scanning
+        if: always() && (steps.snyk_open_source.outputs.exit_code == '0' || steps.snyk_open_source.outputs.exit_code == '1') && hashFiles('snyk-open-source.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: snyk-open-source.sarif
+          category: snyk-open-source
+
+      - name: Save Snyk reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: snyk-reports
+          path: snyk-*.sarif
+          if-no-files-found: ignore
+
+      # Update the existing CLI snapshots only from the default branch.
+      - name: Snyk Open Source monitor
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        run: snyk monitor --all-projects
+
+      - name: Enforce Snyk scan results
+        if: always() && (steps.snyk_code.outcome == 'failure' || steps.snyk_open_source.outcome == 'failure')
+        run: |
+          echo "::error::Snyk found vulnerabilities or a scan failed. See the scan logs and uploaded reports."
+          exit 1
