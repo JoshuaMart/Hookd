@@ -1,0 +1,25 @@
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /server
+    schedule:
+      interval: weekly
+    allow:
+      - dependency-type: all
+
+  - package-ecosystem: gomod
+    directory: /clients/go
+    schedule:
+      interval: weekly
+    allow:
+      - dependency-type: all
+
+  - package-ecosystem: bundler
+    directory: /clients/ruby
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
