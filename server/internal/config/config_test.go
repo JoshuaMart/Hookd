@@ -27,6 +27,10 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Eviction.MaxPerHook != 1000 {
 		t.Errorf("expected default max_per_hook 1000, got %d", cfg.Eviction.MaxPerHook)
 	}
+
+	if cfg.Observability.MetricsRequireAuth {
+		t.Error("expected metrics to remain public by default")
+	}
 }
 
 func TestConfig_Validate(t *testing.T) {

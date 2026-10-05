@@ -141,6 +141,38 @@ server:
 	}
 }
 
+func TestLoad_MetricsRequireAuth(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		yaml string
+		env  string
+		want bool
+	}{
+		{name: "omitted preserves public metrics", yaml: "observability: {}"},
+		{name: "file enables auth", yaml: "observability:\n  metrics_require_auth: true\n", want: true},
+		{name: "file disables auth", yaml: "observability:\n  metrics_require_auth: false\n"},
+		{name: "env enables auth", yaml: "observability: {}", env: "true", want: true},
+		{name: "env overrides file", yaml: "observability:\n  metrics_require_auth: true\n", env: "false"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			viper.Reset()
+			t.Cleanup(viper.Reset)
+			t.Setenv("HOOKD_OBSERVABILITY_METRICS_REQUIRE_AUTH", tt.env)
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			if err := os.WriteFile(path, []byte(tt.yaml), 0600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Load(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Observability.MetricsRequireAuth != tt.want {
+				t.Errorf("MetricsRequireAuth = %v, want %v", cfg.Observability.MetricsRequireAuth, tt.want)
+			}
+		})
+	}
+}
+
 func TestLoad_InvalidFile(t *testing.T) {
 	viper.Reset()
 

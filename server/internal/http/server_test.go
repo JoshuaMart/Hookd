@@ -2,6 +2,8 @@ package http
 
 import (
 	"context"
+	"crypto/tls"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -599,4 +601,136 @@ func TestServer_MetricsDisabled(t *testing.T) {
 
 	cancel()
 	time.Sleep(100 * time.Millisecond)
+}
+
+func newObservabilityTestServer(obs config.ObservabilityConfig, https config.HTTPSConfig) *Server {
+	idGen := func() string { return "test-id" }
+	manager := storage.NewMemoryManager(idGen)
+	cfg := config.DefaultConfig()
+	cfg.Server.Domain = "example.com"
+	cfg.Server.API.AuthToken = "test-token"
+	cfg.Server.HTTPS = https
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	evictor := eviction.NewEvictor(manager, cfg.Eviction, logger)
+	return NewServer(cfg.Server, cfg.LongLived, obs, manager, evictor, nil, logger, idGen)
+}
+
+func TestServer_Health(t *testing.T) {
+	// Health must stay public over HTTP even when API TLS/auth is required and
+	// metrics are disabled.
+	server := newObservabilityTestServer(config.ObservabilityConfig{MetricsRequireAuth: true},
+		config.HTTPSConfig{Enabled: true, AutoCert: true})
+	handler := server.newHandler()
+
+	for _, path := range []string{"/health", "/healthz"} {
+		for _, host := range []string{"example.com", "127.0.0.1:8080", "hookd.internal"} {
+			for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodPost} {
+				t.Run(path+"/"+host+"/"+method, func(t *testing.T) {
+					req := httptest.NewRequest(method, path, nil)
+					req.Host = host
+					w := httptest.NewRecorder()
+					handler.ServeHTTP(w, req)
+					if method == http.MethodPost {
+						if w.Code != http.StatusMethodNotAllowed || w.Header().Get("Allow") != "GET, HEAD" {
+							t.Fatalf("expected 405 with Allow: GET, HEAD, got %d, %v", w.Code, w.Header())
+						}
+						return
+					}
+					if w.Code != http.StatusOK {
+						t.Fatalf("expected public health endpoint to return 200, got %d: %s", w.Code, w.Body)
+					}
+					if w.Header().Get("Content-Type") != "application/json" || w.Header().Get("Cache-Control") != "no-store" {
+						t.Errorf("unexpected health headers: %v", w.Header())
+					}
+					if method == http.MethodHead {
+						if w.Body.Len() != 0 {
+							t.Error("expected empty HEAD response body")
+						}
+						return
+					}
+					var body map[string]string
+					if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+						t.Fatal(err)
+					}
+					if body["status"] != "ok" {
+						t.Errorf("unexpected health response: %v", body)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestServer_MetricsAuthentication(t *testing.T) {
+	for _, tt := range []struct {
+		name        string
+		enabled     bool
+		requireAuth bool
+		https       config.HTTPSConfig
+		tls         bool
+		key         string
+		wantStatus  int
+		wantMetrics bool
+	}{
+		{name: "public by default", enabled: true, wantStatus: http.StatusOK, wantMetrics: true},
+		{name: "public over HTTP with HTTPS enabled", enabled: true, https: config.HTTPSConfig{Enabled: true, AutoCert: true}, wantStatus: http.StatusOK, wantMetrics: true},
+		{name: "missing key", enabled: true, requireAuth: true, wantStatus: http.StatusUnauthorized},
+		{name: "invalid key", enabled: true, requireAuth: true, key: "wrong-token", wantStatus: http.StatusUnauthorized},
+		{name: "valid key with HTTP only", enabled: true, requireAuth: true, key: "test-token", wantStatus: http.StatusOK, wantMetrics: true},
+		{name: "protected metrics require TLS", enabled: true, requireAuth: true, https: config.HTTPSConfig{Enabled: true, AutoCert: true}, key: "test-token", wantStatus: http.StatusUpgradeRequired},
+		{name: "HTTPS without key", enabled: true, requireAuth: true, https: config.HTTPSConfig{Enabled: true, AutoCert: true}, tls: true, wantStatus: http.StatusUnauthorized},
+		{name: "HTTPS with key", enabled: true, requireAuth: true, https: config.HTTPSConfig{Enabled: true, AutoCert: true}, tls: true, key: "test-token", wantStatus: http.StatusOK, wantMetrics: true},
+		{name: "autocert disabled keeps HTTP usable", enabled: true, requireAuth: true, https: config.HTTPSConfig{Enabled: true}, key: "test-token", wantStatus: http.StatusOK, wantMetrics: true},
+		{name: "disabled public metrics", wantStatus: http.StatusOK},
+		{name: "disabled protected metrics", requireAuth: true, key: "test-token", wantStatus: http.StatusOK},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			server := newObservabilityTestServer(config.ObservabilityConfig{
+				MetricsEnabled: tt.enabled, MetricsRequireAuth: tt.requireAuth,
+			}, tt.https)
+			req := httptest.NewRequest(http.MethodGet, "http://example.com/metrics", nil)
+			req.Header.Set("X-API-Key", tt.key)
+			if tt.tls {
+				req.TLS = &tls.ConnectionState{}
+			}
+			w := httptest.NewRecorder()
+			server.newHandler().ServeHTTP(w, req)
+			if w.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d: %s", w.Code, tt.wantStatus, w.Body)
+			}
+			var body map[string]json.RawMessage
+			if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+				if tt.wantMetrics || tt.enabled {
+					t.Fatalf("expected JSON response: %v", err)
+				}
+			}
+			for _, key := range []string{"hooks", "interactions", "evictions", "memory"} {
+				if _, present := body[key]; present != tt.wantMetrics {
+					t.Errorf("metrics field %q present = %v, want %v: %s", key, present, tt.wantMetrics, w.Body)
+				}
+			}
+		})
+	}
+}
+
+func TestServer_ObservabilityPathsOnHookHost(t *testing.T) {
+	server := newObservabilityTestServer(config.ObservabilityConfig{MetricsEnabled: true, MetricsRequireAuth: true},
+		config.HTTPSConfig{Enabled: true, AutoCert: true})
+	handler := server.newHandler()
+	hook := server.storage.CreateHook("example.com", storage.CreateOptions{})
+	for _, path := range []string{"/health", "/healthz", "/metrics"} {
+		t.Run(path, func(t *testing.T) {
+			before := len(server.storage.PollInteractions(hook.ID))
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			req.Host = hook.ID + ".example.com"
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, req)
+			if w.Code != http.StatusOK {
+				t.Fatalf("expected hook capture to return 200, got %d", w.Code)
+			}
+			if after := len(server.storage.PollInteractions(hook.ID)); after != before+1 {
+				t.Errorf("expected callback to be captured, interactions: before=%d after=%d", before, after)
+			}
+		})
+	}
 }

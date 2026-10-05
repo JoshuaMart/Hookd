@@ -128,6 +128,11 @@ observability:
   # Enable /metrics endpoint
   metrics_enabled: true
 
+  # Require the server.api.auth_token in the X-API-Key header for /metrics.
+  # Uses the same HTTPS requirement as the API when autocert is enabled.
+  # false preserves public metrics access. /health and /healthz are always public.
+  metrics_require_auth: false
+
   # Log level: debug, info, warn, error
   log_level: "info"
 

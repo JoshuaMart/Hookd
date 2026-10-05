@@ -81,6 +81,7 @@ long_lived:
 
 observability:
   metrics_enabled: true
+  metrics_require_auth: false # true requires the API key for /metrics
   log_level: "info"
   log_format: "json"
 ```
@@ -424,13 +425,29 @@ curl -X POST https://hookd.domain.tld/poll \
 }
 ```
 
+#### GET /health and GET /healthz
+
+Public HTTP liveness probes returning `200` with `{"status":"ok"}`. Both support
+`HEAD` and remain available over HTTP when the API requires HTTPS. These probes
+do not check DNS, SMTP, or storage. Use the apex domain, server IP, or proxy
+hostname; requests to hook subdomains are captured instead.
+
+```bash
+curl https://hookd.domain.tld/healthz
+```
+
 #### GET /metrics
 
-Get server metrics (no authentication required).
+Get server metrics, public by default. Set `observability.metrics_require_auth: true`
+to require `X-API-Key: <server.api.auth_token>` and apply the API's HTTPS policy.
+The endpoint is not mounted when `observability.metrics_enabled: false`.
+Override the auth setting via `HOOKD_OBSERVABILITY_METRICS_REQUIRE_AUTH` if needed.
 
 **Request:**
 ```bash
 curl https://hookd.domain.tld/metrics
+# When metrics_require_auth is true:
+curl -H "X-API-Key: YOUR_TOKEN" https://hookd.domain.tld/metrics
 ```
 
 **Response:**

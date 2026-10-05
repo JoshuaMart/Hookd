@@ -38,6 +38,7 @@ var configKeys = []string{
 	"eviction.max_memory_mb",
 	"eviction.cleanup_interval",
 	"observability.metrics_enabled",
+	"observability.metrics_require_auth",
 	"observability.log_level",
 	"observability.log_format",
 	"long_lived.enabled",
