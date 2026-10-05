@@ -108,9 +108,11 @@ type LongLivedConfig struct {
 
 // ObservabilityConfig holds observability configuration
 type ObservabilityConfig struct {
-	MetricsEnabled bool   `mapstructure:"metrics_enabled"`
-	LogLevel       string `mapstructure:"log_level"`
-	LogFormat      string `mapstructure:"log_format"`
+	MetricsEnabled bool `mapstructure:"metrics_enabled"`
+	// MetricsRequireAuth protects /metrics with the API token and TLS policy.
+	MetricsRequireAuth bool   `mapstructure:"metrics_require_auth"`
+	LogLevel           string `mapstructure:"log_level"`
+	LogFormat          string `mapstructure:"log_format"`
 }
 
 // DefaultConfig returns a configuration with sensible defaults
@@ -154,9 +156,10 @@ func DefaultConfig() *Config {
 			CleanupInterval:         10 * time.Second,
 		},
 		Observability: ObservabilityConfig{
-			MetricsEnabled: true,
-			LogLevel:       "info",
-			LogFormat:      "json",
+			MetricsEnabled:     true,
+			MetricsRequireAuth: false,
+			LogLevel:           "info",
+			LogFormat:          "json",
 		},
 		LongLived: LongLivedConfig{
 			Enabled:                 true,

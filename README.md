@@ -108,6 +108,7 @@ eviction:
 
 observability:
   metrics_enabled: true
+  metrics_require_auth: false   # true requires the API key for /metrics
   log_level: "info"
   log_format: "json"
 ```
@@ -324,13 +325,29 @@ curl https://hookd.example.com/activity \
 
 </details>
 
+### `GET /health` and `GET /healthz`
+
+Public HTTP liveness probes returning `200` with `{"status":"ok"}`. Both also
+support `HEAD` and remain available over HTTP when API endpoints require HTTPS.
+They confirm that the HTTP server responds; they do not check DNS, SMTP, or storage.
+Use the apex domain, server IP, or proxy hostname: paths on hook subdomains are captured.
+
+```bash
+curl https://hookd.example.com/healthz
+```
+
 ### `GET /metrics`
 
-Server statistics (no authentication required). Not mounted when
-`observability.metrics_enabled` is `false`.
+Server statistics, public by default. Set `observability.metrics_require_auth: true`
+to require the `X-API-Key` header with `server.api.auth_token` and apply the same
+HTTPS requirement as the API. Not mounted when `observability.metrics_enabled` is
+`false`. The auth setting can also be overridden with
+`HOOKD_OBSERVABILITY_METRICS_REQUIRE_AUTH`.
 
 ```bash
 curl https://hookd.example.com/metrics
+# When metrics_require_auth is true:
+curl -H "X-API-Key: YOUR_TOKEN" https://hookd.example.com/metrics
 ```
 
 ## Clients

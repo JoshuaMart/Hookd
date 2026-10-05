@@ -99,8 +99,8 @@ func newPublicServer(addr string, handler http.Handler, logger *slog.Logger) *ht
 	}
 }
 
-// Start starts the HTTP/HTTPS servers
-func (s *Server) Start(ctx context.Context) error {
+// newHandler builds the shared HTTP/HTTPS routing and middleware.
+func (s *Server) newHandler() http.Handler {
 	// Create handlers
 	apiHandler := NewAPIHandler(s.storage, s.evictor, s.config.Domain, s.longLived, s.config.SMTP.Enabled, s.logger, s.idGenerator)
 	captureHandler := NewCaptureHandler(s.storage, s.config.Domain, s.logger, s.idGenerator, s.evictor.MaxInteractionBodyBytes())
@@ -122,16 +122,45 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.Handle("/activity", apiMW(http.HandlerFunc(apiHandler.HandleActivity)))
 	mux.Handle("/hooks", apiMW(http.HandlerFunc(apiHandler.HandleHooks)))
 
-	// Metrics endpoint (no auth), left unmounted when disabled.
+	// Liveness endpoints stay public, including on HTTP when API TLS is enforced.
+	mux.HandleFunc("/health", handleHealth)
+	mux.HandleFunc("/healthz", handleHealth)
+
+	// Metrics endpoint, left unmounted when disabled.
 	if s.observability.MetricsEnabled {
-		mux.HandleFunc("/metrics", apiHandler.HandleMetrics)
+		var metricsHandler http.Handler = http.HandlerFunc(apiHandler.HandleMetrics)
+		if s.observability.MetricsRequireAuth {
+			metricsHandler = apiMW(metricsHandler)
+		}
+		mux.Handle("/metrics", metricsHandler)
 	}
 
 	// Wildcard capture (everything else)
 	mux.Handle("/", captureHandler)
 
 	// Apply global middleware
-	handler := RecoveryMiddleware(s.logger)(LoggingMiddleware(s.logger)(routeByHost(mux, captureHandler)))
+	return RecoveryMiddleware(s.logger)(LoggingMiddleware(s.logger)(routeByHost(mux, captureHandler)))
+}
+
+// handleHealth reports HTTP liveness; it does not probe DNS, SMTP, or storage.
+func handleHealth(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", "GET, HEAD")
+		respondJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
+		return
+	}
+	if r.Method == http.MethodHead {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	respondJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// Start starts the HTTP/HTTPS servers
+func (s *Server) Start(ctx context.Context) error {
+	handler := s.newHandler()
 
 	errChan := make(chan error, 2)
 
