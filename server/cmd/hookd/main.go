@@ -27,6 +27,12 @@ import (
 var version = "dev"
 
 func main() {
+	os.Exit(runCLI())
+}
+
+// runCLI returns an exit status so CLI behavior can be tested without exiting
+// the process. Listener and storage failures retain their existing messages.
+func runCLI() int {
 	// Register CLI flags
 	config.RegisterFlags()
 	pflag.Parse()
@@ -34,19 +40,19 @@ func main() {
 	// Bind flags to viper
 	if err := viper.BindPFlags(pflag.CommandLine); err != nil {
 		fmt.Fprintf(os.Stderr, "Error binding flags: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 
 	// Handle version flag
 	if viper.GetBool("version") {
 		fmt.Printf("hookd version %s\n", version)
-		os.Exit(0)
+		return 0
 	}
 
 	// Handle help flag
 	if viper.GetBool("help") {
 		printHelp()
-		os.Exit(0)
+		return 0
 	}
 
 	// Load configuration
@@ -54,13 +60,14 @@ func main() {
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error loading configuration: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 
 	if err := run(cfg); err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		return 1
 	}
+	return 0
 }
 
 // run owns the service lifetime and closes storage when startup fails.
