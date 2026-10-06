@@ -135,14 +135,14 @@ func run(cfg *config.Config) error {
 
 	// Start SMTP server if enabled
 	if cfg.Server.SMTP.Enabled {
-		smtpServer, err := smtp.NewServer(
-			cfg.Server.Domain,
-			cfg.Server.SMTP,
-			cfg.Eviction.MaxInteractionBodyBytes,
-			storageManager,
-			logger,
-			idGenerator,
-		)
+		smtpServer, err := smtp.NewServer(smtp.ServerOptions{
+			Domain:       cfg.Server.Domain,
+			SMTP:         cfg.Server.SMTP,
+			MaxBodyBytes: cfg.Eviction.MaxInteractionBodyBytes,
+			Storage:      storageManager,
+			Logger:       logger,
+			IDGenerator:  idGenerator,
+		})
 		if err != nil {
 			return fmt.Errorf("failed to create smtp server: %w", err)
 		}

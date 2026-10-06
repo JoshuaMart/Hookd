@@ -119,14 +119,14 @@ func startServer(t *testing.T, cfg *config.Config, idGenerator func() string) *t
 	// Start SMTP server
 	var smtpServer *smtpserver.Server
 	if cfg.Server.SMTP.Enabled {
-		smtpServer, err = smtpserver.NewServer(
-			cfg.Server.Domain,
-			cfg.Server.SMTP,
-			cfg.Eviction.MaxInteractionBodyBytes,
-			storageManager,
-			logger,
-			idGenerator,
-		)
+		smtpServer, err = smtpserver.NewServer(smtpserver.ServerOptions{
+			Domain:       cfg.Server.Domain,
+			SMTP:         cfg.Server.SMTP,
+			MaxBodyBytes: cfg.Eviction.MaxInteractionBodyBytes,
+			Storage:      storageManager,
+			Logger:       logger,
+			IDGenerator:  idGenerator,
+		})
 		if err != nil {
 			t.Fatalf("failed to create SMTP server: %v", err)
 		}
