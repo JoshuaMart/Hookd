@@ -49,7 +49,14 @@ func newLongLivedHandler(t *testing.T) (*APIHandler, *storage.CompositeManager) 
 		CleanupInterval: time.Second,
 	}, slog.Default())
 
-	handler := NewAPIHandler(composite, evictor, "example.com", llCfg, false, slog.Default(), idGen)
+	handler := NewAPIHandler(APIHandlerOptions{
+		Storage:     composite,
+		Evictor:     evictor,
+		Domain:      "example.com",
+		LongLived:   llCfg,
+		SMTPEnabled: false,
+		Logger:      slog.Default(),
+	})
 	return handler, composite
 }
 
@@ -115,7 +122,14 @@ func TestRegister_LongLivedDisabled(t *testing.T) {
 	mem := storage.NewMemoryManager(idGen)
 	composite := storage.NewCompositeManager(mem, nil, testEphemeralTTL)
 	evictor := eviction.NewEvictor(composite, config.EvictionConfig{HookTTL: testEphemeralTTL}, slog.Default())
-	handler := NewAPIHandler(composite, evictor, "example.com", config.LongLivedConfig{Enabled: false}, false, slog.Default(), idGen)
+	handler := NewAPIHandler(APIHandlerOptions{
+		Storage:     composite,
+		Evictor:     evictor,
+		Domain:      "example.com",
+		LongLived:   config.LongLivedConfig{Enabled: false},
+		SMTPEnabled: false,
+		Logger:      slog.Default(),
+	})
 
 	w := registerBody(t, handler, `{"ttl":"720h"}`)
 	if w.Code != http.StatusBadRequest {
@@ -241,7 +255,14 @@ func TestActivity_EmptyWithoutLongLivedSupport(t *testing.T) {
 	idGen := func() string { return "id-1" }
 	mem := storage.NewMemoryManager(idGen)
 	evictor := eviction.NewEvictor(mem, config.EvictionConfig{HookTTL: testEphemeralTTL}, slog.Default())
-	handler := NewAPIHandler(mem, evictor, "example.com", config.LongLivedConfig{}, false, slog.Default(), idGen)
+	handler := NewAPIHandler(APIHandlerOptions{
+		Storage:     mem,
+		Evictor:     evictor,
+		Domain:      "example.com",
+		LongLived:   config.LongLivedConfig{},
+		SMTPEnabled: false,
+		Logger:      slog.Default(),
+	})
 
 	req := httptest.NewRequest(http.MethodGet, "/activity", nil)
 	w := httptest.NewRecorder()

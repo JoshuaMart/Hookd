@@ -139,16 +139,16 @@ func startServer(t *testing.T, cfg *config.Config, idGenerator func() string) *t
 	}
 
 	// Start HTTP server
-	httpServer := httpserver.NewServer(
-		cfg.Server,
-		cfg.LongLived,
-		cfg.Observability,
-		storageManager,
-		evictor,
-		acmeProvider,
-		logger,
-		idGenerator,
-	)
+	httpServer := httpserver.NewServer(httpserver.ServerOptions{
+		Server:        cfg.Server,
+		LongLived:     cfg.LongLived,
+		Observability: cfg.Observability,
+		Storage:       storageManager,
+		Evictor:       evictor,
+		ACMEProvider:  acmeProvider,
+		Logger:        logger,
+		IDGenerator:   idGenerator,
+	})
 
 	go func() {
 		if err := httpServer.Start(ctx); err != nil {

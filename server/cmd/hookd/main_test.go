@@ -2,6 +2,9 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -10,6 +13,32 @@ import (
 
 	"github.com/jomar/hookd/internal/config"
 )
+
+func TestServeCancelsOnlyOnFailure(t *testing.T) {
+	for _, fail := range []bool{false, true} {
+		t.Run(fmt.Sprintf("failure=%t", fail), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			var logs bytes.Buffer
+			logger := slog.New(slog.NewTextHandler(&logs, nil))
+			serve(ctx, cancel, logger, "test", func(received context.Context) error {
+				if received != ctx {
+					t.Fatal("listener did not receive shared context")
+				}
+				if fail {
+					return errors.New("listener failed")
+				}
+				return nil
+			})
+			if (ctx.Err() != nil) != fail {
+				t.Fatalf("unexpected cancellation: %v", ctx.Err())
+			}
+			if strings.Contains(logs.String(), "listener failed") != fail {
+				t.Fatalf("unexpected error log: %s", logs.String())
+			}
+		})
+	}
+}
 
 func TestSetupLogger(t *testing.T) {
 	tests := []struct {

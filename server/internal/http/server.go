@@ -56,18 +56,29 @@ type Server struct {
 	httpsServer  *http.Server
 }
 
-// NewServer creates a new HTTP/HTTPS server
-func NewServer(cfg config.ServerConfig, longLived config.LongLivedConfig, obs config.ObservabilityConfig, storage storage.Manager, evictor *eviction.Evictor, acmeProvider *acme.Provider, logger *slog.Logger, idGenerator func() string) *Server {
-	return &Server{
-		config:        cfg,
-		longLived:     longLived,
-		observability: obs,
+// ServerOptions groups listener configuration and runtime dependencies.
+type ServerOptions struct {
+	Server        config.ServerConfig
+	LongLived     config.LongLivedConfig
+	Observability config.ObservabilityConfig
+	Storage       storage.Manager
+	Evictor       *eviction.Evictor
+	ACMEProvider  *acme.Provider
+	Logger        *slog.Logger
+	IDGenerator   func() string
+}
 
-		storage:      storage,
-		evictor:      evictor,
-		acmeProvider: acmeProvider,
-		logger:       logger,
-		idGenerator:  idGenerator,
+// NewServer creates a new HTTP/HTTPS server.
+func NewServer(opts ServerOptions) *Server {
+	return &Server{
+		config:        opts.Server,
+		longLived:     opts.LongLived,
+		observability: opts.Observability,
+		storage:       opts.Storage,
+		evictor:       opts.Evictor,
+		acmeProvider:  opts.ACMEProvider,
+		logger:        opts.Logger,
+		idGenerator:   opts.IDGenerator,
 	}
 }
 
@@ -102,7 +113,14 @@ func newPublicServer(addr string, handler http.Handler, logger *slog.Logger) *ht
 // newHandler builds the shared HTTP/HTTPS routing and middleware.
 func (s *Server) newHandler() http.Handler {
 	// Create handlers
-	apiHandler := NewAPIHandler(s.storage, s.evictor, s.config.Domain, s.longLived, s.config.SMTP.Enabled, s.logger, s.idGenerator)
+	apiHandler := NewAPIHandler(APIHandlerOptions{
+		Storage:     s.storage,
+		Evictor:     s.evictor,
+		Domain:      s.config.Domain,
+		LongLived:   s.longLived,
+		SMTPEnabled: s.config.SMTP.Enabled,
+		Logger:      s.logger,
+	})
 	captureHandler := NewCaptureHandler(s.storage, s.config.Domain, s.logger, s.idGenerator, s.evictor.MaxInteractionBodyBytes())
 
 	// Create main mux

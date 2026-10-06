@@ -196,6 +196,41 @@ func TestSQLite_EnforcePerHookLimit(t *testing.T) {
 	}
 }
 
+func TestSQLite_TrimHookRollsBackOnCursorUpdateFailure(t *testing.T) {
+	m := newTestSQLite(t, 1024)
+	hook := m.CreateHook("example.com", CreateOptions{TTL: time.Hour})
+	for i := 0; i < 3; i++ {
+		m.AddInteraction(hook.ID, DNSInteraction(fmt.Sprintf("i%d", i), "127.0.0.1", "q", "A"))
+	}
+	// Fail after the deletion, while recording the cursor loss. Neither change
+	// may survive: a reader must never lose interactions without being told.
+	_, err := m.db.Exec(`CREATE TRIGGER fail_cursor_update
+		BEFORE UPDATE OF dropped_through ON hooks
+		BEGIN SELECT RAISE(ABORT, 'cursor update failed'); END`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed, err := m.trimHook(hook.ID, 1); err == nil || removed != 0 {
+		t.Fatalf("expected failed trim with zero removals, got %d, %v", removed, err)
+	}
+	read, err := m.ReadInteractions(hook.ID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(read.Interactions) != 3 || read.DroppedThrough != 0 {
+		t.Fatalf("trim was not rolled back: %+v", read)
+	}
+	if _, err := m.db.Exec(`DROP TRIGGER fail_cursor_update`); err != nil {
+		t.Fatal(err)
+	}
+	if removed, err := m.trimHook(hook.ID, 1); err != nil || removed != 2 {
+		t.Fatalf("expected retry to remove two interactions, got %d, %v", removed, err)
+	}
+	if removed, err := m.trimHook(hook.ID, 1); err != nil || removed != 0 {
+		t.Fatalf("expected no-op trim, got %d, %v", removed, err)
+	}
+}
+
 func TestSQLite_LongLivedActivity(t *testing.T) {
 	m := newTestSQLite(t, 1024)
 

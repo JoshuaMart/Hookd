@@ -708,8 +708,21 @@ func (m *SQLiteManager) trimHook(hookID string, max int) (int, error) {
 	}
 	defer tx.Rollback()
 
+	n, err := trimHookInteractions(tx, hookID, max)
+	if err != nil || n == 0 {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
+// trimHookInteractions deletes overflow and records cursor loss in the same
+// transaction. The caller rolls both changes back if either operation fails.
+func trimHookInteractions(tx *sql.Tx, hookID string, max int) (int, error) {
 	var cutoff int64
-	err = tx.QueryRow(
+	err := tx.QueryRow(
 		`SELECT seq FROM interactions WHERE hook_id = ? ORDER BY seq DESC LIMIT 1 OFFSET ?`, hookID, max,
 	).Scan(&cutoff)
 	if err == sql.ErrNoRows {
@@ -726,9 +739,6 @@ func (m *SQLiteManager) trimHook(hookID string, max int) (int, error) {
 	if _, err := tx.Exec(
 		`UPDATE hooks SET dropped_through = MAX(dropped_through, ?) WHERE id = ?`, cutoff, hookID,
 	); err != nil {
-		return 0, err
-	}
-	if err := tx.Commit(); err != nil {
 		return 0, err
 	}
 	n, _ := res.RowsAffected()
