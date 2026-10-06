@@ -3,30 +3,15 @@ package http
 import (
 	"context"
 	"fmt"
-	"log"
 	"log/slog"
 	"net/http"
-	"strings"
 	"time"
 
-	"github.com/caddyserver/certmagic"
 	"github.com/jomar/hookd/internal/acme"
 	"github.com/jomar/hookd/internal/config"
 	"github.com/jomar/hookd/internal/eviction"
 	"github.com/jomar/hookd/internal/storage"
 )
-
-// defaultACMEResolvers are the public recursive resolvers CertMagic uses to
-// self-check DNS-01 challenge propagation when server.https.resolvers is unset
-// (Cloudflare + Google, matching interactsh's defaults).
-func defaultACMEResolvers() []string {
-	return []string{
-		"1.1.1.1:53",
-		"1.0.0.1:53",
-		"8.8.8.8:53",
-		"8.8.4.4:53",
-	}
-}
 
 // Deadlines for the public listeners: without them a slow request holds its
 // socket and goroutine forever.
@@ -82,19 +67,6 @@ func NewServer(opts ServerOptions) *Server {
 	}
 }
 
-// routeByHost sends hook subdomains to the capture handler, everything else to
-// the API mux. On paths alone a callback to /register would get a 401 from the
-// API and never be recorded.
-func routeByHost(apiMux http.Handler, capture *CaptureHandler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if capture.extractHookID(r.Host) != "" {
-			capture.ServeHTTP(w, r)
-			return
-		}
-		apiMux.ServeHTTP(w, r)
-	})
-}
-
 // newPublicServer applies the shared deadline policy, so a new listener cannot
 // inherit net/http's zero values (meaning no deadline).
 func newPublicServer(addr string, handler http.Handler, logger *slog.Logger) *http.Server {
@@ -110,223 +82,50 @@ func newPublicServer(addr string, handler http.Handler, logger *slog.Logger) *ht
 	}
 }
 
-// newHandler builds the shared HTTP/HTTPS routing and middleware.
-func (s *Server) newHandler() http.Handler {
-	// Create handlers
-	apiHandler := NewAPIHandler(APIHandlerOptions{
-		Storage:     s.storage,
-		Evictor:     s.evictor,
-		Domain:      s.config.Domain,
-		LongLived:   s.longLived,
-		SMTPEnabled: s.config.SMTP.Enabled,
-		Logger:      s.logger,
-	})
-	captureHandler := NewCaptureHandler(s.storage, s.config.Domain, s.logger, s.idGenerator, s.evictor.MaxInteractionBodyBytes())
-
-	// Create main mux
-	mux := http.NewServeMux()
-
-	// API endpoints. TLS is enforced ahead of auth, on the same condition as the
-	// HTTPS listener below — enforcing it without one would strand the API.
-	authMW := AuthMiddleware(s.config.API.AuthToken, s.logger)
-	tlsMW := RequireTLSMiddleware(s.config.HTTPS.Enabled && s.config.HTTPS.AutoCert, s.logger)
-	apiMW := func(h http.Handler) http.Handler { return tlsMW(authMW(h)) }
-
-	mux.Handle("/register", apiMW(http.HandlerFunc(apiHandler.HandleRegister)))
-	mux.Handle("/poll", apiMW(http.HandlerFunc(apiHandler.HandlePollBatch)))
-	mux.Handle("/poll/", apiMW(http.HandlerFunc(apiHandler.HandlePoll)))
-	mux.Handle("/read", apiMW(http.HandlerFunc(apiHandler.HandleRead)))
-	mux.Handle("/ack", apiMW(http.HandlerFunc(apiHandler.HandleAck)))
-	mux.Handle("/activity", apiMW(http.HandlerFunc(apiHandler.HandleActivity)))
-	mux.Handle("/hooks", apiMW(http.HandlerFunc(apiHandler.HandleHooks)))
-
-	// Liveness endpoints stay public, including on HTTP when API TLS is enforced.
-	mux.HandleFunc("/health", handleHealth)
-	mux.HandleFunc("/healthz", handleHealth)
-
-	// Metrics endpoint, left unmounted when disabled.
-	if s.observability.MetricsEnabled {
-		var metricsHandler http.Handler = http.HandlerFunc(apiHandler.HandleMetrics)
-		if s.observability.MetricsRequireAuth {
-			metricsHandler = apiMW(metricsHandler)
-		}
-		mux.Handle("/metrics", metricsHandler)
-	}
-
-	// Wildcard capture (everything else)
-	mux.Handle("/", captureHandler)
-
-	// Apply global middleware
-	return RecoveryMiddleware(s.logger)(LoggingMiddleware(s.logger)(routeByHost(mux, captureHandler)))
-}
-
-// handleHealth reports HTTP liveness; it does not probe DNS, SMTP, or storage.
-func handleHealth(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Cache-Control", "no-store")
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		w.Header().Set("Allow", "GET, HEAD")
-		respondJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
-		return
-	}
-	if r.Method == http.MethodHead {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-	respondJSON(w, http.StatusOK, map[string]string{"status": "ok"})
-}
-
-// Start starts the HTTP/HTTPS servers
+// Start starts the HTTP/HTTPS servers.
 func (s *Server) Start(ctx context.Context) error {
 	handler := s.newHandler()
-
 	errChan := make(chan error, 2)
-
-	// Start HTTPS server if enabled
-	if s.config.HTTPS.Enabled {
-		if s.config.HTTPS.AutoCert {
-			// Configure CertMagic with DNS-01 challenge using our custom provider
-			s.logger.Info("configuring certmagic for wildcard certificate",
-				"domain", s.config.Domain,
-				"cache_dir", s.config.HTTPS.CacheDir)
-
-			// Recursive resolvers CertMagic uses to self-check challenge
-			// propagation. These are scoped to the ACME solver only — the
-			// process's own name resolution is left on the system resolver, so a
-			// correctly bound DNS server (see server.dns.bind_address) does not
-			// require overriding net.DefaultResolver or stopping the host's stub
-			// resolver.
-			resolvers := s.config.HTTPS.Resolvers
-			if len(resolvers) == 0 {
-				resolvers = defaultACMEResolvers()
-			}
-			s.logger.Info("acme dns-01 self-check resolvers", "resolvers", resolvers)
-
-			// Configure CertMagic defaults
-			certmagic.DefaultACME.Agreed = true
-			certmagic.DefaultACME.CA = certmagic.LetsEncryptProductionCA
-			certmagic.DefaultACME.DisableHTTPChallenge = true
-			certmagic.DefaultACME.DisableTLSALPNChallenge = true
-			certmagic.DefaultACME.DNS01Solver = &certmagic.DNS01Solver{
-				DNSManager: certmagic.DNSManager{
-					DNSProvider: s.acmeProvider,
-					Resolvers:   resolvers,
-				},
-			}
-
-			// Create CertMagic config
-			certmagicConfig := certmagic.NewDefault()
-			certmagicConfig.Storage = &certmagic.FileStorage{Path: s.config.HTTPS.CacheDir}
-
-			// Create ACME issuer with DNS-01 solver
-			issuer := certmagic.NewACMEIssuer(certmagicConfig, certmagic.ACMEIssuer{
-				CA:                      certmagic.LetsEncryptProductionCA,
-				Agreed:                  true,
-				DisableHTTPChallenge:    true,
-				DisableTLSALPNChallenge: true,
-				DNS01Solver: &certmagic.DNS01Solver{
-					DNSManager: certmagic.DNSManager{
-						DNSProvider: s.acmeProvider,
-						Resolvers:   resolvers,
-					},
-				},
-			})
-			certmagicConfig.Issuers = []certmagic.Issuer{issuer}
-
-			// Manage certificates for domain and wildcard
-			domains := []string{s.config.Domain, "*." + s.config.Domain}
-
-			s.logger.Info("obtaining wildcard certificate via DNS-01",
-				"domains", domains,
-				"cache_dir", s.config.HTTPS.CacheDir)
-
-			// Obtain certificates synchronously
-			err := certmagicConfig.ManageSync(context.Background(), domains)
-			if err != nil {
-				s.logger.Error("failed to obtain certificates", "error", err)
-				return fmt.Errorf("failed to obtain certificates: %w", err)
-			}
-
-			s.logger.Info("wildcard certificate obtained successfully")
-
-			// Get TLS config from CertMagic
-			tlsConfig := certmagicConfig.TLSConfig()
-			tlsConfig.NextProtos = append([]string{"h2", "http/1.1"}, tlsConfig.NextProtos...)
-
-			s.httpsServer = newPublicServer(fmt.Sprintf(":%d", s.config.HTTPS.Port), handler, s.logger)
-			s.httpsServer.TLSConfig = tlsConfig
-
-			go func() {
-				s.logger.Info("https server starting (certmagic wildcard)",
-					"port", s.config.HTTPS.Port,
-					"domains", domains)
-
-				if err := s.httpsServer.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
-					errChan <- fmt.Errorf("https server error: %w", err)
-				}
-			}()
-		} else {
-			s.logger.Warn("https enabled but autocert is false - manual TLS not yet implemented")
-		}
+	if err := s.startHTTPS(handler, errChan); err != nil {
+		return err
 	}
-
-	// Always start HTTP server on configured port
-	if s.httpServer == nil {
-		s.httpServer = newPublicServer(fmt.Sprintf(":%d", s.config.HTTP.Port), handler, s.logger)
-
-		go func() {
-			s.logger.Info("http server starting", "port", s.config.HTTP.Port)
-			if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-				errChan <- fmt.Errorf("http server error: %w", err)
-			}
-		}()
-	}
-
-	// Wait for context cancellation or error
+	s.startHTTP(handler, errChan)
 	select {
 	case <-ctx.Done():
-		s.logger.Info("http server shutting down")
-
-		// Draining is best-effort: a stalled client must not block the exit.
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
-		defer cancel()
-
-		if s.httpServer != nil {
-			if err := s.httpServer.Shutdown(shutdownCtx); err != nil {
-				s.logger.Error("http server shutdown error", "error", err)
-			}
-		}
-		if s.httpsServer != nil {
-			if err := s.httpsServer.Shutdown(shutdownCtx); err != nil {
-				s.logger.Error("https server shutdown error", "error", err)
-			}
-		}
+		s.shutdown()
 		return nil
 	case err := <-errChan:
 		return err
 	}
 }
 
-// suppressedTLSWriter wraps a logger to filter out TLS handshake errors
-type suppressedTLSWriter struct {
-	logger *slog.Logger
-}
-
-func (w *suppressedTLSWriter) Write(p []byte) (n int, err error) {
-	msg := string(p)
-
-	// Suppress TLS handshake errors (common from bots/scanners)
-	if strings.Contains(msg, "TLS handshake error") ||
-		strings.Contains(msg, "no certificate available") {
-		return len(p), nil
+// startHTTP starts the plain HTTP listener once.
+func (s *Server) startHTTP(handler http.Handler, errChan chan<- error) {
+	if s.httpServer != nil {
+		return
 	}
-
-	// Log other errors through slog
-	w.logger.Error("http server error", "message", strings.TrimSpace(msg))
-	return len(p), nil
+	s.httpServer = newPublicServer(fmt.Sprintf(":%d", s.config.HTTP.Port), handler, s.logger)
+	go func() {
+		s.logger.Info("http server starting", "port", s.config.HTTP.Port)
+		if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			errChan <- fmt.Errorf("http server error: %w", err)
+		}
+	}()
 }
 
-// newSuppressedTLSLogger creates a logger that suppresses TLS handshake errors
-func newSuppressedTLSLogger(logger *slog.Logger) *log.Logger {
-	return log.New(&suppressedTLSWriter{logger: logger}, "", 0)
+// shutdown shares one bounded draining budget between the two listeners.
+func (s *Server) shutdown() {
+	s.logger.Info("http server shutting down")
+	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+	for _, listener := range []struct {
+		name   string
+		server *http.Server
+	}{{"http", s.httpServer}, {"https", s.httpsServer}} {
+		if listener.server != nil {
+			if err := listener.server.Shutdown(ctx); err != nil {
+				s.logger.Error(listener.name+" server shutdown error", "error", err)
+			}
+		}
+	}
 }
