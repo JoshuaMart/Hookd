@@ -26,7 +26,14 @@ func newSMTPTestHandler(t *testing.T, smtpEnabled bool) *APIHandler {
 		MaxMemoryMB:     100,
 	}, logger)
 
-	return NewAPIHandler(manager, evictor, "hookd.example.com", config.LongLivedConfig{}, smtpEnabled, logger, idGen)
+	return NewAPIHandler(APIHandlerOptions{
+		Storage:     manager,
+		Evictor:     evictor,
+		Domain:      "hookd.example.com",
+		LongLived:   config.LongLivedConfig{},
+		SMTPEnabled: smtpEnabled,
+		Logger:      logger,
+	})
 }
 
 func registerOne(t *testing.T, handler *APIHandler) map[string]any {
@@ -74,7 +81,14 @@ func TestMetricsReportSMTPInteractions(t *testing.T) {
 		MaxPerHook:      100,
 		MaxMemoryMB:     100,
 	}, logger)
-	handler := NewAPIHandler(manager, evictor, "hookd.example.com", config.LongLivedConfig{}, true, logger, idGen)
+	handler := NewAPIHandler(APIHandlerOptions{
+		Storage:     manager,
+		Evictor:     evictor,
+		Domain:      "hookd.example.com",
+		LongLived:   config.LongLivedConfig{},
+		SMTPEnabled: true,
+		Logger:      logger,
+	})
 
 	hook := manager.CreateHook("hookd.example.com", storage.CreateOptions{SMTPEnabled: true})
 	manager.AddInteraction(hook.ID, storage.SMTPInteraction("i1", "1.2.3.4", "h", "f", "r", "", "s", "b"))

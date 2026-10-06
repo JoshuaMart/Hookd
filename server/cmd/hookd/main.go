@@ -57,6 +57,14 @@ func main() {
 		os.Exit(1)
 	}
 
+	if err := run(cfg); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+// run owns the service lifetime and closes storage when startup fails.
+func run(cfg *config.Config) error {
 	// Setup logger
 	logger := setupLogger(cfg.Observability)
 
@@ -82,28 +90,11 @@ func main() {
 		return generateID()
 	}
 
-	// Create storage manager: ephemeral hooks live in memory; when enabled,
-	// long-lived hooks are persisted to SQLite so they survive restarts.
-	memoryManager := storage.NewMemoryManager(idGenerator)
-	memoryManager.SetMaxPerHook(cfg.Eviction.MaxPerHook)
-	var longLived *storage.SQLiteManager
-	if cfg.LongLived.Enabled {
-		longLived, err = storage.NewSQLiteManager(
-			cfg.LongLived.DBPath,
-			idGenerator,
-			cfg.LongLived.MaxInteractionBodyBytes,
-			logger,
-		)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error opening long-lived store: %v\n", err)
-			os.Exit(1)
-		}
-		logger.Info("long-lived store enabled",
-			"db_path", cfg.LongLived.DBPath,
-			"max_hooks", cfg.LongLived.MaxHooks,
-			"max_ttl", cfg.LongLived.MaxTTL)
+	storageManager, err := openStorage(cfg, logger, idGenerator)
+	if err != nil {
+		return err
 	}
-	storageManager := storage.NewCompositeManager(memoryManager, longLived, cfg.Eviction.HookTTL)
+
 	defer func() {
 		if err := storageManager.Close(); err != nil {
 			logger.Error("failed to close storage", "error", err)
@@ -136,63 +127,47 @@ func main() {
 			idGenerator,
 		)
 		if err != nil {
-			logger.Error("failed to create dns server", "error", err)
-			os.Exit(1)
+			return fmt.Errorf("failed to create dns server: %w", err)
 		}
 
-		go func() {
-			if err := dnsServer.Start(ctx); err != nil {
-				logger.Error("dns server error", "error", err)
-				cancel()
-			}
-		}()
+		go serve(ctx, cancel, logger, "dns", dnsServer.Start)
 	}
 
 	// Start SMTP server if enabled
 	if cfg.Server.SMTP.Enabled {
-		smtpServer, err := smtp.NewServer(
-			cfg.Server.Domain,
-			cfg.Server.SMTP,
-			cfg.Eviction.MaxInteractionBodyBytes,
-			storageManager,
-			logger,
-			idGenerator,
-		)
+		smtpServer, err := smtp.NewServer(smtp.ServerOptions{
+			Domain:       cfg.Server.Domain,
+			SMTP:         cfg.Server.SMTP,
+			MaxBodyBytes: cfg.Eviction.MaxInteractionBodyBytes,
+			Storage:      storageManager,
+			Logger:       logger,
+			IDGenerator:  idGenerator,
+		})
 		if err != nil {
-			logger.Error("failed to create smtp server", "error", err)
-			os.Exit(1)
+			return fmt.Errorf("failed to create smtp server: %w", err)
 		}
 
-		go func() {
-			if err := smtpServer.Start(ctx); err != nil {
-				logger.Error("smtp server error", "error", err)
-				cancel()
-			}
-		}()
+		go serve(ctx, cancel, logger, "smtp", smtpServer.Start)
 	}
 
 	// Start HTTP/HTTPS server
-	httpServer := http.NewServer(
-		cfg.Server,
-		cfg.LongLived,
-		cfg.Observability,
-		storageManager,
-		evictor,
-		acmeProvider,
-		logger,
-		idGenerator,
-	)
+	httpServer := http.NewServer(http.ServerOptions{
+		Server:        cfg.Server,
+		LongLived:     cfg.LongLived,
+		Observability: cfg.Observability,
+		Storage:       storageManager,
+		Evictor:       evictor,
+		ACMEProvider:  acmeProvider,
+		Logger:        logger,
+		IDGenerator:   idGenerator,
+	})
 
-	go func() {
-		if err := httpServer.Start(ctx); err != nil {
-			logger.Error("http server error", "error", err)
-			cancel()
-		}
-	}()
+	go serve(ctx, cancel, logger, "http", httpServer.Start)
 
 	// Wait for interrupt signal
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sigChan)
 
 	select {
 	case <-sigChan:
@@ -204,6 +179,41 @@ func main() {
 	// Graceful shutdown
 	cancel()
 	logger.Info("hookd stopped")
+	return nil
+}
+
+// openStorage builds the memory store and optional persistent store.
+func openStorage(cfg *config.Config, logger *slog.Logger, idGenerator func() string) (*storage.CompositeManager, error) {
+	// Create storage manager: ephemeral hooks live in memory; when enabled,
+	// long-lived hooks are persisted to SQLite so they survive restarts.
+	memoryManager := storage.NewMemoryManager(idGenerator)
+	memoryManager.SetMaxPerHook(cfg.Eviction.MaxPerHook)
+	var err error
+	var longLived *storage.SQLiteManager
+	if cfg.LongLived.Enabled {
+		longLived, err = storage.NewSQLiteManager(
+			cfg.LongLived.DBPath,
+			idGenerator,
+			cfg.LongLived.MaxInteractionBodyBytes,
+			logger,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("Error opening long-lived store: %w", err)
+		}
+		logger.Info("long-lived store enabled",
+			"db_path", cfg.LongLived.DBPath,
+			"max_hooks", cfg.LongLived.MaxHooks,
+			"max_ttl", cfg.LongLived.MaxTTL)
+	}
+	return storage.NewCompositeManager(memoryManager, longLived, cfg.Eviction.HookTTL), nil
+}
+
+// serve cancels the shared context when a listener fails.
+func serve(ctx context.Context, cancel context.CancelFunc, logger *slog.Logger, name string, start func(context.Context) error) {
+	if err := start(ctx); err != nil {
+		logger.Error(name+" server error", "error", err)
+		cancel()
+	}
 }
 
 // tokenFingerprint names which credential is in use without disclosing it.

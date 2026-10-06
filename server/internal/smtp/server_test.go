@@ -45,7 +45,14 @@ func newTestServerWithCap(t *testing.T, cfg config.SMTPConfig, maxBodyBytes int)
 	store := storage.NewMemoryManager(idGenerator)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	srv, err := NewServer(testDomain, cfg, maxBodyBytes, store, logger, idGenerator)
+	srv, err := NewServer(ServerOptions{
+		Domain:       testDomain,
+		SMTP:         cfg,
+		MaxBodyBytes: maxBodyBytes,
+		Storage:      store,
+		Logger:       logger,
+		IDGenerator:  idGenerator,
+	})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
@@ -356,6 +363,17 @@ func TestOversizedMessageIsRejected(t *testing.T) {
 	// Still usable: the oversized message was drained, not abandoned.
 	c.send("NOOP")
 	c.expect("250")
+
+	// A new transaction must not inherit the rejected message's sender,
+	// recipients or size accounting.
+	c.deliver("retry@vendor.test", hook.ID+"@"+testDomain, "Subject: retry\r\n\r\nsmall body")
+	c.expect("250")
+	interactions := store.PollInteractions(hook.ID)
+	if len(interactions) != 1 {
+		t.Fatalf("got %d interactions after retry, want 1", len(interactions))
+	}
+	assertData(t, interactions[0], "mail_from", "retry@vendor.test")
+	assertData(t, interactions[0], "subject", "retry")
 }
 
 func TestOversizedSizeParameterIsRefusedEarly(t *testing.T) {

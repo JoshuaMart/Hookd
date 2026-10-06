@@ -30,6 +30,43 @@ func TestSQLite_CreateLongLivedHooksAllOrNothing(t *testing.T) {
 	}
 }
 
+func TestSQLite_HookBatchRollsBackOnInsertFailure(t *testing.T) {
+	for _, failure := range []string{"metadata", "insert"} {
+		t.Run(failure, func(t *testing.T) {
+			m := newTestSQLite(t, 1024)
+			existing, err := m.CreateLongLivedHook("example.com", CreateOptions{TTL: time.Hour}, 3)
+			if err != nil {
+				t.Fatal(err)
+			}
+			batch := []CreateOptions{{TTL: time.Hour}, {TTL: time.Hour}}
+			if failure == "metadata" {
+				batch[1].Metadata = map[string]any{"unsupported": make(chan int)}
+			} else {
+				_, err := m.db.Exec(`CREATE TRIGGER reject_hook BEFORE INSERT ON hooks
+					WHEN NEW.id = 'hook-3'
+					BEGIN SELECT RAISE(ABORT, 'insert failed'); END`)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			if hooks, err := m.CreateLongLivedHooks("example.com", batch, 3); err == nil || hooks != nil {
+				t.Fatalf("expected a failed batch, got %v, %v", hooks, err)
+			}
+			if m.LongLivedCount() != 1 || !m.Has(existing.ID) || m.Has("hook-2") || m.Has("hook-3") {
+				t.Fatal("failed batch changed the hook index")
+			}
+			hooks, err := m.LongLivedHooks()
+			if err != nil || len(hooks) != 1 || hooks[0].ID != existing.ID {
+				t.Fatalf("failed batch changed persisted hooks: %v, %v", hooks, err)
+			}
+			// A rollback must release the writer and leave the capacity available.
+			if _, err := m.CreateLongLivedHook("example.com", CreateOptions{TTL: time.Hour}, 2); err != nil {
+				t.Fatalf("registration after rollback: %v", err)
+			}
+		})
+	}
+}
+
 func TestSQLite_LongLivedHooks(t *testing.T) {
 	m := newTestSQLite(t, 1024)
 	first := m.CreateHook("example.com", CreateOptions{TTL: time.Hour, Metadata: map[string]any{"run": "a"}})
