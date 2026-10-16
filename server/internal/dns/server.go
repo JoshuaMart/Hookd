@@ -135,8 +135,7 @@ func (s *Server) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 		}
 
 		// Extract hook ID from domain
-		hookID := netutil.ResolveHookID(q.Name, s.domain, s.storage.Has)
-		if hookID != "" {
+		if hookID, found := netutil.ResolveHookID(q.Name, s.domain, s.storage.Has); found {
 			// Log interaction
 			sourceIP := netutil.ExtractIP(w.RemoteAddr().String())
 			interaction := storage.DNSInteraction(

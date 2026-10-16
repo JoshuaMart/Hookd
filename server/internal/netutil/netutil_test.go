@@ -1,6 +1,9 @@
 package netutil
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 func TestExtractIP(t *testing.T) {
 	tests := []struct {
@@ -74,19 +77,31 @@ func TestHookIDFromHostTail(t *testing.T) {
 }
 
 func TestResolveHookID(t *testing.T) {
-	has := func(id string) bool { return id == "abc123" || id == "first" }
 	for _, tc := range []struct {
-		host string
-		want string
+		host      string
+		want      string
+		wantFound bool
+		wantCalls []string
 	}{
-		{"abc123.hookd.example.com", "abc123"},
-		{"x.y.abc123.hookd.example.com", "abc123"},
-		{"first.abc123.hookd.example.com", "first"},
-		{"x.unknown.hookd.example.com", "x"},
-		{"abc123.evil.com", ""},
+		{"abc123.hookd.example.com", "abc123", true, []string{"abc123"}},
+		{"x.y.abc123.hookd.example.com", "abc123", true, []string{"x", "abc123"}},
+		{"first.abc123.hookd.example.com", "first", true, []string{"first"}},
+		{"x.unknown.hookd.example.com", "x", false, []string{"x", "unknown"}},
+		// A single label is its own tail: one lookup, not two.
+		{"nope.hookd.example.com", "nope", false, []string{"nope"}},
+		{"abc123.evil.com", "", false, nil},
 	} {
-		if got := ResolveHookID(tc.host, "hookd.example.com", has); got != tc.want {
-			t.Errorf("ResolveHookID(%q) = %q, want %q", tc.host, got, tc.want)
+		var calls []string
+		has := func(id string) bool {
+			calls = append(calls, id)
+			return id == "abc123" || id == "first"
+		}
+		got, found := ResolveHookID(tc.host, "hookd.example.com", has)
+		if got != tc.want || found != tc.wantFound {
+			t.Errorf("ResolveHookID(%q) = (%q, %v), want (%q, %v)", tc.host, got, found, tc.want, tc.wantFound)
+		}
+		if !slices.Equal(calls, tc.wantCalls) {
+			t.Errorf("ResolveHookID(%q) asked has(%q), want %q", tc.host, calls, tc.wantCalls)
 		}
 	}
 }
