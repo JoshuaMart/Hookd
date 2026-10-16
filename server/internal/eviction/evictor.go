@@ -72,6 +72,12 @@ func (e *Evictor) Start(ctx context.Context) {
 
 // runEviction performs all eviction strategies
 func (e *Evictor) runEviction() {
+	// A shared store needs one pass per tick, not one per instance. The lease
+	// outlives a few ticks so a slow pass does not hand it over mid-way.
+	if leaser, ok := e.storage.(storage.EvictionLeaser); ok && !leaser.HoldEvictionLease(3*e.config.CleanupInterval) {
+		return
+	}
+
 	// 1. TTL-based eviction (interactions)
 	e.evictByTTL()
 

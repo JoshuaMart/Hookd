@@ -106,6 +106,9 @@ eviction:
   max_per_hook: 1000
   max_memory_mb: 1800
 
+storage:
+  backend: "local"              # redis to share hooks between several instances
+
 observability:
   metrics_enabled: true
   metrics_require_auth: false   # true requires the API key for /metrics

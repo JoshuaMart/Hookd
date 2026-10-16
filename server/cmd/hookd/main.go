@@ -4,13 +4,16 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"os/signal"
 	"syscall"
 
+	"github.com/redis/go-redis/v9"
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
 
@@ -189,8 +192,16 @@ func run(cfg *config.Config) error {
 	return nil
 }
 
-// openStorage builds the memory store and optional persistent store.
-func openStorage(cfg *config.Config, logger *slog.Logger, idGenerator func() string) (*storage.CompositeManager, error) {
+// openStorage builds the backend selected by storage.backend.
+func openStorage(cfg *config.Config, logger *slog.Logger, idGenerator func() string) (storage.Store, error) {
+	if cfg.Storage.Backend == config.StorageBackendRedis {
+		return openRedisStorage(cfg, logger, idGenerator)
+	}
+	return openLocalStorage(cfg, logger, idGenerator)
+}
+
+// openLocalStorage builds the memory store and optional persistent store.
+func openLocalStorage(cfg *config.Config, logger *slog.Logger, idGenerator func() string) (*storage.CompositeManager, error) {
 	// Create storage manager: ephemeral hooks live in memory; when enabled,
 	// long-lived hooks are persisted to SQLite so they survive restarts.
 	memoryManager := storage.NewMemoryManager(idGenerator)
@@ -213,6 +224,51 @@ func openStorage(cfg *config.Config, logger *slog.Logger, idGenerator func() str
 			"max_ttl", cfg.LongLived.MaxTTL)
 	}
 	return storage.NewCompositeManager(memoryManager, longLived, cfg.Eviction.HookTTL), nil
+}
+
+// openRedisStorage connects to the Redis or Valkey server shared by every
+// instance.
+func openRedisStorage(cfg *config.Config, logger *slog.Logger, idGenerator func() string) (*storage.RedisManager, error) {
+	rc := cfg.Storage.Redis
+	opts := &redis.Options{
+		Addr:         rc.Addr,
+		Username:     rc.Username,
+		Password:     rc.Password,
+		DialTimeout:  rc.DialTimeout,
+		ReadTimeout:  rc.ReadTimeout,
+		WriteTimeout: rc.WriteTimeout,
+		PoolSize:     rc.PoolSize,
+	}
+	if rc.TLS {
+		host, _, err := net.SplitHostPort(rc.Addr)
+		if err != nil {
+			host = rc.Addr
+		}
+		opts.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12, ServerName: host}
+	}
+	client := redis.NewClient(opts)
+
+	ctx, cancel := context.WithTimeout(context.Background(), rc.DialTimeout+rc.ReadTimeout)
+	defer cancel()
+	m, err := storage.NewRedisManager(ctx, client, storage.RedisOptions{
+		KeyPrefix:          rc.KeyPrefix,
+		IDGenerator:        idGenerator,
+		EphemeralThreshold: cfg.Eviction.HookTTL,
+		LongLivedEnabled:   cfg.LongLived.Enabled,
+		MaxPerHook:         cfg.Eviction.MaxPerHook,
+		MaxBodyBytes:       cfg.LongLived.MaxInteractionBodyBytes,
+		Logger:             logger,
+	})
+	if err != nil {
+		_ = client.Close()
+		return nil, fmt.Errorf("Error opening redis store: %w", err)
+	}
+	logger.Info("redis store enabled", "addr", rc.Addr, "tls", rc.TLS, "key_prefix", rc.KeyPrefix)
+	if cfg.Server.HTTPS.Enabled {
+		// ACME challenge records and certificates are not shared yet.
+		logger.Warn("https keeps its ACME state on this instance: run a single instance while https is enabled")
+	}
+	return m, nil
 }
 
 // serve cancels the shared context when a listener fails.

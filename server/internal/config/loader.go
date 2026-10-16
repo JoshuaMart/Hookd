@@ -47,6 +47,16 @@ var configKeys = []string{
 	"long_lived.max_interaction_body_bytes",
 	"long_lived.max_metadata_bytes",
 	"long_lived.db_path",
+	"storage.backend",
+	"storage.redis.addr",
+	"storage.redis.username",
+	"storage.redis.password",
+	"storage.redis.tls",
+	"storage.redis.key_prefix",
+	"storage.redis.dial_timeout",
+	"storage.redis.read_timeout",
+	"storage.redis.write_timeout",
+	"storage.redis.pool_size",
 }
 
 // Load loads configuration from file, environment, and CLI flags.

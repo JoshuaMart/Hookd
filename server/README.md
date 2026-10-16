@@ -79,6 +79,12 @@ long_lived:
   max_metadata_bytes: 8192            # Max per-hook metadata size
   db_path: "/var/lib/hookd/longlived.db"
 
+storage:
+  backend: "local"                    # local, or redis to run several instances
+  redis:
+    addr: "localhost:6379"            # Redis 7.0+ or Valkey 7.2+, no cluster mode
+    key_prefix: "hookd:"
+
 observability:
   metrics_enabled: true
   metrics_require_auth: false # true requires the API key for /metrics
@@ -98,6 +104,22 @@ interaction silently after a restart. Long-lived hooks are bounded by
 with `GET /activity`, then read them with `GET /poll/:id` — preferably with a
 cursor (see [Cursor reads](#cursor-reads-and-acknowledgement)), so nothing is
 deleted before you have stored it.
+
+### Running several instances
+
+With `storage.backend: redis`, every hook and interaction is kept in a shared
+Redis or Valkey server instead of the process, so you can put several instances
+behind a load balancer: a hook registered on one instance captures on any of
+them, and a poll on any instance returns it exactly once. Long-lived hooks are
+stored in Redis too; `long_lived.db_path` is unused. Eviction runs on one
+instance at a time, under a lease kept in Redis.
+
+- Use Redis 7.0+ or Valkey 7.2+ (for example ElastiCache or MemoryDB) without
+  cluster mode, and set `maxmemory-policy noeviction`.
+- Use a network load balancer that preserves the client IP (UDP/TCP 53, TCP 25
+  and 80), since the source IP is part of every interaction.
+- HTTPS is not shared yet: ACME challenge records and certificates still live on
+  each instance, so keep a single instance while `server.https.enabled` is on.
 
 ### Mail capture (optional)
 

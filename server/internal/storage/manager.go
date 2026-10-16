@@ -103,6 +103,21 @@ type LongLivedManager interface {
 	LongLivedCount() int
 }
 
+// Store is a complete backend as the server wires it.
+type Store interface {
+	Manager
+	LongLivedManager
+	Close() error
+}
+
+// EvictionLeaser is implemented by backends shared between instances, so a
+// single instance runs each eviction pass instead of all of them.
+type EvictionLeaser interface {
+	// HoldEvictionLease takes or renews the lease for ttl and reports whether
+	// this instance holds it.
+	HoldEvictionLease(ttl time.Duration) bool
+}
+
 // Stats represents storage statistics
 type Stats struct {
 	HooksActive       int
@@ -506,13 +521,18 @@ func (m *MemoryManager) Stats() Stats {
 	stats := m.counts
 	stats.HooksActive = len(m.hooks)
 	m.mu.RUnlock()
+	stats.Memory = runtimeMemoryStats()
+	return stats
+}
+
+// runtimeMemoryStats samples this process's memory from the Go runtime.
+func runtimeMemoryStats() MemoryStats {
 	var memStats runtime.MemStats
 	runtime.ReadMemStats(&memStats)
-	stats.Memory = MemoryStats{
+	return MemoryStats{
 		AllocMB:     int(memStats.Alloc / (1024 * 1024)),
 		HeapInuseMB: int(memStats.HeapInuse / (1024 * 1024)),
 		SysMB:       int(memStats.Sys / (1024 * 1024)),
 		GCRuns:      memStats.NumGC,
 	}
-	return stats
 }

@@ -6,6 +6,7 @@ require (
 	github.com/caddyserver/certmagic v0.25.6
 	github.com/libdns/libdns v1.1.1
 	github.com/miekg/dns v1.1.73
+	github.com/redis/go-redis/v9 v9.23.0
 	github.com/spf13/pflag v1.0.10
 	github.com/spf13/viper v1.21.0
 	modernc.org/sqlite v1.53.0
@@ -13,6 +14,7 @@ require (
 
 require (
 	github.com/caddyserver/zerossl v0.1.6 // indirect
+	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/dustin/go-humanize v1.1.0 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
@@ -28,6 +30,7 @@ require (
 	github.com/spf13/cast v1.10.0 // indirect
 	github.com/subosito/gotenv v1.6.0 // indirect
 	github.com/zeebo/blake3 v0.2.4 // indirect
+	go.uber.org/atomic v1.12.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.28.0 // indirect
 	go.uber.org/zap/exp v0.3.0 // indirect

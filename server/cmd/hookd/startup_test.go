@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"os"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/jomar/hookd/internal/config"
 	"github.com/jomar/hookd/internal/storage"
+	"github.com/redis/go-redis/v9"
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
 )
@@ -164,4 +166,71 @@ func TestOpenStorageLifetimeAndCapacity(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestOpenRedisStorage(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	t.Run("unreachable", func(t *testing.T) {
+		cfg := startupConfig(t)
+		cfg.Storage.Backend = config.StorageBackendRedis
+		cfg.Storage.Redis.Addr = "127.0.0.1:1"
+		cfg.Storage.Redis.DialTimeout = 100 * time.Millisecond
+		if _, err := openStorage(cfg, logger, generateID); err == nil || !strings.Contains(err.Error(), "opening redis store") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("shared across reopen", func(t *testing.T) {
+		addr := os.Getenv("HOOKD_TEST_REDIS_ADDR")
+		if addr == "" {
+			t.Skip("HOOKD_TEST_REDIS_ADDR is not set")
+		}
+		cfg := startupConfig(t)
+		cfg.Storage.Backend = config.StorageBackendRedis
+		cfg.Storage.Redis.Addr = addr
+		cfg.Storage.Redis.KeyPrefix = "hookdtest:startup:" + generateID() + ":"
+		cfg.Eviction.MaxPerHook = 1
+		t.Cleanup(func() {
+			ctx := context.Background()
+			client := redis.NewClient(&redis.Options{Addr: addr})
+			defer client.Close()
+			if keys, _ := client.Keys(ctx, cfg.Storage.Redis.KeyPrefix+"*").Result(); len(keys) > 0 {
+				client.Del(ctx, keys...)
+			}
+		})
+
+		m, err := openStorage(cfg, logger, generateID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		hook := m.CreateHook(cfg.Server.Domain, storage.CreateOptions{TTL: cfg.Eviction.HookTTL})
+		m.AddInteraction(hook.ID, storage.DNSInteraction("one", "127.0.0.1", "q", "A"))
+		m.AddInteraction(hook.ID, storage.DNSInteraction("two", "127.0.0.1", "q", "A"))
+		durable, err := m.CreateLongLivedHook(cfg.Server.Domain, storage.CreateOptions{TTL: 48 * time.Hour}, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := m.Close(); err != nil {
+			t.Fatal(err)
+		}
+
+		// Unlike the local backend, a restarted instance sees every hook.
+		reopened, err := openStorage(cfg, logger, generateID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer reopened.Close()
+		read, err := reopened.ReadInteractions(hook.ID, 0)
+		if err != nil || len(read.Interactions) != 1 || read.Interactions[0].ID != "two" {
+			t.Fatalf("per-hook cap not applied or hook lost: %+v, %v", read, err)
+		}
+		if !reopened.Has(durable.ID) {
+			t.Fatal("durable hook lost on reopen")
+		}
+		reopened.EvictExpiredHooks(time.Now().Add(100 * time.Hour))
+		if reopened.Has(hook.ID) || reopened.Has(durable.ID) {
+			t.Fatal("cleanup left hooks behind")
+		}
+	})
 }
