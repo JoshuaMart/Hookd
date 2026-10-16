@@ -12,6 +12,7 @@ import (
 
 	"github.com/jomar/hookd/internal/config"
 	"github.com/jomar/hookd/internal/storage"
+	"github.com/libdns/libdns"
 	"github.com/redis/go-redis/v9"
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
@@ -232,5 +233,35 @@ func TestOpenRedisStorage(t *testing.T) {
 		if reopened.Has(hook.ID) || reopened.Has(durable.ID) {
 			t.Fatal("cleanup left hooks behind")
 		}
+
+		// ACME state goes to the same server, under the same prefix.
+		provider, certs := newACMEState(reopened, logger)
+		if certs == nil {
+			t.Fatal("expected shared certificate storage")
+		}
+		ctx := context.Background()
+		if err := certs.Store(ctx, "k", []byte("v")); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := provider.AppendRecords(ctx, "startup.test.", []libdns.Record{libdns.RR{Type: "TXT", Name: "_acme-challenge", Data: "x"}}); err != nil {
+			t.Fatal(err)
+		}
+		other, _ := newACMEState(reopened, logger)
+		if recs, err := other.GetRecords(ctx, "startup.test."); err != nil || len(recs) != 1 {
+			t.Fatalf("expected the record on another provider, got %v, %v", recs, err)
+		}
 	})
+}
+
+func TestNewACMEStateLocal(t *testing.T) {
+	cfg := startupConfig(t)
+	m, err := openStorage(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), generateID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close()
+	provider, certs := newACMEState(m, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if provider == nil || certs != nil {
+		t.Fatalf("the local backend keeps ACME state in memory and on disk, got %v, %v", provider, certs)
+	}
 }

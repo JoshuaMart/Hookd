@@ -29,14 +29,18 @@ import (
 // Serial tests: production configures shared defaults. Block real issuance.
 func tlsTestServer(t *testing.T) *Server {
 	t.Helper()
-	previousACME, previousEvent := certmagic.DefaultACME, certmagic.Default.OnEvent
+	previousACME, previousEvent, previousStorage := certmagic.DefaultACME, certmagic.Default.OnEvent, certmagic.Default.Storage
 	certmagic.Default.OnEvent = func(_ context.Context, event string, _ map[string]any) error {
 		if event == "cert_obtaining" {
 			return errors.New("ACME issuance disabled in tests")
 		}
 		return nil
 	}
-	t.Cleanup(func() { certmagic.DefaultACME = previousACME; certmagic.Default.OnEvent = previousEvent })
+	t.Cleanup(func() {
+		certmagic.DefaultACME = previousACME
+		certmagic.Default.OnEvent = previousEvent
+		certmagic.Default.Storage = previousStorage
+	})
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	return &Server{logger: logger, acmeProvider: acme.NewProvider(logger), config: config.ServerConfig{
 		Domain: fmt.Sprintf("coverage-%d.test", time.Now().UnixNano()),
@@ -53,6 +57,9 @@ func TestCertMagicDNSConfiguration(t *testing.T) {
 			disk, ok := cfg.Storage.(*certmagic.FileStorage)
 			if !ok || disk.Path != s.config.HTTPS.CacheDir {
 				t.Fatalf("unexpected storage: %#v", cfg.Storage)
+			}
+			if certmagic.Default.Storage != cfg.Storage {
+				t.Fatal("renewals must use the issuance storage")
 			}
 			if len(cfg.Issuers) != 1 {
 				t.Fatalf("issuer count=%d", len(cfg.Issuers))
@@ -175,5 +182,18 @@ func TestCachedCertificateSupportsVerifiedTLS(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("HTTPS listener failure was not reported")
+	}
+}
+
+func TestCertMagicUsesSharedStorage(t *testing.T) {
+	s := tlsTestServer(t)
+	shared := &certmagic.FileStorage{Path: t.TempDir()}
+	s.certStorage = shared
+	cfg := s.newCertMagicConfig()
+	if cfg.Storage != shared || certmagic.Default.Storage != shared {
+		t.Fatalf("expected the shared storage for issuance and renewal, got %#v and %#v", cfg.Storage, certmagic.Default.Storage)
+	}
+	if s.certStorageName() != "shared" {
+		t.Errorf("unexpected storage name %q", s.certStorageName())
 	}
 }

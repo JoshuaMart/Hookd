@@ -110,16 +110,19 @@ deleted before you have stored it.
 With `storage.backend: redis`, every hook and interaction is kept in a shared
 Redis or Valkey server instead of the process, so you can put several instances
 behind a load balancer: a hook registered on one instance captures on any of
-them, and a poll on any instance returns it exactly once. Long-lived hooks are
-stored in Redis too; `long_lived.db_path` is unused. Eviction runs on one
+them, and a poll on any instance returns it exactly once. Long-lived hooks,
+ACME challenge records and certificates are stored in Redis too, so
+`long_lived.db_path` and `server.https.cache_dir` are unused: any instance
+answers Let's Encrypt's DNS-01 query, and a lock in Redis lets a single instance
+obtain or renew the wildcard certificate for all of them. Eviction runs on one
 instance at a time, under a lease kept in Redis.
 
 - Use Redis 7.0+ or Valkey 7.2+ (for example ElastiCache or MemoryDB) without
   cluster mode, and set `maxmemory-policy noeviction`.
 - Use a network load balancer that preserves the client IP (UDP/TCP 53, TCP 25
   and 80), since the source IP is part of every interaction.
-- HTTPS is not shared yet: ACME challenge records and certificates still live on
-  each instance, so keep a single instance while `server.https.enabled` is on.
+- The TLS private key is stored in Redis: enable TLS in transit, encryption at
+  rest and authentication on the server.
 
 ### Mail capture (optional)
 

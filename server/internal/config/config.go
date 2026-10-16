@@ -239,7 +239,9 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("server.https.port must be between 1 and 65535")
 	}
 
-	if c.Server.HTTPS.Enabled && c.Server.HTTPS.AutoCert && c.Server.HTTPS.CacheDir == "" {
+	// The redis backend keeps certificates in Redis instead.
+	if c.Server.HTTPS.Enabled && c.Server.HTTPS.AutoCert && c.Server.HTTPS.CacheDir == "" &&
+		c.Storage.Backend == StorageBackendLocal {
 		return fmt.Errorf("server.https.cache_dir is required when autocert is enabled")
 	}
 

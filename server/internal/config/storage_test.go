@@ -34,6 +34,14 @@ func TestConfig_ValidateStorage(t *testing.T) {
 		// The redis backend keeps long-lived hooks in Redis, not in SQLite.
 		{"redis needs no db_path", func(c *Config) { redis(c); c.LongLived.DBPath = "" }, false},
 		{"local needs db_path", func(c *Config) { c.LongLived.DBPath = "" }, true},
+		// The redis backend keeps certificates in Redis, not in cache_dir.
+		{"redis autocert needs no cache_dir", func(c *Config) {
+			redis(c)
+			c.Server.HTTPS.Enabled, c.Server.HTTPS.AutoCert, c.Server.HTTPS.CacheDir = true, true, ""
+		}, false},
+		{"local autocert needs cache_dir", func(c *Config) {
+			c.Server.HTTPS.Enabled, c.Server.HTTPS.AutoCert, c.Server.HTTPS.CacheDir = true, true, ""
+		}, true},
 		// Ignored by the local backend, so not validated there.
 		{"local ignores redis settings", func(c *Config) { c.Storage.Redis.Addr = "" }, false},
 	}

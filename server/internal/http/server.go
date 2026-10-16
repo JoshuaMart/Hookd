@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/caddyserver/certmagic"
 	"github.com/jomar/hookd/internal/acme"
 	"github.com/jomar/hookd/internal/config"
 	"github.com/jomar/hookd/internal/eviction"
@@ -35,6 +36,7 @@ type Server struct {
 	storage      storage.Manager
 	evictor      *eviction.Evictor
 	acmeProvider *acme.Provider
+	certStorage  certmagic.Storage
 	logger       *slog.Logger
 	idGenerator  func() string
 	httpServer   *http.Server
@@ -49,8 +51,11 @@ type ServerOptions struct {
 	Storage       storage.Manager
 	Evictor       *eviction.Evictor
 	ACMEProvider  *acme.Provider
-	Logger        *slog.Logger
-	IDGenerator   func() string
+	// CertStorage holds certificates and ACME locks. Nil keeps them on disk
+	// under server.https.cache_dir.
+	CertStorage certmagic.Storage
+	Logger      *slog.Logger
+	IDGenerator func() string
 }
 
 // NewServer creates a new HTTP/HTTPS server.
@@ -62,6 +67,7 @@ func NewServer(opts ServerOptions) *Server {
 		storage:       opts.Storage,
 		evictor:       opts.Evictor,
 		acmeProvider:  opts.ACMEProvider,
+		certStorage:   opts.CertStorage,
 		logger:        opts.Logger,
 		idGenerator:   opts.IDGenerator,
 	}

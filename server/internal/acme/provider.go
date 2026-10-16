@@ -18,7 +18,10 @@ type RecordStore struct {
 type Provider struct {
 	sync.Mutex
 	recordMap map[string]*RecordStore
-	logger    *slog.Logger
+	// shared replaces recordMap when set, so every instance answers the
+	// challenge whichever one asked for the certificate.
+	shared SharedRecords
+	logger *slog.Logger
 }
 
 // NewProvider creates a new DNS provider for ACME challenges
@@ -28,6 +31,13 @@ func NewProvider(logger *slog.Logger) *Provider {
 		recordMap: make(map[string]*RecordStore),
 		logger:    logger,
 	}
+}
+
+// NewSharedProvider creates a provider that keeps its records in shared.
+func NewSharedProvider(logger *slog.Logger, shared SharedRecords) *Provider {
+	p := NewProvider(logger)
+	p.shared = shared
+	return p
 }
 
 func (p *Provider) getZoneRecords(_ context.Context, zoneName string) *RecordStore {
@@ -63,6 +73,9 @@ func (r *RecordStore) deleteRecords(recs []libdns.Record) []libdns.Record {
 
 // AppendRecords adds records to the zone
 func (p *Provider) AppendRecords(ctx context.Context, zoneName string, recs []libdns.Record) ([]libdns.Record, error) {
+	if p.shared != nil {
+		return p.sharedAppend(ctx, zoneName, recs)
+	}
 	p.Lock()
 	defer p.Unlock()
 
@@ -91,6 +104,9 @@ func (p *Provider) AppendRecords(ctx context.Context, zoneName string, recs []li
 
 // DeleteRecords removes records from the zone
 func (p *Provider) DeleteRecords(ctx context.Context, zoneName string, recs []libdns.Record) ([]libdns.Record, error) {
+	if p.shared != nil {
+		return p.sharedDelete(ctx, zoneName, recs)
+	}
 	p.Lock()
 	defer p.Unlock()
 
@@ -108,6 +124,9 @@ func (p *Provider) DeleteRecords(ctx context.Context, zoneName string, recs []li
 
 // GetRecords returns all records from the zone
 func (p *Provider) GetRecords(ctx context.Context, zoneName string) ([]libdns.Record, error) {
+	if p.shared != nil {
+		return p.shared.Get(ctx, zoneName)
+	}
 	p.Lock()
 	defer p.Unlock()
 
@@ -124,6 +143,9 @@ func (p *Provider) GetRecords(ctx context.Context, zoneName string) ([]libdns.Re
 
 // SetRecords sets records in the zone (replaces all existing records)
 func (p *Provider) SetRecords(ctx context.Context, zoneName string, recs []libdns.Record) ([]libdns.Record, error) {
+	if p.shared != nil {
+		return p.sharedSet(ctx, zoneName, recs)
+	}
 	p.Lock()
 	defer p.Unlock()
 
