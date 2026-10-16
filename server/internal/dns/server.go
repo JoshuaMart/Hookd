@@ -145,7 +145,7 @@ func (s *Server) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 		}
 
 		// Extract hook ID from domain
-		if hookID, found := netutil.ResolveHookID(q.Name, s.domain, s.storage.Has); found {
+		if hookID, found := netutil.ResolveHookID(q.Name, s.domain, s.firstExisting); found {
 			// Log interaction
 			sourceIP := netutil.ExtractIP(w.RemoteAddr().String())
 			interaction := storage.DNSInteraction(
@@ -325,4 +325,8 @@ func (s *Server) record(hookID string, interaction *storage.Interaction) {
 		return
 	}
 	s.storage.AddInteraction(hookID, interaction)
+}
+
+func (s *Server) firstExisting(ids ...string) int {
+	return storage.FirstExisting(s.storage, ids...)
 }

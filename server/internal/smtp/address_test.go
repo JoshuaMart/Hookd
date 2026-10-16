@@ -1,10 +1,13 @@
 package smtp
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 func TestHookIDFromRecipient(t *testing.T) {
 	const domain = "hookd.example.com"
-	has := func(id string) bool { return id == "a3f9c2d1" }
+	first := func(ids ...string) int { return slices.Index(ids, "a3f9c2d1") }
 
 	tests := []struct {
 		name    string
@@ -51,7 +54,7 @@ func TestHookIDFromRecipient(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			id, tag, ok := hookIDFromRecipient(tt.addr, domain, has)
+			id, tag, ok := hookIDFromRecipient(tt.addr, domain, first)
 			if ok != tt.wantOK {
 				t.Fatalf("hookIDFromRecipient(%q) ok = %v, want %v", tt.addr, ok, tt.wantOK)
 			}

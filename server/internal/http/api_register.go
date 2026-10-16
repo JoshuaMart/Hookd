@@ -117,6 +117,16 @@ type hookSpec struct {
 // cap-enforcing transaction first; ephemeral ones cannot fail, so nothing is
 // created unless the whole batch can be.
 func (h *APIHandler) createHooks(batch []storage.CreateOptions) ([]*storage.Hook, *apiError) {
+	// A shared store can fail for either kind of hook: it creates the whole
+	// batch in one step and says so.
+	if creator, ok := h.storage.(storage.BatchCreator); ok {
+		hooks, err := creator.CreateHookBatch(h.domain, batch, h.longLived.MaxHooks)
+		if err != nil {
+			return nil, h.creationError(err)
+		}
+		return hooks, nil
+	}
+
 	var longLived []storage.CreateOptions
 	for _, opts := range batch {
 		if opts.TTL > h.evictor.HookTTL() {
@@ -132,12 +142,8 @@ func (h *APIHandler) createHooks(batch []storage.CreateOptions) ([]*storage.Hook
 		}
 		var err error
 		persisted, err = llm.CreateLongLivedHooks(h.domain, longLived, h.longLived.MaxHooks)
-		if errors.Is(err, storage.ErrHookLimitReached) {
-			return nil, &apiError{http.StatusTooManyRequests, "long-lived hook limit reached"}
-		}
 		if err != nil {
-			h.logger.Error("failed to create long-lived hooks", "error", err)
-			return nil, &apiError{http.StatusInternalServerError, "failed to create hook"}
+			return nil, h.creationError(err)
 		}
 	}
 
@@ -151,4 +157,13 @@ func (h *APIHandler) createHooks(batch []storage.CreateOptions) ([]*storage.Hook
 		hooks = append(hooks, h.storage.CreateHook(h.domain, opts))
 	}
 	return hooks, nil
+}
+
+// creationError maps a storage failure to the registration response.
+func (h *APIHandler) creationError(err error) *apiError {
+	if errors.Is(err, storage.ErrHookLimitReached) {
+		return &apiError{http.StatusTooManyRequests, "long-lived hook limit reached"}
+	}
+	h.logger.Error("failed to create hooks", "error", err)
+	return &apiError{http.StatusInternalServerError, "failed to create hook"}
 }

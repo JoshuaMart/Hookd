@@ -53,18 +53,20 @@ func HookIDFromHostTail(host, domain string) string {
 // ResolveHookID picks the hook a host belongs to: the first label when it is
 // registered, else the tail label when that one is, else the first label so
 // callers keep their usual handling of unknown hooks. found reports whether
-// has accepted the returned ID, so callers need not ask again. has is called
-// at most once per distinct candidate.
-func ResolveHookID(host, domain string, has func(string) bool) (id string, found bool) {
+// the returned ID is registered. first returns the index of the first
+// registered candidate, or -1; it is called once with every candidate, so a
+// remote store can check them in one round-trip.
+func ResolveHookID(host, domain string, first func(ids ...string) int) (id string, found bool) {
 	id = HookIDFromHost(host, domain)
 	if id == "" {
 		return "", false
 	}
-	if has(id) {
-		return id, true
+	candidates := []string{id}
+	if tail := HookIDFromHostTail(host, domain); tail != "" && tail != id {
+		candidates = append(candidates, tail)
 	}
-	if tail := HookIDFromHostTail(host, domain); tail != id && has(tail) {
-		return tail, true
+	if i := first(candidates...); i >= 0 {
+		return candidates[i], true
 	}
 	return id, false
 }

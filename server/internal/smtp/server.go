@@ -210,3 +210,7 @@ func (s *Server) closeAll() {
 		_ = conn.Close()
 	}
 }
+
+func (s *Server) firstExisting(ids ...string) int {
+	return storage.FirstExisting(s.storage, ids...)
+}

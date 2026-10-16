@@ -75,7 +75,9 @@ func (r *Redis) Unlock(ctx context.Context, name string) error {
 	}
 	held.stop()
 	<-held.done
-	return unlockScript.Run(ctx, r.client, []string{r.lockKey(name)}, held.token).Err()
+	// CertMagic unlocks with the operation's context, which may be cancelled
+	// by then; a failed release would block other instances for lockTTL.
+	return unlockScript.Run(context.WithoutCancel(ctx), r.client, []string{r.lockKey(name)}, held.token).Err()
 }
 
 func newToken() (string, error) {

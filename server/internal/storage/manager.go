@@ -118,6 +118,28 @@ type EvictionLeaser interface {
 	HoldEvictionLease(ttl time.Duration) bool
 }
 
+// FirstExisting returns the index of the first id naming a hook, or -1.
+// Backends that pay a round-trip per lookup check every id in one.
+func FirstExisting(m Manager, ids ...string) int {
+	if batch, ok := m.(interface{ FirstExisting(ids ...string) int }); ok {
+		return batch.FirstExisting(ids...)
+	}
+	for i, id := range ids {
+		if m.Has(id) {
+			return i
+		}
+	}
+	return -1
+}
+
+// BatchCreator is implemented by backends whose hook creation can fail. It
+// creates ephemeral and long-lived hooks in one all-or-nothing step, so
+// registration reports the failure instead of returning hooks that do not
+// exist. maxLongLived caps the long-lived ones (0 = no cap).
+type BatchCreator interface {
+	CreateHookBatch(domain string, opts []CreateOptions, maxLongLived int) ([]*Hook, error)
+}
+
 // AsyncRecorder is implemented by backends whose writes cost a network
 // round-trip. A caller that needs neither the seq nor to know the write
 // happened, like the DNS server whose answer does not depend on it, records

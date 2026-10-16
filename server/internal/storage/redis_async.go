@@ -12,9 +12,16 @@ const (
 	asyncQueueSize = 10000
 	// asyncBatch bounds the scripts sent in one pipeline.
 	asyncBatch = 128
+)
+
+// Variables so tests can shorten them.
+var (
 	// asyncTimeout bounds one pipeline, so a stalled server cannot wedge the
 	// writer forever.
 	asyncTimeout = 5 * time.Second
+	// drainTimeout bounds the flush on Close: with the server unreachable,
+	// every batch would wait asyncTimeout and shutdown would take minutes.
+	drainTimeout = 5 * time.Second
 )
 
 var errQueueFull = errors.New("capture queue is full")
@@ -46,15 +53,26 @@ func (m *RedisManager) writeLoop() {
 	for {
 		select {
 		case first := <-m.queue:
-			batch = m.fill(append(batch[:0], first))
-			m.writeBatch(batch)
+			ctx, cancel := context.WithTimeout(context.Background(), asyncTimeout)
+			m.writeBatch(ctx, m.fill(append(batch[:0], first)))
+			cancel()
 		case <-m.stop:
-			// Flush what was queued before Close.
-			for len(m.queue) > 0 {
-				m.writeBatch(m.fill(batch[:0]))
-			}
+			m.drain(batch)
 			return
 		}
+	}
+}
+
+// drain flushes what was queued before Close, within drainTimeout.
+func (m *RedisManager) drain(batch []pendingCapture) {
+	ctx, cancel := context.WithTimeout(context.Background(), drainTimeout)
+	defer cancel()
+	for len(m.queue) > 0 {
+		if ctx.Err() != nil {
+			m.logger.Warn("redis storage dropped queued captures on close", "count", len(m.queue))
+			return
+		}
+		m.writeBatch(ctx, m.fill(batch[:0]))
 	}
 }
 
@@ -71,10 +89,7 @@ func (m *RedisManager) fill(batch []pendingCapture) []pendingCapture {
 	return batch
 }
 
-func (m *RedisManager) writeBatch(batch []pendingCapture) {
-	ctx, cancel := context.WithTimeout(context.Background(), asyncTimeout)
-	defer cancel()
-
+func (m *RedisManager) writeBatch(ctx context.Context, batch []pendingCapture) {
 	args := make([][]any, 0, len(batch))
 	pipe := m.client.Pipeline()
 	for _, c := range batch {
@@ -87,11 +102,17 @@ func (m *RedisManager) writeBatch(batch []pendingCapture) {
 		addInteractionScript.EvalSha(ctx, pipe, nil, a...)
 	}
 	cmds, _ := pipe.Exec(ctx)
+	reloaded := false
 	for i, cmd := range cmds {
 		err := cmd.Err()
-		// The script cache is empty after a restart or failover: Run loads it.
+		// A flushed script cache (restart, failover) fails every call after
+		// the flush, so the replays keep arrival order: they are the tail of
+		// the batch, run in order once the script is loaded again.
 		if err != nil && isScriptError(err, "NOSCRIPT") {
-			err = addInteractionScript.Run(ctx, m.client, nil, args[i]...).Err()
+			if !reloaded {
+				reloaded = addInteractionScript.Load(ctx, m.client).Err() == nil
+			}
+			err = addInteractionScript.EvalSha(ctx, m.client, nil, args[i]...).Err()
 		}
 		if err != nil {
 			m.logFailure("add interaction", err)

@@ -72,27 +72,43 @@ func (m *RedisManager) EnforcePerHookLimit(max int) int {
 		return total
 	}
 	for _, index := range []string{"ttl", "ll:active"} {
-		for start := int64(0); ; start += evictBatch {
-			ids, err := m.client.ZRange(ctx, m.key(index), start, start+evictBatch-1).Result()
-			if err != nil {
-				m.logFailure("list hooks to trim", err)
-				return total
-			}
-			if len(ids) == 0 {
-				break
-			}
-			n, err := m.run(ctx, trimScript, idArgs(ids, max)...).Int()
-			if err != nil {
-				m.logFailure("per-hook limit eviction", err)
-				return total
-			}
-			total += n
-			if len(ids) < evictBatch {
-				break
-			}
+		n, err := m.trimIndex(ctx, index, max)
+		total += n
+		if err != nil {
+			m.logFailure("per-hook limit eviction", err)
+			return total
 		}
 	}
 	return total
+}
+
+// trimIndex trims every hook listed in a pending index. ZSCAN, unlike paging
+// by rank, visits every member present for the whole pass even though
+// trimming changes their scores.
+func (m *RedisManager) trimIndex(ctx context.Context, index string, max int) (int, error) {
+	total := 0
+	var cursor uint64
+	for {
+		pairs, next, err := m.client.ZScan(ctx, m.key(index), cursor, "", evictBatch).Result()
+		if err != nil {
+			return total, err
+		}
+		ids := make([]string, 0, len(pairs)/2)
+		for i := 0; i < len(pairs); i += 2 { // member, score, member, ...
+			ids = append(ids, pairs[i])
+		}
+		if len(ids) > 0 {
+			n, err := m.run(ctx, trimScript, idArgs(ids, max)...).Int()
+			if err != nil {
+				return total, err
+			}
+			total += n
+		}
+		if next == 0 {
+			return total, nil
+		}
+		cursor = next
+	}
 }
 
 // EvictByMemoryPressure is a no-op: the data lives in Redis, whose own

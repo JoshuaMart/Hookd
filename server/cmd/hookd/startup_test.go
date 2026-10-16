@@ -94,7 +94,7 @@ func TestRunStopsAfterListenerFailure(t *testing.T) {
 		t.Fatal("run did not stop after listener failure")
 	}
 	// The deferred close must allow a new manager to reopen the same store.
-	m, err := openStorage(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), generateID)
+	m, err := openStore(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +133,7 @@ func TestOpenStorageLifetimeAndCapacity(t *testing.T) {
 			cfg := startupConfig(t)
 			cfg.LongLived.Enabled = enabled
 			cfg.Eviction.MaxPerHook = 1
-			m, err := openStorage(cfg, logger, generateID)
+			m, err := openStore(cfg, logger)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -154,7 +154,7 @@ func TestOpenStorageLifetimeAndCapacity(t *testing.T) {
 			if err := m.Close(); err != nil {
 				t.Fatal(err)
 			}
-			reopened, err := openStorage(cfg, logger, generateID)
+			reopened, err := openStore(cfg, logger)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -177,7 +177,7 @@ func TestOpenRedisStorage(t *testing.T) {
 		cfg.Storage.Backend = config.StorageBackendRedis
 		cfg.Storage.Redis.Addr = "127.0.0.1:1"
 		cfg.Storage.Redis.DialTimeout = 100 * time.Millisecond
-		if _, err := openStorage(cfg, logger, generateID); err == nil || !strings.Contains(err.Error(), "opening redis store") {
+		if _, err := openStore(cfg, logger); err == nil || !strings.Contains(err.Error(), "opening redis store") {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	})
@@ -201,7 +201,7 @@ func TestOpenRedisStorage(t *testing.T) {
 			}
 		})
 
-		m, err := openStorage(cfg, logger, generateID)
+		m, err := openStore(cfg, logger)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -217,7 +217,7 @@ func TestOpenRedisStorage(t *testing.T) {
 		}
 
 		// Unlike the local backend, a restarted instance sees every hook.
-		reopened, err := openStorage(cfg, logger, generateID)
+		reopened, err := openStore(cfg, logger)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -234,34 +234,53 @@ func TestOpenRedisStorage(t *testing.T) {
 			t.Fatal("cleanup left hooks behind")
 		}
 
-		// ACME state goes to the same server, under the same prefix.
-		provider, certs := newACMEState(reopened, logger)
-		if certs == nil {
+		// ACME state goes to the same server, under the same prefix: what one
+		// instance writes, another reads.
+		a, err := openBackend(cfg, logger, generateID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer a.store.Close()
+		b, err := openBackend(cfg, logger, generateID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer b.store.Close()
+		if a.certs == nil {
 			t.Fatal("expected shared certificate storage")
 		}
 		ctx := context.Background()
-		if err := certs.Store(ctx, "k", []byte("v")); err != nil {
+		if err := a.certs.Store(ctx, "k", []byte("v")); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := provider.AppendRecords(ctx, "startup.test.", []libdns.Record{libdns.RR{Type: "TXT", Name: "_acme-challenge", Data: "x"}}); err != nil {
+		if got, err := b.certs.Load(ctx, "k"); err != nil || string(got) != "v" {
+			t.Fatalf("expected the certificate on the other instance, got %q, %v", got, err)
+		}
+		if _, err := a.acme.AppendRecords(ctx, "startup.test.", []libdns.Record{libdns.RR{Type: "TXT", Name: "_acme-challenge", Data: "x"}}); err != nil {
 			t.Fatal(err)
 		}
-		other, _ := newACMEState(reopened, logger)
-		if recs, err := other.GetRecords(ctx, "startup.test."); err != nil || len(recs) != 1 {
-			t.Fatalf("expected the record on another provider, got %v, %v", recs, err)
+		if recs, err := b.acme.GetRecords(ctx, "startup.test."); err != nil || len(recs) != 1 {
+			t.Fatalf("expected the record on the other instance, got %v, %v", recs, err)
 		}
 	})
 }
 
-func TestNewACMEStateLocal(t *testing.T) {
-	cfg := startupConfig(t)
-	m, err := openStorage(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), generateID)
+func TestOpenBackendLocal(t *testing.T) {
+	b, err := openBackend(startupConfig(t), slog.New(slog.NewTextHandler(io.Discard, nil)), generateID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer m.Close()
-	provider, certs := newACMEState(m, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	if provider == nil || certs != nil {
-		t.Fatalf("the local backend keeps ACME state in memory and on disk, got %v, %v", provider, certs)
+	defer b.store.Close()
+	if b.acme == nil || b.certs != nil {
+		t.Fatalf("the local backend keeps ACME state in memory and on disk, got %v, %v", b.acme, b.certs)
 	}
+}
+
+// openStore opens the configured backend for tests that only need its store.
+func openStore(cfg *config.Config, logger *slog.Logger) (storage.Store, error) {
+	b, err := openBackend(cfg, logger, generateID)
+	if err != nil {
+		return nil, err
+	}
+	return b.store, nil
 }

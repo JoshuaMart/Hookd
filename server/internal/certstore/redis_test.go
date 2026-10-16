@@ -184,3 +184,18 @@ func TestRedis_UnlockWithoutLock(t *testing.T) {
 		t.Error("expected an error when unlocking a lock that is not held")
 	}
 }
+
+func TestRedis_UnlockWithCancelledContext(t *testing.T) {
+	s := newTestRedis(t, "")
+	if err := s.Lock(context.Background(), "l"); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := s.Unlock(ctx, "l"); err != nil {
+		t.Fatalf("a cancelled context must not prevent the release: %v", err)
+	}
+	if held, _ := s.client.Exists(context.Background(), s.lockKey("l")).Result(); held != 0 {
+		t.Error("the lock is still held")
+	}
+}
