@@ -49,7 +49,7 @@ func hookIDFromRecipient(addr, domain string, has func(string) bool) (id, tag st
 	}
 
 	// Subdomain fallback, sharing the extraction rule with DNS and HTTP.
-	if sub := netutil.ResolveHookID(rcptDomain, domain, has); sub != "" {
+	if sub, _ := netutil.ResolveHookID(rcptDomain, domain, has); sub != "" {
 		return sub, tag, true
 	}
 

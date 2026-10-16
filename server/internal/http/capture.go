@@ -40,17 +40,9 @@ func NewCaptureHandler(storage storage.Manager, domain string, logger *slog.Logg
 
 // ServeHTTP handles all wildcard HTTP requests
 func (h *CaptureHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// Extract hook ID from Host header
-	hookID := netutil.ResolveHookID(stripPort(r.Host), h.domain, h.storage.Has)
-
-	if hookID == "" {
-		// Not a valid hook subdomain
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-
 	// Storage drops unknown hooks anyway; checking first skips the body read.
-	if !h.storage.Has(hookID) {
+	hookID, found := netutil.ResolveHookID(stripPort(r.Host), h.domain, h.storage.Has)
+	if !found {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
