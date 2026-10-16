@@ -96,16 +96,16 @@ func startServer(t *testing.T, cfg *config.Config, idGenerator func() string) *t
 	go evictor.Start(ctx)
 
 	// Start DNS server
-	dnsServer, err := dnsserver.NewServer(
-		cfg.Server.Domain,
-		cfg.Server.DNS.Port,
-		cfg.Server.PublicIP,
-		cfg.Server.DNS.BindAddress,
-		storageManager,
-		acmeProvider,
-		logger,
-		idGenerator,
-	)
+	dnsServer, err := dnsserver.NewServer(dnsserver.ServerOptions{
+		Domain:       cfg.Server.Domain,
+		Port:         cfg.Server.DNS.Port,
+		PublicIP:     cfg.Server.PublicIP,
+		BindAddress:  cfg.Server.DNS.BindAddress,
+		Storage:      storageManager,
+		ACMEProvider: acmeProvider,
+		Logger:       logger,
+		IDGenerator:  idGenerator,
+	})
 	if err != nil {
 		t.Fatalf("failed to create DNS server: %v", err)
 	}

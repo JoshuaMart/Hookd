@@ -81,11 +81,7 @@ func (m *RedisManager) EnforcePerHookLimit(max int) int {
 			if len(ids) == 0 {
 				break
 			}
-			args := []any{max}
-			for _, id := range ids {
-				args = append(args, id)
-			}
-			n, err := m.run(ctx, trimScript, args...).Int()
+			n, err := m.run(ctx, trimScript, idArgs(ids, max)...).Int()
 			if err != nil {
 				m.logFailure("per-hook limit eviction", err)
 				return total

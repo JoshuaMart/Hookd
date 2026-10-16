@@ -128,16 +128,16 @@ func run(cfg *config.Config) error {
 
 	// Start DNS server if enabled
 	if cfg.Server.DNS.Enabled {
-		dnsServer, err := dns.NewServer(
-			cfg.Server.Domain,
-			cfg.Server.DNS.Port,
-			cfg.Server.PublicIP,
-			cfg.Server.DNS.BindAddress,
-			storageManager,
-			acmeProvider,
-			logger,
-			idGenerator,
-		)
+		dnsServer, err := dns.NewServer(dns.ServerOptions{
+			Domain:       cfg.Server.Domain,
+			Port:         cfg.Server.DNS.Port,
+			PublicIP:     cfg.Server.PublicIP,
+			BindAddress:  cfg.Server.DNS.BindAddress,
+			Storage:      storageManager,
+			ACMEProvider: acmeProvider,
+			Logger:       logger,
+			IDGenerator:  idGenerator,
+		})
 		if err != nil {
 			return fmt.Errorf("failed to create dns server: %w", err)
 		}
