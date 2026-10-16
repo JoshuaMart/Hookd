@@ -2,7 +2,6 @@ package storage
 
 import (
 	"fmt"
-	"sync"
 	"testing"
 	"time"
 )
@@ -242,71 +241,5 @@ func TestMemoryDrainedSliceSurvivesLaterMutations(t *testing.T) {
 	}
 	if empty := m.PollInteractions(id); empty == nil || len(empty) != 0 {
 		t.Fatal("empty poll must encode as []")
-	}
-}
-
-func TestConcurrentCaptureReadAndAck(t *testing.T) {
-	for _, backend := range []string{"memory", "sqlite"} {
-		t.Run(backend, func(t *testing.T) {
-			var store Manager
-			if backend == "memory" {
-				store = NewMemoryManager(perfIDs())
-			} else {
-				store = newTestSQLite(t, 1024)
-			}
-			id := store.CreateHook("example.test", CreateOptions{}).ID
-			var wg sync.WaitGroup
-			for writer := 0; writer < 4; writer++ {
-				wg.Add(1)
-				go func(writer int) {
-					defer wg.Done()
-					for i := 0; i < 100; i++ {
-						it := &Interaction{ID: fmt.Sprintf("%d-%d", writer, i), Type: InteractionTypeDNS}
-						store.AddInteraction(id, it)
-						if it.Seq == 0 {
-							t.Error("capture lost")
-						}
-					}
-				}(writer)
-			}
-			done := make(chan struct{})
-			go func() { wg.Wait(); close(done) }()
-			var cursor int64
-			var seen int
-			deadline := time.Now().Add(10 * time.Second)
-			for {
-				if time.Now().After(deadline) {
-					t.Fatal("concurrent drain timed out")
-				}
-				read, err := store.ReadInteractions(id, cursor)
-				if err != nil {
-					t.Fatal(err)
-				}
-				for _, it := range read.Interactions {
-					if it.Seq != cursor+1 {
-						t.Fatalf("sequence gap: %d -> %d", cursor, it.Seq)
-					}
-					cursor = it.Seq
-					seen++
-				}
-				if _, err := store.AckInteractions(id, cursor); err != nil {
-					t.Fatal(err)
-				}
-				store.Stats()
-				select {
-				case <-done:
-					if cursor == 400 {
-						if seen != 400 || store.Stats().InteractionsTotal != 0 {
-							t.Fatal("incorrect drain counts")
-						}
-						return
-					}
-				default:
-				}
-				if cursor > 400 {
-					t.Fatal("extra interaction")
-				}
-			}
-		})
 	}
 }

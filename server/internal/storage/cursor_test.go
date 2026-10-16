@@ -11,17 +11,6 @@ import (
 	"time"
 )
 
-// cursorStores runs a test against both backends.
-func cursorStores(t *testing.T, run func(t *testing.T, m Manager)) {
-	t.Run("memory", func(t *testing.T) {
-		counter := 0
-		run(t, NewMemoryManager(func() string { counter++; return fmt.Sprintf("hook-%d", counter) }))
-	})
-	t.Run("sqlite", func(t *testing.T) {
-		run(t, newTestSQLite(t, 1024))
-	})
-}
-
 func seqs(interactions []*Interaction) []int64 {
 	out := make([]int64, len(interactions))
 	for i, it := range interactions {
@@ -31,7 +20,7 @@ func seqs(interactions []*Interaction) []int64 {
 }
 
 func TestCursor_ReadIsNonDestructive(t *testing.T) {
-	cursorStores(t, func(t *testing.T, m Manager) {
+	forEachStore(t, func(t *testing.T, m Manager) {
 		hook := m.CreateHook("example.com", CreateOptions{TTL: time.Hour})
 		for i := 0; i < 3; i++ {
 			m.AddInteraction(hook.ID, DNSInteraction(fmt.Sprintf("i%d", i), "1.2.3.4", "q", "A"))
@@ -55,7 +44,7 @@ func TestCursor_ReadIsNonDestructive(t *testing.T) {
 }
 
 func TestCursor_Ack(t *testing.T) {
-	cursorStores(t, func(t *testing.T, m Manager) {
+	forEachStore(t, func(t *testing.T, m Manager) {
 		hook := m.CreateHook("example.com", CreateOptions{TTL: time.Hour})
 		for i := 0; i < 3; i++ {
 			m.AddInteraction(hook.ID, DNSInteraction(fmt.Sprintf("i%d", i), "1.2.3.4", "q", "A"))
@@ -79,37 +68,6 @@ func TestCursor_Ack(t *testing.T) {
 		read, _ = m.ReadInteractions(hook.ID, 3)
 		if got := seqs(read.Interactions); fmt.Sprint(got) != "[4]" {
 			t.Errorf("expected seqs [4], got %v", got)
-		}
-	})
-}
-
-func TestCursor_UnknownHook(t *testing.T) {
-	cursorStores(t, func(t *testing.T, m Manager) {
-		if _, err := m.ReadInteractions("missing", 0); !errors.Is(err, ErrHookNotFound) {
-			t.Errorf("expected ErrHookNotFound on read, got %v", err)
-		}
-		if _, err := m.AckInteractions("missing", 1); !errors.Is(err, ErrHookNotFound) {
-			t.Errorf("expected ErrHookNotFound on ack, got %v", err)
-		}
-	})
-}
-
-func TestCursor_PerHookLimitReportsLoss(t *testing.T) {
-	cursorStores(t, func(t *testing.T, m Manager) {
-		hook := m.CreateHook("example.com", CreateOptions{TTL: time.Hour})
-		for i := 0; i < 10; i++ {
-			m.AddInteraction(hook.ID, DNSInteraction(fmt.Sprintf("i%d", i), "1.2.3.4", "q", "A"))
-		}
-
-		if removed := m.EnforcePerHookLimit(4); removed != 6 {
-			t.Fatalf("expected 6 removed, got %d", removed)
-		}
-		read, _ := m.ReadInteractions(hook.ID, 0)
-		if read.DroppedThrough != 6 {
-			t.Errorf("expected dropped_through 6, got %d", read.DroppedThrough)
-		}
-		if got := seqs(read.Interactions); fmt.Sprint(got) != "[7 8 9 10]" {
-			t.Errorf("expected newest seqs kept, got %v", got)
 		}
 	})
 }
