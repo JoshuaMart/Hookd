@@ -102,10 +102,11 @@ func run(cfg *config.Config) error {
 		return generateID()
 	}
 
-	storageManager, err := openStorage(cfg, logger, idGenerator)
+	opened, err := openBackend(cfg, logger, idGenerator)
 	if err != nil {
 		return err
 	}
+	storageManager := opened.store
 
 	defer func() {
 		if err := storageManager.Close(); err != nil {
@@ -114,7 +115,7 @@ func run(cfg *config.Config) error {
 	}()
 
 	// Create ACME provider for DNS-01 challenges
-	acmeProvider, certStorage := newACMEState(storageManager, logger)
+	acmeProvider, certStorage := opened.acme, opened.certs
 
 	// Create evictor
 	evictor := eviction.NewEvictor(storageManager, cfg.Eviction, logger)
@@ -128,16 +129,16 @@ func run(cfg *config.Config) error {
 
 	// Start DNS server if enabled
 	if cfg.Server.DNS.Enabled {
-		dnsServer, err := dns.NewServer(
-			cfg.Server.Domain,
-			cfg.Server.DNS.Port,
-			cfg.Server.PublicIP,
-			cfg.Server.DNS.BindAddress,
-			storageManager,
-			acmeProvider,
-			logger,
-			idGenerator,
-		)
+		dnsServer, err := dns.NewServer(dns.ServerOptions{
+			Domain:       cfg.Server.Domain,
+			Port:         cfg.Server.DNS.Port,
+			PublicIP:     cfg.Server.PublicIP,
+			BindAddress:  cfg.Server.DNS.BindAddress,
+			Storage:      storageManager,
+			ACMEProvider: acmeProvider,
+			Logger:       logger,
+			IDGenerator:  idGenerator,
+		})
 		if err != nil {
 			return fmt.Errorf("failed to create dns server: %w", err)
 		}
@@ -195,12 +196,38 @@ func run(cfg *config.Config) error {
 	return nil
 }
 
-// openStorage builds the backend selected by storage.backend.
-func openStorage(cfg *config.Config, logger *slog.Logger, idGenerator func() string) (storage.Store, error) {
-	if cfg.Storage.Backend == config.StorageBackendRedis {
-		return openRedisStorage(cfg, logger, idGenerator)
+// backend is everything kept in the configured store.
+type backend struct {
+	store storage.Store
+	acme  *acme.Provider
+	// certs is nil for the local backend, which keeps certificates on disk.
+	certs certmagic.Storage
+}
+
+// openBackend builds the store selected by storage.backend and the ACME state
+// next to it: in Redis when shared, so any instance answers a challenge and
+// only one obtains each certificate; otherwise in memory and on disk. The
+// Redis client is shared by all three and closed with the store.
+func openBackend(cfg *config.Config, logger *slog.Logger, idGenerator func() string) (*backend, error) {
+	if cfg.Storage.Backend != config.StorageBackendRedis {
+		store, err := openLocalStorage(cfg, logger, idGenerator)
+		if err != nil {
+			return nil, err
+		}
+		return &backend{store: store, acme: acme.NewProvider(logger)}, nil
 	}
-	return openLocalStorage(cfg, logger, idGenerator)
+	rc := cfg.Storage.Redis
+	client := newRedisClient(rc)
+	store, err := openRedisStorage(cfg, client, logger, idGenerator)
+	if err != nil {
+		_ = client.Close()
+		return nil, err
+	}
+	return &backend{
+		store: store,
+		acme:  acme.NewSharedProvider(logger, acme.NewRedisRecords(client, rc.KeyPrefix)),
+		certs: certstore.NewRedis(client, rc.KeyPrefix),
+	}, nil
 }
 
 // openLocalStorage builds the memory store and optional persistent store.
@@ -229,10 +256,9 @@ func openLocalStorage(cfg *config.Config, logger *slog.Logger, idGenerator func(
 	return storage.NewCompositeManager(memoryManager, longLived, cfg.Eviction.HookTTL), nil
 }
 
-// openRedisStorage connects to the Redis or Valkey server shared by every
+// newRedisClient connects to the Redis or Valkey server shared by every
 // instance.
-func openRedisStorage(cfg *config.Config, logger *slog.Logger, idGenerator func() string) (*storage.RedisManager, error) {
-	rc := cfg.Storage.Redis
+func newRedisClient(rc config.RedisConfig) *redis.Client {
 	opts := &redis.Options{
 		Addr:         rc.Addr,
 		Username:     rc.Username,
@@ -241,6 +267,9 @@ func openRedisStorage(cfg *config.Config, logger *slog.Logger, idGenerator func(
 		ReadTimeout:  rc.ReadTimeout,
 		WriteTimeout: rc.WriteTimeout,
 		PoolSize:     rc.PoolSize,
+		// The store bounds pipelines and the drain on close with context
+		// deadlines, which go-redis ignores without this.
+		ContextTimeoutEnabled: true,
 	}
 	if rc.TLS {
 		host, _, err := net.SplitHostPort(rc.Addr)
@@ -249,8 +278,12 @@ func openRedisStorage(cfg *config.Config, logger *slog.Logger, idGenerator func(
 		}
 		opts.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12, ServerName: host}
 	}
-	client := redis.NewClient(opts)
+	return redis.NewClient(opts)
+}
 
+// openRedisStorage checks the server and builds the store on client.
+func openRedisStorage(cfg *config.Config, client *redis.Client, logger *slog.Logger, idGenerator func() string) (*storage.RedisManager, error) {
+	rc := cfg.Storage.Redis
 	ctx, cancel := context.WithTimeout(context.Background(), rc.DialTimeout+rc.ReadTimeout)
 	defer cancel()
 	m, err := storage.NewRedisManager(ctx, client, storage.RedisOptions{
@@ -265,22 +298,10 @@ func openRedisStorage(cfg *config.Config, logger *slog.Logger, idGenerator func(
 		Logger:             logger,
 	})
 	if err != nil {
-		_ = client.Close()
 		return nil, fmt.Errorf("Error opening redis store: %w", err)
 	}
 	logger.Info("redis store enabled", "addr", rc.Addr, "tls", rc.TLS, "key_prefix", rc.KeyPrefix)
 	return m, nil
-}
-
-// newACMEState keeps challenge records and certificates next to the hooks:
-// in Redis when the store is shared, so any instance can answer a challenge
-// and only one obtains each certificate; otherwise in memory and on disk.
-func newACMEState(store storage.Store, logger *slog.Logger) (*acme.Provider, certmagic.Storage) {
-	if shared, ok := store.(*storage.RedisManager); ok {
-		client, prefix := shared.Client(), shared.KeyPrefix()
-		return acme.NewSharedProvider(logger, acme.NewRedisRecords(client, prefix)), certstore.NewRedis(client, prefix)
-	}
-	return acme.NewProvider(logger), nil
 }
 
 // serve cancels the shared context when a listener fails.

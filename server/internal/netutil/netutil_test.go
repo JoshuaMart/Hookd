@@ -77,31 +77,39 @@ func TestHookIDFromHostTail(t *testing.T) {
 }
 
 func TestResolveHookID(t *testing.T) {
+	registered := map[string]bool{"abc123": true, "first": true}
 	for _, tc := range []struct {
 		host      string
 		want      string
 		wantFound bool
-		wantCalls []string
+		wantAsked []string
 	}{
 		{"abc123.hookd.example.com", "abc123", true, []string{"abc123"}},
 		{"x.y.abc123.hookd.example.com", "abc123", true, []string{"x", "abc123"}},
-		{"first.abc123.hookd.example.com", "first", true, []string{"first"}},
+		{"first.abc123.hookd.example.com", "first", true, []string{"first", "abc123"}},
 		{"x.unknown.hookd.example.com", "x", false, []string{"x", "unknown"}},
-		// A single label is its own tail: one lookup, not two.
+		// A single label is its own tail: one candidate, not two.
 		{"nope.hookd.example.com", "nope", false, []string{"nope"}},
 		{"abc123.evil.com", "", false, nil},
 	} {
-		var calls []string
-		has := func(id string) bool {
-			calls = append(calls, id)
-			return id == "abc123" || id == "first"
+		var asked []string
+		calls := 0
+		first := func(ids ...string) int {
+			calls++
+			asked = ids
+			for i, id := range ids {
+				if registered[id] {
+					return i
+				}
+			}
+			return -1
 		}
-		got, found := ResolveHookID(tc.host, "hookd.example.com", has)
+		got, found := ResolveHookID(tc.host, "hookd.example.com", first)
 		if got != tc.want || found != tc.wantFound {
 			t.Errorf("ResolveHookID(%q) = (%q, %v), want (%q, %v)", tc.host, got, found, tc.want, tc.wantFound)
 		}
-		if !slices.Equal(calls, tc.wantCalls) {
-			t.Errorf("ResolveHookID(%q) asked has(%q), want %q", tc.host, calls, tc.wantCalls)
+		if !slices.Equal(asked, tc.wantAsked) || calls > 1 {
+			t.Errorf("ResolveHookID(%q) asked %q in %d calls, want %q in one", tc.host, asked, calls, tc.wantAsked)
 		}
 	}
 }

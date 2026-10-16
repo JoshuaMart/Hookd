@@ -28,18 +28,28 @@ type Server struct {
 	server       *dns.Server
 }
 
+// ServerOptions groups the DNS listener configuration and its dependencies.
+type ServerOptions struct {
+	Domain string
+	Port   int
+	// PublicIP is the address returned in A answers. When empty it is
+	// auto-detected from the outbound interface, which is wrong behind NAT
+	// or on a multi-homed host.
+	PublicIP string
+	// BindAddress is the local address the UDP listener binds to; empty binds
+	// all interfaces. Setting it to the host's public IP lets Hookd coexist
+	// with a loopback stub resolver (e.g. systemd-resolved on 127.0.0.53:53)
+	// instead of having to stop it.
+	BindAddress  string
+	Storage      storage.Manager
+	ACMEProvider *acme.Provider
+	Logger       *slog.Logger
+	IDGenerator  func() string
+}
+
 // NewServer creates a new DNS server.
-//
-// publicIP is the address returned in A answers; when empty it is auto-detected
-// from the outbound interface. bindAddress is the local address the UDP listener
-// binds to; when empty the server binds all interfaces. Setting bindAddress to
-// the host's public IP lets Hookd coexist with a loopback stub resolver (e.g.
-// systemd-resolved on 127.0.0.53:53) instead of having to stop it.
-func NewServer(domain string, port int, publicIP, bindAddress string, storage storage.Manager, acmeProvider *acme.Provider, logger *slog.Logger, idGenerator func() string) (*Server, error) {
-	// Use the configured public IP when provided; otherwise auto-detect it from
-	// the outbound interface. The configured value is preferred because the
-	// auto-detected address is wrong behind NAT or on a multi-homed host.
-	serverIP := publicIP
+func NewServer(opts ServerOptions) (*Server, error) {
+	serverIP := opts.PublicIP
 	if serverIP == "" {
 		detected, err := getOutboundIP()
 		if err != nil {
@@ -49,13 +59,13 @@ func NewServer(domain string, port int, publicIP, bindAddress string, storage st
 	}
 
 	s := &Server{
-		domain:       domain,
-		port:         port,
+		domain:       opts.Domain,
+		port:         opts.Port,
 		serverIP:     serverIP,
-		storage:      storage,
-		acmeProvider: acmeProvider,
-		logger:       logger,
-		idGenerator:  idGenerator,
+		storage:      opts.Storage,
+		acmeProvider: opts.ACMEProvider,
+		logger:       opts.Logger,
+		idGenerator:  opts.IDGenerator,
 	}
 
 	// Create DNS server
@@ -63,7 +73,7 @@ func NewServer(domain string, port int, publicIP, bindAddress string, storage st
 	mux.HandleFunc(".", s.handleDNSRequest)
 
 	s.server = &dns.Server{
-		Addr:    net.JoinHostPort(bindAddress, strconv.Itoa(port)),
+		Addr:    net.JoinHostPort(opts.BindAddress, strconv.Itoa(opts.Port)),
 		Net:     "udp",
 		Handler: mux,
 	}
@@ -135,7 +145,7 @@ func (s *Server) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 		}
 
 		// Extract hook ID from domain
-		if hookID, found := netutil.ResolveHookID(q.Name, s.domain, s.storage.Has); found {
+		if hookID, found := netutil.ResolveHookID(q.Name, s.domain, s.firstExisting); found {
 			// Log interaction
 			sourceIP := netutil.ExtractIP(w.RemoteAddr().String())
 			interaction := storage.DNSInteraction(
@@ -315,4 +325,8 @@ func (s *Server) record(hookID string, interaction *storage.Interaction) {
 		return
 	}
 	s.storage.AddInteraction(hookID, interaction)
+}
+
+func (s *Server) firstExisting(ids ...string) int {
+	return storage.FirstExisting(s.storage, ids...)
 }

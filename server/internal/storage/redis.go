@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -42,7 +43,7 @@ type RedisManager struct {
 	done   chan struct{}
 	closed atomic.Bool
 
-	lastFailureLog atomic.Int64
+	lastFailureLog sync.Map // op -> *atomic.Int64, unix nanos
 }
 
 // RedisOptions configures a RedisManager.
@@ -73,6 +74,7 @@ var (
 	_ Store          = (*RedisManager)(nil)
 	_ EvictionLeaser = (*RedisManager)(nil)
 	_ AsyncRecorder  = (*RedisManager)(nil)
+	_ BatchCreator   = (*RedisManager)(nil)
 )
 
 // minRedisMajor is the oldest server with every command the scripts use
@@ -80,7 +82,9 @@ var (
 const minRedisMajor = 7
 
 // NewRedisManager checks the server is reachable and recent enough. The
-// client stays owned by the manager and is closed by Close.
+// client stays owned by the manager and is closed by Close; it needs
+// ContextTimeoutEnabled, or the deadlines bounding background writes are
+// ignored.
 func NewRedisManager(ctx context.Context, client redis.UniversalClient, opts RedisOptions) (*RedisManager, error) {
 	if opts.KeyPrefix == "" {
 		return nil, errors.New("redis key prefix must not be empty")
@@ -90,6 +94,12 @@ func NewRedisManager(ctx context.Context, client redis.UniversalClient, opts Red
 	}
 	if err := checkRedisVersion(ctx, client); err != nil {
 		return nil, err
+	}
+	// Loaded up front, so pipelined calls do not start with NOSCRIPT.
+	for _, script := range allScripts {
+		if err := script.Load(ctx, client).Err(); err != nil {
+			return nil, fmt.Errorf("load redis scripts: %w", err)
+		}
 	}
 
 	owner := make([]byte, 8)
@@ -142,10 +152,6 @@ func checkRedisVersion(ctx context.Context, client redis.UniversalClient) error 
 	return errors.New("redis did not report its version")
 }
 
-// Client and KeyPrefix let the ACME state share the connection and namespace.
-func (m *RedisManager) Client() redis.UniversalClient { return m.client }
-func (m *RedisManager) KeyPrefix() string             { return m.prefix }
-
 // Close writes the queued captures, then releases the connection pool.
 func (m *RedisManager) Close() error {
 	if !m.closed.Swap(true) {
@@ -164,13 +170,16 @@ func (m *RedisManager) run(ctx context.Context, s *redis.Script, args ...any) *r
 	return s.Run(ctx, m.client, nil, append([]any{m.prefix}, args...)...)
 }
 
-// logFailure reports a storage error at most once a second: when the server
-// is unreachable every DNS query fails, and one line per query would flood
-// the log.
+// logFailure reports a storage error at most once a second per operation:
+// when the server is unreachable every DNS query fails, and one line per
+// query would flood the log, but a burst of one failure must not hide
+// another kind.
 func (m *RedisManager) logFailure(op string, err error, attrs ...any) {
+	v, _ := m.lastFailureLog.LoadOrStore(op, new(atomic.Int64))
+	last := v.(*atomic.Int64)
 	now := time.Now().UnixNano()
-	last := m.lastFailureLog.Load()
-	if now-last < int64(time.Second) || !m.lastFailureLog.CompareAndSwap(last, now) {
+	prev := last.Load()
+	if now-prev < int64(time.Second) || !last.CompareAndSwap(prev, now) {
 		return
 	}
 	m.logger.Error("redis storage "+op+" failed", append([]any{"error", err}, attrs...)...)
@@ -208,4 +217,9 @@ var (
 	evictBeforeScript    = newScript("evict_before")
 	trimScript           = newScript("trim")
 	leaseScript          = newScript("lease")
+
+	allScripts = []*redis.Script{
+		createHooksScript, addInteractionScript, readScript, ackScript, pollScript,
+		evictExpiredScript, evictBeforeScript, trimScript, leaseScript,
+	}
 )

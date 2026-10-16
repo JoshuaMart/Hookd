@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -47,7 +48,7 @@ func newTestRedisWith(t testing.TB, opts RedisOptions) *RedisManager {
 	opts.LongLivedEnabled = true
 	opts.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	client := redis.NewClient(&redis.Options{Addr: addr})
+	client := redis.NewClient(&redis.Options{Addr: addr, ContextTimeoutEnabled: true})
 	m, err := NewRedisManager(context.Background(), client, opts)
 	if err != nil {
 		client.Close()
@@ -418,4 +419,114 @@ func TestRedis_RecordAsyncDropsWhenFull(t *testing.T) {
 	}
 	m.done = make(chan struct{})
 	go m.writeLoop()
+}
+
+func TestRedis_CreateHookBatchIsAtomicAcrossKinds(t *testing.T) {
+	m := newTestRedis(t, ephemeralTTL)
+	eph, ll := CreateOptions{TTL: time.Hour}, CreateOptions{TTL: 2 * ephemeralTTL}
+
+	hooks, err := m.CreateHookBatch("example.com", []CreateOptions{eph, ll, eph}, 2)
+	if err != nil || len(hooks) != 3 {
+		t.Fatalf("expected 3 hooks, got %d (%v)", len(hooks), err)
+	}
+	if m.LongLivedCount() != 1 || m.Stats().HooksActive != 3 {
+		t.Fatalf("expected 1 long-lived of 3 hooks, got %d of %d", m.LongLivedCount(), m.Stats().HooksActive)
+	}
+
+	// Two more long-lived hooks exceed the cap: the ephemeral one is not created either.
+	if _, err := m.CreateHookBatch("example.com", []CreateOptions{eph, ll, ll}, 2); !errors.Is(err, ErrHookLimitReached) {
+		t.Fatalf("expected ErrHookLimitReached, got %v", err)
+	}
+	if n := m.Stats().HooksActive; n != 3 {
+		t.Errorf("a refused batch must create nothing, got %d hooks", n)
+	}
+
+	m.client.Close()
+	if _, err := m.CreateHookBatch("example.com", []CreateOptions{eph}, 0); err == nil {
+		t.Error("a storage failure must be reported")
+	}
+}
+
+func TestRedis_CloseDoesNotHangOnAStalledServer(t *testing.T) {
+	asyncTimeout, drainTimeout = 200*time.Millisecond, 300*time.Millisecond
+	t.Cleanup(func() { asyncTimeout, drainTimeout = 5*time.Second, 5*time.Second })
+
+	m := newTestRedis(t, ephemeralTTL)
+	hook := m.CreateHook("example.com", CreateOptions{TTL: time.Hour})
+	admin := redis.NewClient(&redis.Options{Addr: os.Getenv(redisTestAddrEnv)})
+	defer admin.Close()
+	// Every other client blocks until the pause ends, like an unreachable server.
+	if err := admin.Do(context.Background(), "CLIENT", "PAUSE", 3000, "ALL").Err(); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2000; i++ {
+		m.RecordAsync(hook.ID, DNSInteraction(fmt.Sprint(i), "1.2.3.4", "q", "A"))
+	}
+
+	start := time.Now()
+	m.Close()
+	if elapsed := time.Since(start); elapsed > 1500*time.Millisecond {
+		t.Errorf("Close took %s with a stalled server", elapsed)
+	}
+	time.Sleep(3 * time.Second) // let the pause end before cleanup
+}
+
+func TestRedis_FailureLogsAreLimitedPerOperation(t *testing.T) {
+	var buf strings.Builder
+	m := &RedisManager{logger: slog.New(slog.NewTextHandler(&buf, nil))}
+	for range 5 {
+		m.logFailure("has", errors.New("down"))
+	}
+	m.logFailure("create hook", errors.New("down"))
+	if n := strings.Count(buf.String(), "redis storage has failed"); n != 1 {
+		t.Errorf("expected one has line, got %d", n)
+	}
+	if !strings.Contains(buf.String(), "redis storage create hook failed") {
+		t.Error("a burst of one failure must not hide another")
+	}
+}
+
+// Trimming rewrites ttl scores mid-pass; every hook must still be visited.
+func TestRedis_LimitPassTrimsEveryHook(t *testing.T) {
+	m := newTestRedis(t, ephemeralTTL)
+	now := time.Now().UTC()
+	var ids []string
+	for h := 0; h < 3*evictBatch; h++ {
+		hook := m.CreateHook("example.com", CreateOptions{TTL: time.Hour})
+		ids = append(ids, hook.ID)
+		for i := 0; i < 3; i++ {
+			it := DNSInteraction(fmt.Sprint(i), "1.2.3.4", "q", "A")
+			it.Timestamp = now.Add(time.Duration(h-i) * time.Millisecond)
+			m.AddInteraction(hook.ID, it)
+		}
+	}
+	if n := m.EnforcePerHookLimit(1); n != 2*len(ids) {
+		t.Errorf("expected %d trimmed, got %d", 2*len(ids), n)
+	}
+	for _, id := range ids {
+		if read, _ := m.ReadInteractions(id, 0); len(read.Interactions) != 1 {
+			t.Fatalf("hook %s kept %d interactions", id, len(read.Interactions))
+		}
+	}
+}
+
+func TestRedis_FirstExistingInOneRoundTrip(t *testing.T) {
+	m := newTestRedisWith(t, RedisOptions{EphemeralThreshold: ephemeralTTL, HasCacheSize: 100, HasCacheTTL: time.Hour})
+	hook := m.CreateHook("example.com", CreateOptions{TTL: time.Hour})
+	other := newTestRedisWith(t, RedisOptions{KeyPrefix: m.prefix, EphemeralThreshold: ephemeralTTL, HasCacheSize: 100, HasCacheTTL: time.Hour})
+
+	if i := other.FirstExisting("x", hook.ID); i != 1 {
+		t.Errorf("expected the tail candidate, got %d", i)
+	}
+	if i := other.FirstExisting("x", "y"); i != -1 {
+		t.Errorf("expected no match, got %d", i)
+	}
+	// The first label wins over a cached tail when it exists too.
+	second := m.CreateHook("example.com", CreateOptions{TTL: time.Hour})
+	if i := other.FirstExisting(second.ID, hook.ID); i != 0 {
+		t.Errorf("the first label must win, got %d", i)
+	}
+	if !other.known.has(hook.ID) || !other.known.has(second.ID) {
+		t.Error("found ids must be cached")
+	}
 }

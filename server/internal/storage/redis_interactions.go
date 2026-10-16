@@ -79,18 +79,24 @@ func (m *RedisManager) ReadInteractions(hookID string, after int64) (CursorRead,
 	if err != nil {
 		return CursorRead{}, err
 	}
+	return decodeRead(reply)
+}
+
+// decodeRead parses read.lua's {dropped_through, entries} reply.
+func decodeRead(reply []any) (CursorRead, error) {
 	if len(reply) != 2 {
 		return CursorRead{}, fmt.Errorf("unexpected read reply of length %d", len(reply))
 	}
 	dropped, _ := reply[0].(string)
-	read := CursorRead{}
-	if read.DroppedThrough, err = strconv.ParseInt(dropped, 10, 64); err != nil {
+	through, err := strconv.ParseInt(dropped, 10, 64)
+	if err != nil {
 		return CursorRead{}, fmt.Errorf("parse dropped_through %q: %w", dropped, err)
 	}
-	if read.Interactions, err = decodeEntries(reply[1]); err != nil {
+	interactions, err := decodeEntries(reply[1])
+	if err != nil {
 		return CursorRead{}, err
 	}
-	return read, nil
+	return CursorRead{Interactions: interactions, DroppedThrough: through}, nil
 }
 
 // maxSeq bounds client-supplied cursors so seq+1 cannot overflow.
@@ -126,49 +132,68 @@ func (m *RedisManager) PollInteractions(hookID string) []*Interaction {
 // PollInteractionsBatch drains several hooks. Unknown hooks yield a not-found
 // error, matching the other backends.
 func (m *RedisManager) PollInteractionsBatch(hookIDs []string) map[string]*PollResult {
-	results := make(map[string]*PollResult, len(hookIDs))
-	ids := make([]string, 0, len(hookIDs))
-	for _, id := range hookIDs {
-		if _, seen := results[id]; seen {
-			continue
-		}
-		results[id] = &PollResult{Interactions: []*Interaction{}}
-		ids = append(ids, id)
-	}
-
+	ids := uniqueIDs(hookIDs)
+	results := make(map[string]*PollResult, len(ids))
 	for start := 0; start < len(ids); start += pollChunkSize {
-		chunk := ids[start:min(start+pollChunkSize, len(ids))]
-		args := make([]any, len(chunk))
-		for i, id := range chunk {
-			args[i] = id
-		}
-		reply, err := m.run(context.Background(), pollScript, args...).Slice()
-		if err == nil && len(reply) != len(chunk) {
-			err = fmt.Errorf("unexpected poll reply of length %d", len(reply))
-		}
-		if err != nil {
-			m.logFailure("poll", err)
-			for _, id := range chunk {
-				results[id] = &PollResult{Error: "storage error"}
-			}
-			continue
-		}
-		for i, id := range chunk {
-			if reply[i] == nil {
-				results[id] = &PollResult{Error: "Hook not found"}
-				continue
-			}
-			interactions, err := decodeEntries(reply[i])
-			if err != nil {
-				// The script already deleted them: report the loss.
-				m.logFailure("decode polled interactions", err, "hook_id", id)
-				results[id] = &PollResult{Error: "storage error"}
-				continue
-			}
-			results[id] = &PollResult{Interactions: interactions}
-		}
+		m.pollChunk(ids[start:min(start+pollChunkSize, len(ids))], results)
 	}
 	return results
+}
+
+// uniqueIDs drops repeats, so a duplicate cannot replace the first drain
+// with an empty one.
+func uniqueIDs(ids []string) []string {
+	seen := make(map[string]bool, len(ids))
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if !seen[id] {
+			seen[id] = true
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+// pollChunk drains one script's worth of hooks into results.
+func (m *RedisManager) pollChunk(ids []string, results map[string]*PollResult) {
+	reply, err := m.run(context.Background(), pollScript, idArgs(ids)...).Slice()
+	if err == nil && len(reply) != len(ids) {
+		err = fmt.Errorf("unexpected poll reply of length %d", len(reply))
+	}
+	if err != nil {
+		m.logFailure("poll", err)
+		for _, id := range ids {
+			results[id] = &PollResult{Error: "storage error"}
+		}
+		return
+	}
+	for i, id := range ids {
+		results[id] = m.pollResult(id, reply[i])
+	}
+}
+
+// pollResult decodes one hook's share of a poll reply; nil means unknown.
+func (m *RedisManager) pollResult(id string, reply any) *PollResult {
+	if reply == nil {
+		return &PollResult{Error: "Hook not found"}
+	}
+	interactions, err := decodeEntries(reply)
+	if err != nil {
+		// The script already deleted them: report the loss.
+		m.logFailure("decode polled interactions", err, "hook_id", id)
+		return &PollResult{Error: "storage error"}
+	}
+	return &PollResult{Interactions: interactions}
+}
+
+// idArgs appends hook IDs to leading script arguments.
+func idArgs(ids []string, lead ...any) []any {
+	args := make([]any, 0, len(lead)+len(ids))
+	args = append(args, lead...)
+	for _, id := range ids {
+		args = append(args, id)
+	}
+	return args
 }
 
 // decodeEntries decodes stream entries as a script returns them.

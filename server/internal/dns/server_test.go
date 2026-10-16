@@ -21,7 +21,7 @@ func TestNewServer(t *testing.T) {
 	acmeProvider := acme.NewProvider(slog.Default())
 	logger := slog.Default()
 
-	server, err := NewServer("example.com", 5353, "", "", manager, acmeProvider, logger, idGen)
+	server, err := NewServer(ServerOptions{Domain: "example.com", Port: 5353, Storage: manager, ACMEProvider: acmeProvider, Logger: logger, IDGenerator: idGen})
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
 	}
@@ -47,7 +47,7 @@ func TestNewServer_PublicIPOverride(t *testing.T) {
 
 	// An explicit public IP must be used verbatim, without auto-detection, so a
 	// host behind NAT can advertise its real public address.
-	server, err := NewServer("example.com", 5353, "203.0.113.7", "", manager, acmeProvider, logger, idGen)
+	server, err := NewServer(ServerOptions{Domain: "example.com", Port: 5353, PublicIP: "203.0.113.7", Storage: manager, ACMEProvider: acmeProvider, Logger: logger, IDGenerator: idGen})
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
 	}
@@ -65,7 +65,7 @@ func TestNewServer_BindAddress(t *testing.T) {
 
 	// A bind address confines the listener to a single interface so Hookd can
 	// coexist with a loopback stub resolver on the same port.
-	server, err := NewServer("example.com", 5353, "", "127.0.0.1", manager, acmeProvider, logger, idGen)
+	server, err := NewServer(ServerOptions{Domain: "example.com", Port: 5353, BindAddress: "127.0.0.1", Storage: manager, ACMEProvider: acmeProvider, Logger: logger, IDGenerator: idGen})
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
 	}
@@ -82,7 +82,7 @@ func TestNewServer_DefaultBindAllInterfaces(t *testing.T) {
 	logger := slog.Default()
 
 	// An empty bind address must keep the historical all-interfaces bind (":port").
-	server, err := NewServer("example.com", 5353, "", "", manager, acmeProvider, logger, idGen)
+	server, err := NewServer(ServerOptions{Domain: "example.com", Port: 5353, Storage: manager, ACMEProvider: acmeProvider, Logger: logger, IDGenerator: idGen})
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
 	}
@@ -144,7 +144,7 @@ func TestServer_HandleDNSRequest_TypeA(t *testing.T) {
 	acmeProvider := acme.NewProvider(slog.Default())
 	logger := slog.Default()
 
-	server, _ := NewServer("example.com", 5353, "", "", manager, acmeProvider, logger, idGen)
+	server, _ := NewServer(ServerOptions{Domain: "example.com", Port: 5353, Storage: manager, ACMEProvider: acmeProvider, Logger: logger, IDGenerator: idGen})
 
 	// Create a hook
 	hook := manager.CreateHook("example.com", storage.CreateOptions{})
@@ -189,7 +189,7 @@ func TestServer_HandleDNSRequest_TypeA(t *testing.T) {
 func TestServer_HandleDNSRequest_RegisteredHookAfterPrefixLabels(t *testing.T) {
 	idGen := func() string { return "test-id" }
 	manager := storage.NewMemoryManager(idGen)
-	server, err := NewServer("example.com", 5353, "203.0.113.7", "", manager, acme.NewProvider(slog.Default()), slog.Default(), idGen)
+	server, err := NewServer(ServerOptions{Domain: "example.com", Port: 5353, PublicIP: "203.0.113.7", Storage: manager, ACMEProvider: acme.NewProvider(slog.Default()), Logger: slog.Default(), IDGenerator: idGen})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -221,7 +221,7 @@ func TestServer_HandleDNSRequest_TypeTXT(t *testing.T) {
 	acmeProvider := acme.NewProvider(slog.Default())
 	logger := slog.Default()
 
-	server, _ := NewServer("example.com", 5353, "", "", manager, acmeProvider, logger, idGen)
+	server, _ := NewServer(ServerOptions{Domain: "example.com", Port: 5353, Storage: manager, ACMEProvider: acmeProvider, Logger: logger, IDGenerator: idGen})
 
 	// Create DNS query for TXT record
 	m := new(dns.Msg)
@@ -255,7 +255,7 @@ func TestServer_HandleDNSRequest_ExternalDomain(t *testing.T) {
 	acmeProvider := acme.NewProvider(slog.Default())
 	logger := slog.Default()
 
-	server, _ := NewServer("example.com", 5353, "", "", manager, acmeProvider, logger, idGen)
+	server, _ := NewServer(ServerOptions{Domain: "example.com", Port: 5353, Storage: manager, ACMEProvider: acmeProvider, Logger: logger, IDGenerator: idGen})
 
 	// Create DNS query for external domain
 	m := new(dns.Msg)
@@ -281,7 +281,7 @@ func TestServer_HandleDNSRequest_TypeNS(t *testing.T) {
 	acmeProvider := acme.NewProvider(slog.Default())
 	logger := slog.Default()
 
-	server, _ := NewServer("example.com", 5353, "", "", manager, acmeProvider, logger, idGen)
+	server, _ := NewServer(ServerOptions{Domain: "example.com", Port: 5353, Storage: manager, ACMEProvider: acmeProvider, Logger: logger, IDGenerator: idGen})
 
 	m := new(dns.Msg)
 	m.SetQuestion("example.com.", dns.TypeNS)
@@ -310,7 +310,7 @@ func TestServer_HandleDNSRequest_TypeMX(t *testing.T) {
 	acmeProvider := acme.NewProvider(slog.Default())
 	logger := slog.Default()
 
-	server, _ := NewServer("example.com", 5353, "", "", manager, acmeProvider, logger, idGen)
+	server, _ := NewServer(ServerOptions{Domain: "example.com", Port: 5353, Storage: manager, ACMEProvider: acmeProvider, Logger: logger, IDGenerator: idGen})
 
 	m := new(dns.Msg)
 	m.SetQuestion("example.com.", dns.TypeMX)
@@ -339,7 +339,7 @@ func TestServer_HandleACMETXTChallenge(t *testing.T) {
 	acmeProvider := acme.NewProvider(slog.Default())
 	logger := slog.Default()
 
-	server, _ := NewServer("example.com", 5353, "", "", manager, acmeProvider, logger, idGen)
+	server, _ := NewServer(ServerOptions{Domain: "example.com", Port: 5353, Storage: manager, ACMEProvider: acmeProvider, Logger: logger, IDGenerator: idGen})
 
 	t.Run("valid ACME challenge", func(t *testing.T) {
 		// Add ACME record to provider
@@ -440,7 +440,7 @@ func TestServer_Start(t *testing.T) {
 	logger := slog.Default()
 
 	// Use high port to avoid permission issues
-	server, err := NewServer("example.com", 15353, "", "", manager, acmeProvider, logger, idGen)
+	server, err := NewServer(ServerOptions{Domain: "example.com", Port: 15353, Storage: manager, ACMEProvider: acmeProvider, Logger: logger, IDGenerator: idGen})
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
 	}
@@ -489,7 +489,7 @@ func TestServer_StartContextCancelled(t *testing.T) {
 	acmeProvider := acme.NewProvider(slog.Default())
 	logger := slog.Default()
 
-	server, err := NewServer("example.com", 15354, "", "", manager, acmeProvider, logger, idGen)
+	server, err := NewServer(ServerOptions{Domain: "example.com", Port: 15354, Storage: manager, ACMEProvider: acmeProvider, Logger: logger, IDGenerator: idGen})
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
 	}
@@ -522,7 +522,7 @@ func TestServer_HandleDNSRequest_MixedCaseQname(t *testing.T) {
 	acmeProvider := acme.NewProvider(slog.Default())
 	logger := slog.Default()
 
-	server, _ := NewServer("example.com", 5353, "", "", manager, acmeProvider, logger, idGen)
+	server, _ := NewServer(ServerOptions{Domain: "example.com", Port: 5353, Storage: manager, ACMEProvider: acmeProvider, Logger: logger, IDGenerator: idGen})
 
 	hook := manager.CreateHook("example.com", storage.CreateOptions{})
 
@@ -561,7 +561,7 @@ func (s *asyncStore) RecordAsync(hookID string, it *storage.Interaction) {
 func TestServer_HandleDNSRequest_RecordsAsyncWhenSupported(t *testing.T) {
 	idGen := func() string { return "test-id" }
 	store := &asyncStore{MemoryManager: storage.NewMemoryManager(idGen)}
-	server, _ := NewServer("example.com", 5353, "127.0.0.1", "", store, acme.NewProvider(slog.Default()), slog.Default(), idGen)
+	server, _ := NewServer(ServerOptions{Domain: "example.com", Port: 5353, PublicIP: "127.0.0.1", Storage: store, ACMEProvider: acme.NewProvider(slog.Default()), Logger: slog.Default(), IDGenerator: idGen})
 	hook := store.CreateHook("example.com", storage.CreateOptions{})
 
 	m := new(dns.Msg)

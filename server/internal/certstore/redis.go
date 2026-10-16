@@ -5,13 +5,11 @@ package certstore
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
-	"fmt"
 	"io/fs"
-	"sort"
-	"strconv"
+	"maps"
+	"path"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -34,12 +32,6 @@ type Redis struct {
 
 	mu    sync.Mutex
 	locks map[string]*heldLock
-}
-
-type heldLock struct {
-	token string
-	stop  context.CancelFunc
-	done  chan struct{}
 }
 
 var _ certmagic.Storage = (*Redis)(nil)
@@ -80,18 +72,13 @@ func (r *Redis) Load(ctx context.Context, key string) ([]byte, error) {
 
 // Delete removes a key, or a "directory" with every key under it.
 func (r *Redis) Delete(ctx context.Context, key string) error {
-	keys, err := r.keys(ctx)
+	below, err := r.keysUnder(ctx, key)
 	if err != nil {
 		return err
 	}
-	var doomed []string
-	for _, k := range keys {
-		if k == key || strings.HasPrefix(k, key+"/") {
-			doomed = append(doomed, k)
-		}
-	}
-	if len(doomed) == 0 {
-		return nil
+	doomed := []string{key} // deleting a missing field is a no-op
+	for _, rel := range below {
+		doomed = append(doomed, path.Join(key, rel))
 	}
 	_, err = r.client.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
 		pipe.HDel(ctx, r.dataKey(), doomed...)
@@ -108,172 +95,68 @@ func (r *Redis) Exists(ctx context.Context, key string) bool {
 }
 
 // List returns the keys under prefix, or only its direct children when not
-// recursive, like certmagic.FileStorage.
+// recursive, like certmagic.FileStorage. A recursive listing also names the
+// intermediate "directories".
 func (r *Redis) List(ctx context.Context, prefix string, recursive bool) ([]string, error) {
-	keys, err := r.keys(ctx)
+	below, err := r.keysUnder(ctx, prefix)
 	if err != nil {
 		return nil, err
 	}
-	base := strings.TrimSuffix(prefix, "/")
-	seen := map[string]bool{}
-	var out []string
-	for _, k := range keys {
-		rest := k
-		if base != "" {
-			var ok bool
-			if rest, ok = strings.CutPrefix(k, base+"/"); !ok {
-				continue
-			}
-		}
-		if !recursive {
-			rest, _, _ = strings.Cut(rest, "/")
-		}
-		child := rest
-		if base != "" {
-			child = base + "/" + rest
-		}
-		if !seen[child] {
-			seen[child] = true
-			out = append(out, child)
-		}
-		// A recursive listing also names the intermediate "directories".
+	listed := map[string]bool{}
+	for _, rel := range below {
+		parts := strings.Split(rel, "/")
+		depth := 1
 		if recursive {
-			for dir := child; ; {
-				i := strings.LastIndex(dir, "/")
-				if i <= len(base) {
-					break
-				}
-				dir = dir[:i]
-				if !seen[dir] {
-					seen[dir] = true
-					out = append(out, dir)
-				}
-			}
+			depth = len(parts)
+		}
+		for i := 1; i <= depth; i++ {
+			listed[path.Join(prefix, strings.Join(parts[:i], "/"))] = true
 		}
 	}
-	if len(out) == 0 {
+	if len(listed) == 0 {
 		return nil, fs.ErrNotExist
 	}
-	sort.Strings(out)
-	return out, nil
+	return slices.Sorted(maps.Keys(listed)), nil
 }
 
-// Stat describes a key, or a "directory" that prefixes other keys.
+// Stat describes a key, or a "directory" that prefixes other keys. Every
+// Store writes a modification time, so its presence means the key exists.
 func (r *Redis) Stat(ctx context.Context, key string) (certmagic.KeyInfo, error) {
-	cmds, err := r.client.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-		pipe.HStrLen(ctx, r.dataKey(), key)
-		pipe.HGet(ctx, r.mtimeKey(), key)
-		pipe.HExists(ctx, r.dataKey(), key)
-		return nil
-	})
-	if err != nil && !errors.Is(err, redis.Nil) {
+	pipe := r.client.TxPipeline()
+	size := pipe.HStrLen(ctx, r.dataKey(), key)
+	mtime := pipe.HGet(ctx, r.mtimeKey(), key)
+	if _, err := pipe.Exec(ctx); err != nil && !errors.Is(err, redis.Nil) {
 		return certmagic.KeyInfo{}, err
 	}
-	if cmds[2].(*redis.BoolCmd).Val() {
-		nanos, _ := strconv.ParseInt(cmds[1].(*redis.StringCmd).Val(), 10, 64)
-		return certmagic.KeyInfo{
-			Key:        key,
-			Modified:   time.Unix(0, nanos),
-			Size:       cmds[0].(*redis.IntCmd).Val(),
-			IsTerminal: true,
-		}, nil
+	if nanos, err := mtime.Int64(); err == nil {
+		return certmagic.KeyInfo{Key: key, Modified: time.Unix(0, nanos), Size: size.Val(), IsTerminal: true}, nil
 	}
-	keys, err := r.keys(ctx)
+	below, err := r.keysUnder(ctx, key)
 	if err != nil {
 		return certmagic.KeyInfo{}, err
 	}
+	if len(below) == 0 {
+		return certmagic.KeyInfo{}, fs.ErrNotExist
+	}
+	return certmagic.KeyInfo{Key: key, IsTerminal: false}, nil
+}
+
+// keysUnder returns the stored keys below dir, relative to it; every key
+// when dir is empty.
+func (r *Redis) keysUnder(ctx context.Context, dir string) ([]string, error) {
+	keys, err := r.client.HKeys(ctx, r.dataKey()).Result()
+	if err != nil {
+		return nil, err
+	}
+	base := strings.TrimSuffix(dir, "/")
+	if base == "" {
+		return keys, nil
+	}
+	var below []string
 	for _, k := range keys {
-		if strings.HasPrefix(k, strings.TrimSuffix(key, "/")+"/") {
-			return certmagic.KeyInfo{Key: key, IsTerminal: false}, nil
+		if rel, ok := strings.CutPrefix(k, base+"/"); ok {
+			below = append(below, rel)
 		}
 	}
-	return certmagic.KeyInfo{}, fs.ErrNotExist
+	return below, nil
 }
-
-func (r *Redis) keys(ctx context.Context) ([]string, error) {
-	return r.client.HKeys(ctx, r.dataKey()).Result()
-}
-
-// Lock blocks until this process holds the named lock or ctx ends. The lock
-// is renewed until Unlock, and expires on its own if the process dies.
-func (r *Redis) Lock(ctx context.Context, name string) error {
-	token, err := newToken()
-	if err != nil {
-		return err
-	}
-	for {
-		ok, err := r.client.SetNX(ctx, r.lockKey(name), token, r.lockTTL).Result()
-		if err != nil {
-			return fmt.Errorf("acquire lock %s: %w", name, err)
-		}
-		if ok {
-			r.hold(name, token)
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(r.pollInterval):
-		}
-	}
-}
-
-// hold records the lock and keeps renewing it in the background.
-func (r *Redis) hold(name, token string) {
-	ctx, stop := context.WithCancel(context.Background())
-	held := &heldLock{token: token, stop: stop, done: make(chan struct{})}
-	r.mu.Lock()
-	r.locks[name] = held
-	r.mu.Unlock()
-
-	go func() {
-		defer close(held.done)
-		ticker := time.NewTicker(r.lockTTL / 3)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				renewLockScript.Run(ctx, r.client, []string{r.lockKey(name)}, token, r.lockTTL.Milliseconds())
-			}
-		}
-	}()
-}
-
-// Unlock releases a lock this process holds, and only if it still holds it:
-// an expired lock may already belong to another instance.
-func (r *Redis) Unlock(ctx context.Context, name string) error {
-	r.mu.Lock()
-	held, ok := r.locks[name]
-	delete(r.locks, name)
-	r.mu.Unlock()
-	if !ok {
-		return fmt.Errorf("lock %s is not held", name)
-	}
-	held.stop()
-	<-held.done
-	return unlockScript.Run(ctx, r.client, []string{r.lockKey(name)}, held.token).Err()
-}
-
-func newToken() (string, error) {
-	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
-		return "", fmt.Errorf("generate lock token: %w", err)
-	}
-	return hex.EncodeToString(b), nil
-}
-
-var (
-	renewLockScript = redis.NewScript(`
-if redis.call('GET', KEYS[1]) == ARGV[1] then
-  return redis.call('PEXPIRE', KEYS[1], ARGV[2])
-end
-return 0`)
-
-	unlockScript = redis.NewScript(`
-if redis.call('GET', KEYS[1]) == ARGV[1] then
-  return redis.call('DEL', KEYS[1])
-end
-return 0`)
-)

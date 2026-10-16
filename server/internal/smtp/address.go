@@ -9,8 +9,8 @@ import (
 // hookIDFromRecipient splits a RCPT TO into its hook ID and sub-address tag.
 // ok is false only when the address is outside our domain — the one case the
 // server refuses. Layouts: <hookid>[+tag]@domain, or the subdomain fallback
-// <anything>[+tag]@[labels.]<hookid>.domain, resolved against has.
-func hookIDFromRecipient(addr, domain string, has func(string) bool) (id, tag string, ok bool) {
+// <anything>[+tag]@[labels.]<hookid>.domain, resolved against first.
+func hookIDFromRecipient(addr, domain string, first func(ids ...string) int) (id, tag string, ok bool) {
 	addr = strings.TrimSpace(addr)
 	addr = strings.TrimPrefix(addr, "<")
 	addr = strings.TrimSuffix(addr, ">")
@@ -49,7 +49,7 @@ func hookIDFromRecipient(addr, domain string, has func(string) bool) (id, tag st
 	}
 
 	// Subdomain fallback, sharing the extraction rule with DNS and HTTP.
-	if sub, _ := netutil.ResolveHookID(rcptDomain, domain, has); sub != "" {
+	if sub, _ := netutil.ResolveHookID(rcptDomain, domain, first); sub != "" {
 		return sub, tag, true
 	}
 

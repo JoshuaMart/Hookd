@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -25,34 +26,57 @@ var errHookCollision = errors.New("hook id collision")
 // Has reports whether a hook exists. A storage error reads as "no", so the
 // capture is dropped rather than blocked.
 func (m *RedisManager) Has(id string) bool {
-	if m.known.has(id) {
-		return true
+	return m.FirstExisting(id) == 0
+}
+
+// FirstExisting returns the index of the first id naming a hook, or -1, in
+// at most one round-trip: a cached id answers at once, and only the ids
+// before it are checked, together.
+func (m *RedisManager) FirstExisting(ids ...string) int {
+	cached := slices.IndexFunc(ids, m.known.has)
+	unknown := ids
+	if cached >= 0 {
+		unknown = ids[:cached]
 	}
-	n, err := m.client.Exists(context.Background(), m.hookKey(id)).Result()
-	if err != nil {
-		m.logFailure("has", err, "hook_id", id)
-		return false
+	if len(unknown) == 0 {
+		return cached
 	}
-	if n == 1 {
-		m.known.add(id)
+	ctx := context.Background()
+	pipe := m.client.Pipeline()
+	exists := make([]*redis.IntCmd, len(unknown))
+	for i, id := range unknown {
+		exists[i] = pipe.Exists(ctx, m.hookKey(id))
 	}
-	return n == 1
+	if _, err := pipe.Exec(ctx); err != nil {
+		m.logFailure("has", err, "hook_id", unknown[0])
+		return cached
+	}
+	for i, cmd := range exists {
+		if cmd.Val() == 1 {
+			m.known.add(unknown[i])
+			return i
+		}
+	}
+	return cached
 }
 
 // CreateHook stores a long-lived hook when its TTL exceeds the ephemeral
 // threshold, like the composite manager, without the long-lived cap. On a
-// storage error it logs and returns a hook that will never capture.
+// storage error it logs and returns a hook that will never capture;
+// registration goes through CreateHookBatch, which reports the error.
 func (m *RedisManager) CreateHook(domain string, opts CreateOptions) *Hook {
-	kind := "eph"
-	if m.longLivedEnabled && opts.TTL > m.ephemeralThreshold {
-		kind = "ll"
-	}
-	hooks, err := m.createHooks(domain, kind, []CreateOptions{opts}, 0)
+	hooks, err := m.createHooks(domain, []CreateOptions{opts}, m.kindByTTL, 0)
 	if err != nil {
 		m.logFailure("create hook", err)
 		return newHook(m.idGenerator(), domain, opts)
 	}
 	return hooks[0]
+}
+
+// CreateHookBatch creates ephemeral and long-lived hooks together, all or
+// nothing, with maxLongLived capping the long-lived ones.
+func (m *RedisManager) CreateHookBatch(domain string, opts []CreateOptions, maxLongLived int) ([]*Hook, error) {
+	return m.createHooks(domain, opts, m.kindByTTL, maxLongLived)
 }
 
 // CreateLongLivedHook stores a long-lived hook, enforcing maxHooks atomically.
@@ -69,12 +93,20 @@ func (m *RedisManager) CreateLongLivedHooks(domain string, opts []CreateOptions,
 	if !m.longLivedEnabled {
 		return nil, errors.New("long-lived hooks are disabled")
 	}
-	return m.createHooks(domain, "ll", opts, maxHooks)
+	return m.createHooks(domain, opts, func(CreateOptions) string { return "ll" }, maxHooks)
 }
 
-func (m *RedisManager) createHooks(domain, kind string, opts []CreateOptions, maxHooks int) ([]*Hook, error) {
+// kindByTTL routes a hook like the composite manager does.
+func (m *RedisManager) kindByTTL(o CreateOptions) string {
+	if m.longLivedEnabled && o.TTL > m.ephemeralThreshold {
+		return "ll"
+	}
+	return "eph"
+}
+
+func (m *RedisManager) createHooks(domain string, opts []CreateOptions, kind func(CreateOptions) string, maxLongLived int) ([]*Hook, error) {
 	for attempt := 1; ; attempt++ {
-		hooks, args, err := m.hookArgs(domain, kind, opts, maxHooks)
+		hooks, args, err := m.hookArgs(domain, opts, kind, maxLongLived)
 		if err != nil {
 			return nil, err
 		}
@@ -98,9 +130,9 @@ func (m *RedisManager) createHooks(domain, kind string, opts []CreateOptions, ma
 }
 
 // hookArgs builds the hooks and the create_hooks.lua arguments for them.
-func (m *RedisManager) hookArgs(domain, kind string, opts []CreateOptions, maxHooks int) ([]*Hook, []any, error) {
+func (m *RedisManager) hookArgs(domain string, opts []CreateOptions, kind func(CreateOptions) string, maxLongLived int) ([]*Hook, []any, error) {
 	hooks := make([]*Hook, 0, len(opts))
-	args := []any{kind, maxHooks, len(opts)}
+	args := []any{maxLongLived, len(opts)}
 	for _, o := range opts {
 		hook := newHook(m.idGenerator(), domain, o)
 		var meta string
@@ -117,7 +149,7 @@ func (m *RedisManager) hookArgs(domain, kind string, opts []CreateOptions, maxHo
 			expireAtMillis = hook.ExpiresAt.Add(expiryGrace).UnixMilli()
 		}
 		args = append(args,
-			hook.ID, hook.CreatedAt.UnixNano(), expiryNanos(hook.ExpiresAt),
+			kind(o), hook.ID, hook.CreatedAt.UnixNano(), expiryNanos(hook.ExpiresAt),
 			micros(hook.CreatedAt), expiresMicros, expireAtMillis,
 			hook.DNS, hook.HTTP, hook.HTTPS, hook.SMTP, meta,
 		)
