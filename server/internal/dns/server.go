@@ -145,7 +145,7 @@ func (s *Server) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 				dns.TypeToString[q.Qtype],
 			)
 
-			s.storage.AddInteraction(hookID, interaction)
+			s.record(hookID, interaction)
 		}
 
 		// Respond based on query type
@@ -305,4 +305,14 @@ func getOutboundIP() (string, error) {
 
 	localAddr := conn.LocalAddr().(*net.UDPAddr)
 	return localAddr.IP.String(), nil
+}
+
+// record stores a capture without waiting when the backend allows it: the
+// answer does not depend on the write, and a shared store costs a round-trip.
+func (s *Server) record(hookID string, interaction *storage.Interaction) {
+	if async, ok := s.storage.(storage.AsyncRecorder); ok {
+		async.RecordAsync(hookID, interaction)
+		return
+	}
+	s.storage.AddInteraction(hookID, interaction)
 }

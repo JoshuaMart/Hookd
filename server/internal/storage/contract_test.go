@@ -36,6 +36,10 @@ var managerStores = []contractStore[Manager]{
 	{"composite/long-lived", func(t *testing.T) Manager { return newContractComposite(t, time.Minute) }},
 	{"redis/ephemeral", func(t *testing.T) Manager { return newTestRedis(t, ephemeralTTL) }},
 	{"redis/long-lived", func(t *testing.T) Manager { return newTestRedis(t, time.Minute) }},
+	// Production enables the cache, which must not change the contract.
+	{"redis/cached", func(t *testing.T) Manager {
+		return newTestRedisWith(t, RedisOptions{EphemeralThreshold: time.Minute, HasCacheSize: 1000, HasCacheTTL: time.Hour})
+	}},
 }
 
 var longLivedStores = []contractStore[fullManager]{

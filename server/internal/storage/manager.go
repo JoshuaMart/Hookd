@@ -118,6 +118,16 @@ type EvictionLeaser interface {
 	HoldEvictionLease(ttl time.Duration) bool
 }
 
+// AsyncRecorder is implemented by backends whose writes cost a network
+// round-trip. A caller that needs neither the seq nor to know the write
+// happened, like the DNS server whose answer does not depend on it, records
+// through it instead of waiting.
+type AsyncRecorder interface {
+	// RecordAsync stores the interaction later, or drops it under overload.
+	// The caller must not use the interaction afterwards.
+	RecordAsync(hookID string, interaction *Interaction)
+}
+
 // Stats represents storage statistics
 type Stats struct {
 	HooksActive       int

@@ -135,6 +135,10 @@ type RedisConfig struct {
 	WriteTimeout time.Duration `mapstructure:"write_timeout"`
 	// Zero keeps the client default (10 connections per CPU).
 	PoolSize int `mapstructure:"pool_size"`
+	// HasCacheSize hook IDs are remembered as existing for HasCacheTTL, which
+	// spares most captures a round-trip. Zero disables the cache.
+	HasCacheSize int           `mapstructure:"has_cache_size"`
+	HasCacheTTL  time.Duration `mapstructure:"has_cache_ttl"`
 }
 
 // ObservabilityConfig holds observability configuration
@@ -208,6 +212,8 @@ func DefaultConfig() *Config {
 				DialTimeout:  5 * time.Second,
 				ReadTimeout:  time.Second,
 				WriteTimeout: time.Second,
+				HasCacheSize: 50000,
+				HasCacheTTL:  30 * time.Second,
 			},
 		},
 	}
@@ -351,6 +357,9 @@ func (s StorageConfig) validate() error {
 	}
 	if r.PoolSize < 0 {
 		return fmt.Errorf("storage.redis.pool_size must not be negative")
+	}
+	if r.HasCacheSize < 0 || r.HasCacheTTL < 0 {
+		return fmt.Errorf("storage.redis has_cache_size and has_cache_ttl must not be negative")
 	}
 	return nil
 }

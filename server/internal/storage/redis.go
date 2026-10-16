@@ -34,6 +34,13 @@ type RedisManager struct {
 	maxPerHook         int
 	maxBodyBytes       int
 	logger             *slog.Logger
+	known              *hasCache
+
+	// The background writer behind RecordAsync.
+	queue  chan pendingCapture
+	stop   chan struct{}
+	done   chan struct{}
+	closed atomic.Bool
 
 	lastFailureLog atomic.Int64
 }
@@ -52,6 +59,12 @@ type RedisOptions struct {
 	MaxPerHook int
 	// MaxBodyBytes truncates bodies stored for long-lived hooks, like SQLite.
 	MaxBodyBytes int
+	// HasCacheSize bounds the hook IDs remembered as existing for
+	// HasCacheTTL, which spares most captures a round-trip. A hook deleted on
+	// another instance can then still read as existing until the TTL ends.
+	// Zero disables the cache.
+	HasCacheSize int
+	HasCacheTTL  time.Duration
 	Logger       *slog.Logger
 }
 
@@ -59,6 +72,7 @@ type RedisOptions struct {
 var (
 	_ Store          = (*RedisManager)(nil)
 	_ EvictionLeaser = (*RedisManager)(nil)
+	_ AsyncRecorder  = (*RedisManager)(nil)
 )
 
 // minRedisMajor is the oldest server with every command the scripts use
@@ -86,7 +100,7 @@ func NewRedisManager(ctx context.Context, client redis.UniversalClient, opts Red
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &RedisManager{
+	m := &RedisManager{
 		client:             client,
 		prefix:             opts.KeyPrefix,
 		owner:              hex.EncodeToString(owner),
@@ -96,7 +110,13 @@ func NewRedisManager(ctx context.Context, client redis.UniversalClient, opts Red
 		maxPerHook:         opts.MaxPerHook,
 		maxBodyBytes:       opts.MaxBodyBytes,
 		logger:             logger,
-	}, nil
+		known:              newHasCache(opts.HasCacheSize, opts.HasCacheTTL),
+		queue:              make(chan pendingCapture, asyncQueueSize),
+		stop:               make(chan struct{}),
+		done:               make(chan struct{}),
+	}
+	go m.writeLoop()
+	return m, nil
 }
 
 // checkRedisVersion reads redis_version, which Valkey also reports.
@@ -126,8 +146,12 @@ func checkRedisVersion(ctx context.Context, client redis.UniversalClient) error 
 func (m *RedisManager) Client() redis.UniversalClient { return m.client }
 func (m *RedisManager) KeyPrefix() string             { return m.prefix }
 
-// Close releases the connection pool.
+// Close writes the queued captures, then releases the connection pool.
 func (m *RedisManager) Close() error {
+	if !m.closed.Swap(true) {
+		close(m.stop)
+		<-m.done
+	}
 	return m.client.Close()
 }
 

@@ -31,6 +31,8 @@ func TestConfig_ValidateStorage(t *testing.T) {
 		{"redis without prefix", func(c *Config) { redis(c); c.Storage.Redis.KeyPrefix = "" }, true},
 		{"redis zero read timeout", func(c *Config) { redis(c); c.Storage.Redis.ReadTimeout = 0 }, true},
 		{"redis negative pool", func(c *Config) { redis(c); c.Storage.Redis.PoolSize = -1 }, true},
+		{"redis cache disabled", func(c *Config) { redis(c); c.Storage.Redis.HasCacheSize = 0 }, false},
+		{"redis negative cache ttl", func(c *Config) { redis(c); c.Storage.Redis.HasCacheTTL = -time.Second }, true},
 		// The redis backend keeps long-lived hooks in Redis, not in SQLite.
 		{"redis needs no db_path", func(c *Config) { redis(c); c.LongLived.DBPath = "" }, false},
 		{"local needs db_path", func(c *Config) { c.LongLived.DBPath = "" }, true},
@@ -64,6 +66,7 @@ func TestLoad_StorageEnvOverride(t *testing.T) {
 	t.Setenv("HOOKD_STORAGE_REDIS_PASSWORD", "s3cret")
 	t.Setenv("HOOKD_STORAGE_REDIS_TLS", "true")
 	t.Setenv("HOOKD_STORAGE_REDIS_READ_TIMEOUT", "250ms")
+	t.Setenv("HOOKD_STORAGE_REDIS_HAS_CACHE_TTL", "5s")
 
 	cfg, err := Load("")
 	if err != nil {
@@ -71,7 +74,7 @@ func TestLoad_StorageEnvOverride(t *testing.T) {
 	}
 	r := cfg.Storage.Redis
 	if cfg.Storage.Backend != StorageBackendRedis || r.Addr != "cache.internal:6380" || r.Password != "s3cret" ||
-		!r.TLS || r.ReadTimeout != 250*time.Millisecond {
+		!r.TLS || r.ReadTimeout != 250*time.Millisecond || r.HasCacheTTL != 5*time.Second {
 		t.Errorf("env overrides not applied: backend=%q %+v", cfg.Storage.Backend, r)
 	}
 	if r.KeyPrefix != "hookd:" {

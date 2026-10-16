@@ -19,14 +19,12 @@ const pollChunkSize = 64
 // AddInteraction stores an interaction and sets its Seq. Interactions for
 // unknown hooks are dropped.
 func (m *RedisManager) AddInteraction(hookID string, interaction *Interaction) {
-	full, longLived, err := m.encodeInteraction(interaction)
+	args, err := m.addArgs(hookID, interaction)
 	if err != nil {
 		m.logFailure("encode interaction", err, "hook_id", hookID)
 		return
 	}
-	seq, err := m.run(context.Background(), addInteractionScript,
-		hookID, m.maxPerHook, micros(interaction.Timestamp), string(interaction.Type), full, longLived,
-	).Int64()
+	seq, err := addInteractionScript.Run(context.Background(), m.client, nil, args...).Int64()
 	if err != nil {
 		m.logFailure("add interaction", err, "hook_id", hookID)
 		return
@@ -34,6 +32,15 @@ func (m *RedisManager) AddInteraction(hookID string, interaction *Interaction) {
 	if seq > 0 {
 		interaction.Seq = seq
 	}
+}
+
+// addArgs builds add_interaction.lua's arguments, prefix included.
+func (m *RedisManager) addArgs(hookID string, it *Interaction) ([]any, error) {
+	full, longLived, err := m.encodeInteraction(it)
+	if err != nil {
+		return nil, err
+	}
+	return []any{m.prefix, hookID, m.maxPerHook, micros(it.Timestamp), string(it.Type), full, longLived}, nil
 }
 
 // encodeInteraction returns the stored JSON and, when the body exceeds the

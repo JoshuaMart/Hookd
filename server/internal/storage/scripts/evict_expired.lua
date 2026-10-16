@@ -1,4 +1,4 @@
--- Deletes up to limit hooks that expired before now and returns how many.
+-- Deletes up to limit hooks that expired before now and returns their ids.
 -- ARGV: P, now_us, limit
 local ids = redis.call('ZRANGE', P .. 'exp', '-inf', '(' .. ARGV[2], 'BYSCORE', 'LIMIT', 0, ARGV[3])
 for _, id in ipairs(ids) do
@@ -17,4 +17,4 @@ for _, id in ipairs(ids) do
   redis.call('ZREM', P .. 'll', id)
   redis.call('ZREM', P .. 'll:active', id)
 end
-return #ids
+return ids
