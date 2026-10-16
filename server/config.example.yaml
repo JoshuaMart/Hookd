@@ -163,3 +163,9 @@ storage:
     write_timeout: "1s"
     # 0 keeps the client default (10 connections per CPU).
     pool_size: 0
+    # Hook IDs remembered as existing, which spares most captures a round-trip
+    # to Redis. Only existence is cached, never absence, so a new hook captures
+    # at once everywhere; a stale entry only costs a write that Redis rejects.
+    # 0 disables the cache.
+    has_cache_size: 50000
+    has_cache_ttl: "30s"

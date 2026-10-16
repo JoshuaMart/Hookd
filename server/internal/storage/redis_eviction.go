@@ -46,13 +46,14 @@ func (m *RedisManager) EvictInteractionsBefore(cutoff time.Time) int {
 func (m *RedisManager) EvictExpiredHooks(now time.Time) int {
 	total := 0
 	for {
-		n, err := m.run(context.Background(), evictExpiredScript, micros(now), evictBatch).Int()
+		ids, err := m.run(context.Background(), evictExpiredScript, micros(now), evictBatch).StringSlice()
 		if err != nil {
 			m.logFailure("hook ttl eviction", err)
 			return total
 		}
-		total += n
-		if n < evictBatch {
+		m.known.forget(ids)
+		total += len(ids)
+		if len(ids) < evictBatch {
 			return total
 		}
 	}

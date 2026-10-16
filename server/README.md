@@ -123,6 +123,10 @@ instance at a time, under a lease kept in Redis.
   and 80), since the source IP is part of every interaction.
 - The TLS private key is stored in Redis: enable TLS in transit, encryption at
   rest and authentication on the server.
+- Put Redis next to the instances (same region, private network): every capture
+  writes to it. Hook lookups are cached (`storage.redis.has_cache_size`), and
+  DNS captures are written in the background so answers never wait on Redis;
+  past 10,000 pending writes, DNS captures are dropped with a warning.
 
 ### Mail capture (optional)
 

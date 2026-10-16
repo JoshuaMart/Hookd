@@ -546,3 +546,33 @@ func TestServer_HandleDNSRequest_MixedCaseQname(t *testing.T) {
 		t.Errorf("expected answer to echo the query name %q, got %q", qname, got)
 	}
 }
+
+// asyncStore records which path the DNS server used.
+type asyncStore struct {
+	*storage.MemoryManager
+	async int
+}
+
+func (s *asyncStore) RecordAsync(hookID string, it *storage.Interaction) {
+	s.async++
+	s.MemoryManager.AddInteraction(hookID, it)
+}
+
+func TestServer_HandleDNSRequest_RecordsAsyncWhenSupported(t *testing.T) {
+	idGen := func() string { return "test-id" }
+	store := &asyncStore{MemoryManager: storage.NewMemoryManager(idGen)}
+	server, _ := NewServer("example.com", 5353, "127.0.0.1", "", store, acme.NewProvider(slog.Default()), slog.Default(), idGen)
+	hook := store.CreateHook("example.com", storage.CreateOptions{})
+
+	m := new(dns.Msg)
+	m.SetQuestion(hook.ID+".example.com.", dns.TypeA)
+	w := &mockResponseWriter{remoteAddr: &net.UDPAddr{IP: net.ParseIP("1.2.3.4"), Port: 12345}}
+	server.handleDNSRequest(w, m)
+
+	if w.msg == nil || len(w.msg.Answer) != 1 {
+		t.Fatalf("the answer must not depend on the write, got %+v", w.msg)
+	}
+	if store.async != 1 || len(store.PollInteractions(hook.ID)) != 1 {
+		t.Errorf("expected one asynchronous capture, got %d", store.async)
+	}
+}

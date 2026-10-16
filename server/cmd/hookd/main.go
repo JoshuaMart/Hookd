@@ -260,6 +260,8 @@ func openRedisStorage(cfg *config.Config, logger *slog.Logger, idGenerator func(
 		LongLivedEnabled:   cfg.LongLived.Enabled,
 		MaxPerHook:         cfg.Eviction.MaxPerHook,
 		MaxBodyBytes:       cfg.LongLived.MaxInteractionBodyBytes,
+		HasCacheSize:       rc.HasCacheSize,
+		HasCacheTTL:        rc.HasCacheTTL,
 		Logger:             logger,
 	})
 	if err != nil {

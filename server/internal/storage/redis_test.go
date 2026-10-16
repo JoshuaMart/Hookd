@@ -21,11 +21,11 @@ const redisTestAddrEnv = "HOOKD_TEST_REDIS_ADDR"
 
 // newTestRedis returns a manager on a fresh key prefix, so tests can share a
 // server, and deletes the prefix afterwards.
-func newTestRedis(t *testing.T, threshold time.Duration) *RedisManager {
+func newTestRedis(t testing.TB, threshold time.Duration) *RedisManager {
 	return newTestRedisWith(t, RedisOptions{EphemeralThreshold: threshold})
 }
 
-func newTestRedisWith(t *testing.T, opts RedisOptions) *RedisManager {
+func newTestRedisWith(t testing.TB, opts RedisOptions) *RedisManager {
 	t.Helper()
 	addr := os.Getenv(redisTestAddrEnv)
 	if addr == "" {
@@ -61,7 +61,7 @@ func newTestRedisWith(t *testing.T, opts RedisOptions) *RedisManager {
 }
 
 // deletePrefix uses its own client: a test may have closed the manager's.
-func deletePrefix(t *testing.T, addr, prefix string) {
+func deletePrefix(t testing.TB, addr, prefix string) {
 	client := redis.NewClient(&redis.Options{Addr: addr})
 	defer client.Close()
 	ctx := context.Background()
@@ -321,4 +321,101 @@ func TestRedis_StorageErrorsDegrade(t *testing.T) {
 	if _, err := m.LongLivedHooks(); err == nil {
 		t.Error("expected a storage error when listing hooks")
 	}
+}
+
+func TestRedis_HasCacheNeverHidesNewHooks(t *testing.T) {
+	a := newTestRedisWith(t, RedisOptions{EphemeralThreshold: ephemeralTTL, HasCacheSize: 100, HasCacheTTL: time.Hour})
+	b := newTestRedisWith(t, RedisOptions{KeyPrefix: a.prefix, EphemeralThreshold: ephemeralTTL, HasCacheSize: 100, HasCacheTTL: time.Hour})
+
+	if a.Has("id-1") {
+		t.Fatal("unexpected hook")
+	}
+	// Absence is not cached: a hook created on another instance is seen at once.
+	hook := b.CreateHook("example.com", CreateOptions{TTL: time.Hour})
+	if !a.Has(hook.ID) {
+		t.Fatal("a hook created on another instance must be visible immediately")
+	}
+
+	// Existence is cached: the next lookup needs no round-trip.
+	a.client.Del(context.Background(), a.hookKey(hook.ID))
+	if !a.Has(hook.ID) {
+		t.Error("expected the cached answer")
+	}
+	// The stale entry costs only a write that the script rejects.
+	it := DNSInteraction("late", "1.2.3.4", "q", "A")
+	a.AddInteraction(hook.ID, it)
+	if it.Seq != 0 || a.Stats().InteractionsTotal != 0 {
+		t.Error("a capture for a deleted hook must still be dropped")
+	}
+}
+
+func TestRedis_HasCacheForgetsLocalEvictions(t *testing.T) {
+	m := newTestRedisWith(t, RedisOptions{EphemeralThreshold: ephemeralTTL, HasCacheSize: 100, HasCacheTTL: time.Hour})
+	hook := m.CreateHook("example.com", CreateOptions{TTL: time.Minute})
+	if !m.Has(hook.ID) {
+		t.Fatal("expected the new hook")
+	}
+	m.EvictExpiredHooks(time.Now().Add(time.Hour))
+	if m.Has(hook.ID) {
+		t.Error("a hook this instance evicted must leave its cache")
+	}
+}
+
+func TestRedis_RecordAsyncKeepsOrderAndFlushesOnClose(t *testing.T) {
+	m := newTestRedis(t, ephemeralTTL)
+	reader := newTestRedisWith(t, RedisOptions{KeyPrefix: m.prefix, EphemeralThreshold: ephemeralTTL})
+	hook := m.CreateHook("example.com", CreateOptions{TTL: time.Hour})
+
+	const n = 500
+	for i := 0; i < n; i++ {
+		m.RecordAsync(hook.ID, DNSInteraction(fmt.Sprintf("i%03d", i), "1.2.3.4", "q", "A"))
+	}
+	m.RecordAsync("missing", DNSInteraction("x", "1.2.3.4", "q", "A"))
+	if err := m.Close(); err != nil {
+		t.Fatal(err)
+	}
+	m.RecordAsync(hook.ID, DNSInteraction("after-close", "1.2.3.4", "q", "A"))
+
+	got := reader.PollInteractions(hook.ID)
+	if len(got) != n {
+		t.Fatalf("Close must flush every queued capture, got %d of %d", len(got), n)
+	}
+	for i, it := range got {
+		if it.ID != fmt.Sprintf("i%03d", i) || it.Seq != int64(i+1) {
+			t.Fatalf("captures must keep their arrival order, got %s seq %d at %d", it.ID, it.Seq, i)
+		}
+	}
+}
+
+func TestRedis_RecordAsyncRecoversScripts(t *testing.T) {
+	m := newTestRedis(t, ephemeralTTL)
+	hook := m.CreateHook("example.com", CreateOptions{TTL: time.Hour})
+	if err := m.client.ScriptFlush(context.Background()).Err(); err != nil {
+		t.Fatal(err)
+	}
+	m.RecordAsync(hook.ID, DNSInteraction("i", "1.2.3.4", "q", "A"))
+
+	deadline := time.Now().Add(2 * time.Second)
+	for len(m.PollInteractions(hook.ID)) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("a pipelined capture must survive an empty script cache")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestRedis_RecordAsyncDropsWhenFull(t *testing.T) {
+	m := newTestRedis(t, ephemeralTTL)
+	// Stop the writer so nothing drains, then overfill the queue.
+	close(m.stop)
+	<-m.done
+	m.stop = make(chan struct{})
+	for i := 0; i < asyncQueueSize+10; i++ {
+		m.RecordAsync("h", &Interaction{ID: fmt.Sprint(i), Type: InteractionTypeDNS})
+	}
+	if len(m.queue) != asyncQueueSize {
+		t.Errorf("the queue must stay bounded, holds %d", len(m.queue))
+	}
+	m.done = make(chan struct{})
+	go m.writeLoop()
 }

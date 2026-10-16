@@ -25,10 +25,16 @@ var errHookCollision = errors.New("hook id collision")
 // Has reports whether a hook exists. A storage error reads as "no", so the
 // capture is dropped rather than blocked.
 func (m *RedisManager) Has(id string) bool {
+	if m.known.has(id) {
+		return true
+	}
 	n, err := m.client.Exists(context.Background(), m.hookKey(id)).Result()
 	if err != nil {
 		m.logFailure("has", err, "hook_id", id)
 		return false
+	}
+	if n == 1 {
+		m.known.add(id)
 	}
 	return n == 1
 }
@@ -75,6 +81,9 @@ func (m *RedisManager) createHooks(domain, kind string, opts []CreateOptions, ma
 		err = m.run(context.Background(), createHooksScript, args...).Err()
 		switch {
 		case err == nil:
+			for _, hook := range hooks {
+				m.known.add(hook.ID)
+			}
 			return hooks, nil
 		case isScriptError(err, "HOOKD_LIMIT"):
 			return nil, ErrHookLimitReached

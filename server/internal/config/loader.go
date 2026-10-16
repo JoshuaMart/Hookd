@@ -57,6 +57,8 @@ var configKeys = []string{
 	"storage.redis.read_timeout",
 	"storage.redis.write_timeout",
 	"storage.redis.pool_size",
+	"storage.redis.has_cache_size",
+	"storage.redis.has_cache_ttl",
 }
 
 // Load loads configuration from file, environment, and CLI flags.
