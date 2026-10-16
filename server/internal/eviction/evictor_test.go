@@ -343,3 +343,45 @@ func TestEvictor_EvictByMemory_NoHooks(t *testing.T) {
 		t.Errorf("expected 0 memory evictions with no hooks, got %d", got)
 	}
 }
+
+// leasedStore stands in for a shared store whose lease another instance holds.
+type leasedStore struct {
+	*storage.MemoryManager
+	held  bool
+	asked []time.Duration
+}
+
+func (s *leasedStore) HoldEvictionLease(ttl time.Duration) bool {
+	s.asked = append(s.asked, ttl)
+	return s.held
+}
+
+func TestEvictor_SkipsPassWithoutLease(t *testing.T) {
+	manager := storage.NewMemoryManager(func() string { return "hook" })
+	store := &leasedStore{MemoryManager: manager}
+	cfg := config.EvictionConfig{
+		InteractionTTL:  time.Hour,
+		MaxPerHook:      1000,
+		MaxMemoryMB:     1800,
+		CleanupInterval: 10 * time.Second,
+	}
+	evictor := NewEvictor(store, cfg, slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError})))
+
+	// Hook expiry is the simplest pass to observe.
+	manager.CreateHook("example.com", storage.CreateOptions{TTL: time.Nanosecond})
+	time.Sleep(time.Millisecond)
+
+	evictor.runEviction()
+	if !manager.Has("hook") {
+		t.Fatal("an instance without the lease must not evict")
+	}
+	if len(store.asked) != 1 || store.asked[0] != 3*cfg.CleanupInterval {
+		t.Errorf("expected one lease request for 3 intervals, got %v", store.asked)
+	}
+
+	store.held = true
+	evictor.runEviction()
+	if manager.Has("hook") {
+		t.Error("the lease holder must evict")
+	}
+}

@@ -28,6 +28,7 @@ type CompositeManager struct {
 var (
 	_ Manager          = (*CompositeManager)(nil)
 	_ LongLivedManager = (*CompositeManager)(nil)
+	_ Store            = (*CompositeManager)(nil)
 )
 
 // NewCompositeManager builds a composite over the given stores. longLived may be

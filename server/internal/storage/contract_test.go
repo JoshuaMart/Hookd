@@ -25,19 +25,23 @@ type contractStore[M any] struct {
 	open func(t *testing.T) M
 }
 
-// managerStores lists every backend. The two composite variants send hooks
-// created with a TTL to memory and to SQLite respectively; hooks without a
-// TTL always land in memory.
+// managerStores lists every backend. The /ephemeral and /long-lived variants
+// store hooks created with a TTL as ephemeral and as long-lived respectively;
+// hooks without a TTL are always ephemeral. The redis stores are skipped
+// unless HOOKD_TEST_REDIS_ADDR is set.
 var managerStores = []contractStore[Manager]{
 	{"memory", func(t *testing.T) Manager { return NewMemoryManager(perfIDs()) }},
 	{"sqlite", func(t *testing.T) Manager { return newTestSQLiteWithID(t, 1024, perfIDs()) }},
 	{"composite/ephemeral", func(t *testing.T) Manager { return newContractComposite(t, ephemeralTTL) }},
 	{"composite/long-lived", func(t *testing.T) Manager { return newContractComposite(t, time.Minute) }},
+	{"redis/ephemeral", func(t *testing.T) Manager { return newTestRedis(t, ephemeralTTL) }},
+	{"redis/long-lived", func(t *testing.T) Manager { return newTestRedis(t, time.Minute) }},
 }
 
 var longLivedStores = []contractStore[fullManager]{
 	{"sqlite", func(t *testing.T) fullManager { return newTestSQLiteWithID(t, 1024, perfIDs()) }},
 	{"composite", func(t *testing.T) fullManager { return newContractComposite(t, ephemeralTTL) }},
+	{"redis", func(t *testing.T) fullManager { return newTestRedis(t, ephemeralTTL) }},
 }
 
 func newContractComposite(t *testing.T, threshold time.Duration) *CompositeManager {

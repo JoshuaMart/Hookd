@@ -14,6 +14,7 @@ type Config struct {
 	Eviction      EvictionConfig      `mapstructure:"eviction"`
 	Observability ObservabilityConfig `mapstructure:"observability"`
 	LongLived     LongLivedConfig     `mapstructure:"long_lived"`
+	Storage       StorageConfig       `mapstructure:"storage"`
 }
 
 // ServerConfig holds server-related configuration
@@ -106,6 +107,36 @@ type LongLivedConfig struct {
 	DBPath                  string        `mapstructure:"db_path"`
 }
 
+// Storage backends.
+const (
+	StorageBackendLocal = "local"
+	StorageBackendRedis = "redis"
+)
+
+// StorageConfig selects where hooks and interactions live. The local backend
+// keeps them in this process (memory, plus SQLite for long-lived hooks); the
+// redis backend shares them between every instance behind a load balancer.
+type StorageConfig struct {
+	Backend string      `mapstructure:"backend"`
+	Redis   RedisConfig `mapstructure:"redis"`
+}
+
+// RedisConfig configures the connection to a Redis or Valkey server. Cluster
+// mode is not supported: the scripts touch per-hook and global keys together.
+type RedisConfig struct {
+	Addr     string `mapstructure:"addr"`
+	Username string `mapstructure:"username"`
+	Password string `mapstructure:"password"`
+	TLS      bool   `mapstructure:"tls"`
+	// KeyPrefix namespaces every key, so deployments can share a server.
+	KeyPrefix    string        `mapstructure:"key_prefix"`
+	DialTimeout  time.Duration `mapstructure:"dial_timeout"`
+	ReadTimeout  time.Duration `mapstructure:"read_timeout"`
+	WriteTimeout time.Duration `mapstructure:"write_timeout"`
+	// Zero keeps the client default (10 connections per CPU).
+	PoolSize int `mapstructure:"pool_size"`
+}
+
 // ObservabilityConfig holds observability configuration
 type ObservabilityConfig struct {
 	MetricsEnabled bool `mapstructure:"metrics_enabled"`
@@ -168,6 +199,16 @@ func DefaultConfig() *Config {
 			MaxInteractionBodyBytes: 65536, // 64 KiB
 			MaxMetadataBytes:        8192,  // 8 KiB
 			DBPath:                  "/var/lib/hookd/longlived.db",
+		},
+		Storage: StorageConfig{
+			Backend: StorageBackendLocal,
+			Redis: RedisConfig{
+				Addr:         "localhost:6379",
+				KeyPrefix:    "hookd:",
+				DialTimeout:  5 * time.Second,
+				ReadTimeout:  time.Second,
+				WriteTimeout: time.Second,
+			},
 		},
 	}
 }
@@ -278,11 +319,37 @@ func (c *Config) Validate() error {
 		if c.LongLived.MaxInteractionBodyBytes <= 0 {
 			return fmt.Errorf("long_lived.max_interaction_body_bytes must be positive")
 		}
-		if c.LongLived.DBPath == "" {
+		// The redis backend stores long-lived hooks alongside ephemeral ones.
+		if c.LongLived.DBPath == "" && c.Storage.Backend == StorageBackendLocal {
 			return fmt.Errorf("long_lived.db_path is required when long_lived is enabled")
 		}
 	}
 
+	return c.Storage.validate()
+}
+
+func (s StorageConfig) validate() error {
+	switch s.Backend {
+	case StorageBackendLocal:
+		return nil
+	case StorageBackendRedis:
+	default:
+		return fmt.Errorf("storage.backend must be one of: local, redis")
+	}
+
+	r := s.Redis
+	if r.Addr == "" {
+		return fmt.Errorf("storage.redis.addr is required when storage.backend is redis")
+	}
+	if r.KeyPrefix == "" {
+		return fmt.Errorf("storage.redis.key_prefix must not be empty")
+	}
+	if r.DialTimeout <= 0 || r.ReadTimeout <= 0 || r.WriteTimeout <= 0 {
+		return fmt.Errorf("storage.redis dial_timeout, read_timeout and write_timeout must be positive")
+	}
+	if r.PoolSize < 0 {
+		return fmt.Errorf("storage.redis.pool_size must not be negative")
+	}
 	return nil
 }
 

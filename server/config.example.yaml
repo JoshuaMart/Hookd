@@ -138,3 +138,27 @@ observability:
 
   # Log format: json, text
   log_format: "json"
+
+storage:
+  # Where hooks and interactions live.
+  #   local: in this process (memory, plus SQLite for long-lived hooks).
+  #   redis: in a Redis or Valkey server shared by every instance, so several
+  #          instances can run behind a load balancer. long_lived.db_path is
+  #          then unused: long-lived hooks are stored in Redis too.
+  backend: "local"
+
+  redis:
+    # Redis 7.0+ or Valkey 7.2+. Cluster mode is not supported.
+    # Run the server with maxmemory-policy noeviction: under the default
+    # policies Redis could silently drop hooks to free memory.
+    addr: "localhost:6379"
+    username: ""
+    password: ""          # or HOOKD_STORAGE_REDIS_PASSWORD
+    tls: false
+    # Every key starts with this prefix, so deployments can share a server.
+    key_prefix: "hookd:"
+    dial_timeout: "5s"
+    read_timeout: "1s"
+    write_timeout: "1s"
+    # 0 keeps the client default (10 connections per CPU).
+    pool_size: 0
