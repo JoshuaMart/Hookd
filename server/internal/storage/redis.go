@@ -122,6 +122,10 @@ func checkRedisVersion(ctx context.Context, client redis.UniversalClient) error 
 	return errors.New("redis did not report its version")
 }
 
+// Client and KeyPrefix let the ACME state share the connection and namespace.
+func (m *RedisManager) Client() redis.UniversalClient { return m.client }
+func (m *RedisManager) KeyPrefix() string             { return m.prefix }
+
 // Close releases the connection pool.
 func (m *RedisManager) Close() error {
 	return m.client.Close()

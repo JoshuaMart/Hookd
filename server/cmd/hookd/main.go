@@ -13,11 +13,13 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/caddyserver/certmagic"
 	"github.com/redis/go-redis/v9"
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
 
 	"github.com/jomar/hookd/internal/acme"
+	"github.com/jomar/hookd/internal/certstore"
 	"github.com/jomar/hookd/internal/config"
 	"github.com/jomar/hookd/internal/dns"
 	"github.com/jomar/hookd/internal/eviction"
@@ -112,7 +114,7 @@ func run(cfg *config.Config) error {
 	}()
 
 	// Create ACME provider for DNS-01 challenges
-	acmeProvider := acme.NewProvider(logger)
+	acmeProvider, certStorage := newACMEState(storageManager, logger)
 
 	// Create evictor
 	evictor := eviction.NewEvictor(storageManager, cfg.Eviction, logger)
@@ -168,6 +170,7 @@ func run(cfg *config.Config) error {
 		Storage:       storageManager,
 		Evictor:       evictor,
 		ACMEProvider:  acmeProvider,
+		CertStorage:   certStorage,
 		Logger:        logger,
 		IDGenerator:   idGenerator,
 	})
@@ -264,11 +267,18 @@ func openRedisStorage(cfg *config.Config, logger *slog.Logger, idGenerator func(
 		return nil, fmt.Errorf("Error opening redis store: %w", err)
 	}
 	logger.Info("redis store enabled", "addr", rc.Addr, "tls", rc.TLS, "key_prefix", rc.KeyPrefix)
-	if cfg.Server.HTTPS.Enabled {
-		// ACME challenge records and certificates are not shared yet.
-		logger.Warn("https keeps its ACME state on this instance: run a single instance while https is enabled")
-	}
 	return m, nil
+}
+
+// newACMEState keeps challenge records and certificates next to the hooks:
+// in Redis when the store is shared, so any instance can answer a challenge
+// and only one obtains each certificate; otherwise in memory and on disk.
+func newACMEState(store storage.Store, logger *slog.Logger) (*acme.Provider, certmagic.Storage) {
+	if shared, ok := store.(*storage.RedisManager); ok {
+		client, prefix := shared.Client(), shared.KeyPrefix()
+		return acme.NewSharedProvider(logger, acme.NewRedisRecords(client, prefix)), certstore.NewRedis(client, prefix)
+	}
+	return acme.NewProvider(logger), nil
 }
 
 // serve cancels the shared context when a listener fails.

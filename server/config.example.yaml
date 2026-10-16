@@ -143,8 +143,9 @@ storage:
   # Where hooks and interactions live.
   #   local: in this process (memory, plus SQLite for long-lived hooks).
   #   redis: in a Redis or Valkey server shared by every instance, so several
-  #          instances can run behind a load balancer. long_lived.db_path is
-  #          then unused: long-lived hooks are stored in Redis too.
+  #          instances can run behind a load balancer. Long-lived hooks, ACME
+  #          challenge records and certificates are stored there too, so
+  #          long_lived.db_path and server.https.cache_dir are unused.
   backend: "local"
 
   redis:

@@ -55,7 +55,7 @@ func (s *Server) obtainTLSConfig() (*tls.Config, error) {
 
 	s.logger.Info("obtaining wildcard certificate via DNS-01",
 		"domains", domains,
-		"cache_dir", s.config.HTTPS.CacheDir)
+		"cert_storage", s.certStorageName())
 
 	// Obtain certificates synchronously
 	err := certmagicConfig.ManageSync(context.Background(), domains)
@@ -78,7 +78,7 @@ func (s *Server) newCertMagicConfig() *certmagic.Config {
 	// Configure CertMagic with DNS-01 challenge using our custom provider
 	s.logger.Info("configuring certmagic for wildcard certificate",
 		"domain", s.config.Domain,
-		"cache_dir", s.config.HTTPS.CacheDir)
+		"cert_storage", s.certStorageName())
 
 	// Recursive resolvers CertMagic uses to self-check challenge
 	// propagation. These are scoped to the ACME solver only — the
@@ -104,9 +104,19 @@ func (s *Server) newCertMagicConfig() *certmagic.Config {
 		},
 	}
 
+	// Renewals run on a config that certmagic.NewDefault rebuilds from
+	// certmagic.Default, so it must use the same storage as issuance:
+	// otherwise renewed certificates land in CertMagic's own default folder,
+	// and with a shared store they would not reach the other instances.
+	storage := s.certStorage
+	if storage == nil {
+		storage = &certmagic.FileStorage{Path: s.config.HTTPS.CacheDir}
+	}
+	certmagic.Default.Storage = storage
+
 	// Create CertMagic config
 	certmagicConfig := certmagic.NewDefault()
-	certmagicConfig.Storage = &certmagic.FileStorage{Path: s.config.HTTPS.CacheDir}
+	certmagicConfig.Storage = storage
 
 	// Create ACME issuer with DNS-01 solver
 	issuer := certmagic.NewACMEIssuer(certmagicConfig, certmagic.ACMEIssuer{
@@ -124,4 +134,12 @@ func (s *Server) newCertMagicConfig() *certmagic.Config {
 	certmagicConfig.Issuers = []certmagic.Issuer{issuer}
 
 	return certmagicConfig
+}
+
+// certStorageName describes where certificates are kept, for the logs.
+func (s *Server) certStorageName() string {
+	if s.certStorage != nil {
+		return "shared"
+	}
+	return s.config.HTTPS.CacheDir
 }
