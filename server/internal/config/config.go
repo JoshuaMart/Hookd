@@ -79,7 +79,29 @@ type SMTPConfig struct {
 
 // APIConfig holds API configuration
 type APIConfig struct {
-	AuthToken string `mapstructure:"auth_token"`
+	AuthToken string            `mapstructure:"auth_token"`
+	Listener  APIListenerConfig `mapstructure:"listener"`
+}
+
+// TLS modes of the dedicated API listener.
+const (
+	APIListenerTLSACME = "acme"
+	APIListenerTLSFile = "file"
+	APIListenerTLSNone = "none"
+)
+
+// APIListenerConfig moves the API and /metrics off the public listeners onto a
+// port of their own, meant to be reachable from a private network only.
+type APIListenerConfig struct {
+	Enabled bool `mapstructure:"enabled"`
+	// Empty binds all interfaces.
+	BindAddress string `mapstructure:"bind_address"`
+	Port        int    `mapstructure:"port"`
+	// TLS is "acme" (the certificate managed for server.domain), "file"
+	// (CertFile and KeyFile) or "none" (behind a TLS-terminating proxy).
+	TLS      string `mapstructure:"tls"`
+	CertFile string `mapstructure:"cert_file"`
+	KeyFile  string `mapstructure:"key_file"`
 }
 
 // EvictionConfig holds eviction-related configuration
@@ -180,6 +202,12 @@ func DefaultConfig() *Config {
 			},
 			API: APIConfig{
 				AuthToken: "",
+				// Opt-in: off keeps the API on the public listeners.
+				Listener: APIListenerConfig{
+					Enabled: false,
+					Port:    8443,
+					TLS:     APIListenerTLSACME,
+				},
 			},
 		},
 		Eviction: EvictionConfig{
@@ -275,6 +303,10 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	if err := c.Server.validateAPIListener(); err != nil {
+		return err
+	}
+
 	if c.Eviction.InteractionTTL <= 0 {
 		return fmt.Errorf("eviction.interaction_ttl must be positive")
 	}
@@ -334,6 +366,49 @@ func (c *Config) Validate() error {
 	}
 
 	return c.Storage.validate()
+}
+
+// validateAPIListener checks the dedicated API listener, when enabled.
+func (s ServerConfig) validateAPIListener() error {
+	l := s.API.Listener
+	if !l.Enabled {
+		return nil
+	}
+	if l.Port < 1 || l.Port > 65535 {
+		return fmt.Errorf("server.api.listener.port must be between 1 and 65535")
+	}
+	if l.BindAddress != "" && net.ParseIP(l.BindAddress) == nil {
+		return fmt.Errorf("server.api.listener.bind_address must be a valid IP address")
+	}
+	// DNS also listens on TCP, so its port collides as well.
+	for _, other := range []struct {
+		name    string
+		enabled bool
+		port    int
+	}{
+		{"server.http.port", true, s.HTTP.Port},
+		{"server.https.port", s.HTTPS.Enabled, s.HTTPS.Port},
+		{"server.smtp.port", s.SMTP.Enabled, s.SMTP.Port},
+		{"server.dns.port", s.DNS.Enabled, s.DNS.Port},
+	} {
+		if other.enabled && other.port == l.Port {
+			return fmt.Errorf("server.api.listener.port must differ from %s", other.name)
+		}
+	}
+	switch l.TLS {
+	case APIListenerTLSACME:
+		if !s.HTTPS.Enabled || !s.HTTPS.AutoCert {
+			return fmt.Errorf("server.api.listener.tls acme requires server.https.enabled and server.https.autocert")
+		}
+	case APIListenerTLSFile:
+		if l.CertFile == "" || l.KeyFile == "" {
+			return fmt.Errorf("server.api.listener.tls file requires cert_file and key_file")
+		}
+	case APIListenerTLSNone:
+	default:
+		return fmt.Errorf("server.api.listener.tls must be one of: acme, file, none")
+	}
+	return nil
 }
 
 func (s StorageConfig) validate() error {

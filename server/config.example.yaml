@@ -74,6 +74,30 @@ server:
     # Can be overridden with --token CLI flag
     auth_token: ""
 
+    # Dedicated API listener. When enabled, the API (/register, /poll, /read,
+    # /ack, /activity, /hooks) and /metrics are served only on this port and
+    # removed from the public HTTP/HTTPS listeners, which keep capture and
+    # /health(z) only: a request to /register there gets the same empty 200 as
+    # any unknown path. Meant for a port reachable from a private network only
+    # (internal load balancer, VPC, mesh). Disabled by default.
+    listener:
+      enabled: false
+      # Local address to bind. Empty binds all interfaces; set the private IP
+      # to keep the port off the public interface.
+      bind_address: ""
+      # Must differ from the HTTP, HTTPS, SMTP and DNS ports.
+      port: 8443
+      # "acme": reuse the wildcard certificate managed for server.domain
+      #         (requires https.enabled and https.autocert; clients connect
+      #         with SNI/Host = server.domain).
+      # "file": use cert_file and key_file, e.g. from an internal CA or
+      #         cert-manager. Read at startup; restart to rotate.
+      # "none": plain HTTP, only behind a TLS-terminating proxy or mesh. The
+      #         API's HTTPS requirement is not enforced in this mode.
+      tls: "acme"
+      cert_file: ""
+      key_file: ""
+
 eviction:
   # TTL for interactions (interactions are deleted after this duration)
   # Supported formats: 30s, 5m, 1h, 24h, 48h

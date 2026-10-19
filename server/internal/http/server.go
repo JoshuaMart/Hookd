@@ -2,6 +2,7 @@ package http
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -41,6 +42,10 @@ type Server struct {
 	idGenerator  func() string
 	httpServer   *http.Server
 	httpsServer  *http.Server
+	apiServer    *http.Server
+	// certTLS is the certificate obtained once for server.domain; each
+	// listener gets its own clone, since net/http mutates it on serve.
+	certTLS *tls.Config
 }
 
 // ServerOptions groups listener configuration and runtime dependencies.
@@ -88,14 +93,18 @@ func newPublicServer(addr string, handler http.Handler, logger *slog.Logger) *ht
 	}
 }
 
-// Start starts the HTTP/HTTPS servers.
+// Start starts the HTTP/HTTPS servers and, when enabled, the API listener.
 func (s *Server) Start(ctx context.Context) error {
-	handler := s.newHandler()
-	errChan := make(chan error, 2)
-	if err := s.startHTTPS(handler, errChan); err != nil {
+	public, private := s.newHandlers()
+	errChan := make(chan error, 3)
+	if err := s.startHTTPS(public, errChan); err != nil {
 		return err
 	}
-	s.startHTTP(handler, errChan)
+	if err := s.startAPI(private, errChan); err != nil {
+		s.shutdown()
+		return err
+	}
+	s.startHTTP(public, errChan)
 	select {
 	case <-ctx.Done():
 		s.shutdown()
@@ -119,7 +128,7 @@ func (s *Server) startHTTP(handler http.Handler, errChan chan<- error) {
 	}()
 }
 
-// shutdown shares one bounded draining budget between the two listeners.
+// shutdown shares one bounded draining budget between the listeners.
 func (s *Server) shutdown() {
 	s.logger.Info("http server shutting down")
 	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
@@ -127,7 +136,7 @@ func (s *Server) shutdown() {
 	for _, listener := range []struct {
 		name   string
 		server *http.Server
-	}{{"http", s.httpServer}, {"https", s.httpsServer}} {
+	}{{"http", s.httpServer}, {"https", s.httpsServer}, {"api", s.apiServer}} {
 		if listener.server != nil {
 			if err := listener.server.Shutdown(ctx); err != nil {
 				s.logger.Error(listener.name+" server shutdown error", "error", err)
