@@ -29,3 +29,23 @@ func (w *suppressedTLSWriter) Write(p []byte) (n int, err error) {
 func newSuppressedTLSLogger(logger *slog.Logger) *log.Logger {
 	return log.New(&suppressedTLSWriter{logger: logger}, "", 0)
 }
+
+// apiErrorWriter keeps TLS handshake errors visible on the private listener,
+// where a failed handshake is a client misconfiguration, not scanner noise.
+type apiErrorWriter struct {
+	logger *slog.Logger
+}
+
+func (w *apiErrorWriter) Write(p []byte) (n int, err error) {
+	msg := strings.TrimSpace(string(p))
+	switch {
+	case strings.Contains(msg, "no certificate available"):
+		// certmagic found nothing for the client's SNI.
+		w.logger.Warn("api listener tls handshake failed: clients must use server.domain as SNI", "message", msg)
+	case strings.Contains(msg, "TLS handshake error"):
+		w.logger.Debug("api listener tls handshake error", "message", msg)
+	default:
+		w.logger.Error("api server error", "message", msg)
+	}
+	return len(p), nil
+}

@@ -2,17 +2,12 @@ package http
 
 import (
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
-	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -24,6 +19,7 @@ import (
 	"github.com/caddyserver/certmagic"
 	"github.com/jomar/hookd/internal/acme"
 	"github.com/jomar/hookd/internal/config"
+	"github.com/jomar/hookd/internal/testutil"
 )
 
 // Serial tests: production configures shared defaults. Block real issuance.
@@ -101,23 +97,7 @@ func TestHTTPSCertificateFailureIsReported(t *testing.T) {
 // an issuer. It has no OCSP URLs and remains valid well beyond the test run.
 func cacheTestCertificate(t *testing.T, s *Server) *x509.CertPool {
 	t.Helper()
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	template := &x509.Certificate{SerialNumber: big.NewInt(1), DNSNames: []string{s.config.Domain, "*." + s.config.Domain},
-		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(365 * 24 * time.Hour),
-		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
-	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	keyDER, err := x509.MarshalECPrivateKey(key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
-	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+	certPEM, keyPEM := testutil.KeyPair(t, s.config.Domain, "*."+s.config.Domain)
 	cfg := s.newCertMagicConfig()
 	issuer := cfg.Issuers[0].IssuerKey()
 	ctx := context.Background()

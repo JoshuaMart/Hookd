@@ -130,7 +130,7 @@ func (s *Server) startHTTP(handler http.Handler, errChan chan<- error) {
 
 // shutdown shares one bounded draining budget between the listeners.
 func (s *Server) shutdown() {
-	s.logger.Info("http server shutting down")
+	s.logger.Info("stopping http listeners")
 	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 	for _, listener := range []struct {

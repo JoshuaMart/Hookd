@@ -91,9 +91,10 @@ server:
       #         (requires https.enabled and https.autocert; clients connect
       #         with SNI/Host = server.domain).
       # "file": use cert_file and key_file, e.g. from an internal CA or
-      #         cert-manager. Read at startup; restart to rotate.
+      #         cert-manager. A rotated pair is picked up within a minute.
       # "none": plain HTTP, only behind a TLS-terminating proxy or mesh. The
       #         API's HTTPS requirement is not enforced in this mode.
+      # With acme or file the port is HTTPS only, health checks included.
       tls: "acme"
       cert_file: ""
       key_file: ""

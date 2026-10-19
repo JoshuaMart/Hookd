@@ -19,12 +19,6 @@ func routeByHost(apiMux http.Handler, capture *CaptureHandler) http.Handler {
 	})
 }
 
-// newHandler builds the public HTTP/HTTPS routing and middleware.
-func (s *Server) newHandler() http.Handler {
-	public, _ := s.newHandlers()
-	return public
-}
-
 // newHandlers builds the public routing and, when the dedicated API listener
 // is enabled, the private one; private is nil otherwise.
 func (s *Server) newHandlers() (public, private http.Handler) {
