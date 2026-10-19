@@ -1,24 +1,26 @@
 package http
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
-	"encoding/pem"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/jomar/hookd/internal/config"
 	"github.com/jomar/hookd/internal/storage"
+	"github.com/jomar/hookd/internal/testutil"
 )
 
 // newListenerTestServer enables the dedicated API listener on loopback.
@@ -43,17 +45,6 @@ func serveTest(handler http.Handler, method, host, path, key string, viaTLS bool
 	return w
 }
 
-// freePort reserves a loopback port, released for the listener under test.
-func freePort(t *testing.T) int {
-	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer l.Close()
-	return l.Addr().(*net.TCPAddr).Port
-}
-
 // waitForHealth polls url until it answers 200.
 func waitForHealth(t *testing.T, client *http.Client, url string) {
 	t.Helper()
@@ -73,28 +64,33 @@ func waitForHealth(t *testing.T, client *http.Client, url string) {
 	}
 }
 
-// writeTestKeyPair saves httptest's loopback certificate as PEM files and
-// returns a client that trusts it.
-func writeTestKeyPair(t *testing.T) (certFile, keyFile string, client *http.Client) {
-	t.Helper()
-	ts := httptest.NewTLSServer(http.NotFoundHandler())
-	defer ts.Close()
-	cert := ts.TLS.Certificates[0]
-	keyDER, err := x509.MarshalPKCS8PrivateKey(cert.PrivateKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	dir := t.TempDir()
-	certFile, keyFile = filepath.Join(dir, "api.crt"), filepath.Join(dir, "api.key")
-	for path, block := range map[string]*pem.Block{
-		certFile: {Type: "CERTIFICATE", Bytes: cert.Certificate[0]},
-		keyFile:  {Type: "PRIVATE KEY", Bytes: keyDER},
-	} {
-		if err := os.WriteFile(path, pem.EncodeToMemory(block), 0600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	return certFile, keyFile, ts.Client()
+// syncBuffer is a log sink safe to read while the listener writes to it.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// tlsClient trusts roots only.
+func tlsClient(roots *x509.CertPool, serverName string) *http.Client {
+	return &http.Client{Timeout: time.Second, Transport: &http.Transport{ForceAttemptHTTP2: true,
+		TLSClientConfig: &tls.Config{RootCAs: roots, ServerName: serverName}}}
+}
+
+// apiURL is the address the started API listener actually bound.
+func apiURL(s *Server, scheme string) string {
+	return scheme + "://" + s.apiServer.Addr
 }
 
 func TestAPIListener_DisabledKeepsCombinedHandler(t *testing.T) {
@@ -238,7 +234,7 @@ func TestAPIListener_Health(t *testing.T) {
 	public, private := s.newHandlers()
 	for name, handler := range map[string]http.Handler{"public": public, "private": private} {
 		for _, path := range []string{"/health", "/healthz"} {
-			// Liveness skips TLS enforcement, so probes can use plain HTTP.
+			// Liveness skips TLS enforcement; the listener itself may still be TLS-only.
 			if w := serveTest(handler, http.MethodGet, "example.com", path, "", false); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"ok"`) {
 				t.Fatalf("%s %s: %d %s", name, path, w.Code, w.Body)
 			}
@@ -270,13 +266,12 @@ func TestAPIListener_TLSEnforcement(t *testing.T) {
 
 func TestStartAPI_PlainHTTP(t *testing.T) {
 	s := newListenerTestServer(config.APIListenerTLSNone, config.ObservabilityConfig{})
-	s.config.API.Listener.Port = freePort(t)
 	_, private := s.newHandlers()
 	if err := s.startAPI(private, make(chan error, 1)); err != nil {
 		t.Fatal(err)
 	}
 	defer s.apiServer.Close()
-	waitForHealth(t, http.DefaultClient, fmt.Sprintf("http://127.0.0.1:%d/healthz", s.config.API.Listener.Port))
+	waitForHealth(t, http.DefaultClient, apiURL(s, "http")+"/healthz")
 	// Started once: a second call keeps the running listener.
 	running := s.apiServer
 	if err := s.startAPI(private, make(chan error, 1)); err != nil || s.apiServer != running {
@@ -285,16 +280,16 @@ func TestStartAPI_PlainHTTP(t *testing.T) {
 }
 
 func TestStartAPI_File(t *testing.T) {
-	certFile, keyFile, client := writeTestKeyPair(t)
+	certFile, keyFile, roots := testutil.WriteKeyPair(t, "127.0.0.1")
 	s := newListenerTestServer(config.APIListenerTLSFile, config.ObservabilityConfig{})
-	s.config.API.Listener.Port = freePort(t)
 	s.config.API.Listener.CertFile, s.config.API.Listener.KeyFile = certFile, keyFile
 	_, private := s.newHandlers()
 	if err := s.startAPI(private, make(chan error, 1)); err != nil {
 		t.Fatal(err)
 	}
 	defer s.apiServer.Close()
-	base := fmt.Sprintf("https://127.0.0.1:%d", s.config.API.Listener.Port)
+	client := tlsClient(roots, "")
+	base := apiURL(s, "https")
 	waitForHealth(t, client, base+"/healthz")
 	req, _ := http.NewRequest(http.MethodPost, base+"/register", nil)
 	req.Header.Set("X-API-Key", "test-token")
@@ -303,13 +298,15 @@ func TestStartAPI_File(t *testing.T) {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("register over TLS: %d", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK || resp.ProtoMajor != 2 {
+		t.Fatalf("register over TLS: %d %s", resp.StatusCode, resp.Proto)
 	}
 }
 
 func TestStartAPI_ACMEReusesCertificate(t *testing.T) {
 	s := tlsTestServer(t)
+	logs := &syncBuffer{}
+	s.logger = slog.New(slog.NewTextHandler(logs, nil))
 	roots := cacheTestCertificate(t, s)
 	errs := make(chan error, 2)
 	// The HTTPS bind fails on port -1, but the certificate is obtained first.
@@ -320,7 +317,7 @@ func TestStartAPI_ACMEReusesCertificate(t *testing.T) {
 	if s.certTLS == nil || s.httpsServer.TLSConfig == s.certTLS {
 		t.Fatal("expected the HTTPS listener to get its own clone of the certificate config")
 	}
-	s.config.API.Listener = config.APIListenerConfig{Enabled: true, BindAddress: "127.0.0.1", Port: freePort(t), TLS: config.APIListenerTLSACME}
+	s.config.API.Listener = config.APIListenerConfig{Enabled: true, BindAddress: "127.0.0.1", TLS: config.APIListenerTLSACME}
 	if err := s.startAPI(http.HandlerFunc(handleHealth), errs); err != nil {
 		t.Fatal(err)
 	}
@@ -328,10 +325,19 @@ func TestStartAPI_ACMEReusesCertificate(t *testing.T) {
 	if s.apiServer.TLSConfig == s.certTLS || s.apiServer.TLSConfig == s.httpsServer.TLSConfig {
 		t.Fatal("expected the API listener to get its own clone of the certificate config")
 	}
-	transport := &http.Transport{TLSClientConfig: &tls.Config{RootCAs: roots, ServerName: s.config.Domain}}
-	defer transport.CloseIdleConnections()
-	waitForHealth(t, &http.Client{Transport: transport, Timeout: time.Second},
-		fmt.Sprintf("https://127.0.0.1:%d/healthz", s.config.API.Listener.Port))
+	waitForHealth(t, tlsClient(roots, s.config.Domain), apiURL(s, "https")+"/healthz")
+
+	// A client with another SNI fails, and the listener says why.
+	if _, err := tlsClient(roots, "internal-nlb.local").Get(apiURL(s, "https") + "/healthz"); err == nil {
+		t.Fatal("expected the handshake to fail for an unknown SNI")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for !strings.Contains(logs.String(), "clients must use server.domain") {
+		if time.Now().After(deadline) {
+			t.Fatalf("expected a warning for the unknown SNI, got: %s", logs.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func TestStartAPI_Errors(t *testing.T) {
@@ -369,36 +375,72 @@ func TestStartAPI_Errors(t *testing.T) {
 		defer occupied.Close()
 		s := newListenerTestServer(config.APIListenerTLSNone, config.ObservabilityConfig{})
 		s.config.API.Listener.Port = occupied.Addr().(*net.TCPAddr).Port
-		errs := make(chan error, 1)
-		if err := s.startAPI(http.NewServeMux(), errs); err != nil {
-			t.Fatal(err)
-		}
-		defer s.apiServer.Close()
-		select {
-		case err := <-errs:
-			var opErr *net.OpError
-			if !errors.As(err, &opErr) || !strings.Contains(err.Error(), "api server error") {
-				t.Fatalf("expected wrapped listener error, got %v", err)
-			}
-		case <-time.After(2 * time.Second):
-			t.Fatal("listener error was not reported")
+		err = s.startAPI(http.NewServeMux(), make(chan error, 1))
+		var opErr *net.OpError
+		if !errors.As(err, &opErr) || !strings.Contains(err.Error(), "api server error") || s.apiServer != nil {
+			t.Fatalf("expected a wrapped bind error and no listener, got %v", err)
 		}
 	})
 }
 
+// startWithFreePorts starts s on fresh ports, retrying when another process
+// takes one between FreePort and the bind.
+func startWithFreePorts(t *testing.T, s *Server) (stop func()) {
+	t.Helper()
+	for attempt := 0; attempt < 3; attempt++ {
+		s.httpServer, s.apiServer = nil, nil
+		s.config.HTTP.Port, s.config.API.Listener.Port = testutil.FreePort(t), testutil.FreePort(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() { done <- s.Start(ctx) }()
+		if healthy(fmt.Sprintf("http://127.0.0.1:%d/healthz", s.config.HTTP.Port), done) &&
+			healthy(fmt.Sprintf("http://127.0.0.1:%d/healthz", s.config.API.Listener.Port), done) {
+			return func() {
+				cancel()
+				select {
+				case err := <-done:
+					if err != nil {
+						t.Fatal(err)
+					}
+				case <-time.After(3 * time.Second):
+					t.Fatal("server did not stop")
+				}
+			}
+		}
+		cancel()
+		<-done
+	}
+	t.Fatal("server never came up on free ports")
+	return nil
+}
+
+// healthy polls url until it answers 200, or until done reports Start exited.
+func healthy(url string, done chan error) bool {
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case err := <-done:
+			done <- err
+			return false
+		default:
+		}
+		if resp, err := http.Get(url); err == nil {
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return true
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return false
+}
+
 func TestServer_StartWithAPIListener(t *testing.T) {
 	s := newListenerTestServer(config.APIListenerTLSNone, config.ObservabilityConfig{MetricsEnabled: true})
-	s.config.HTTP.Port = freePort(t)
-	s.config.API.Listener.Port = freePort(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	done := make(chan error, 1)
-	go func() { done <- s.Start(ctx) }()
-
+	stop := startWithFreePorts(t, s)
 	public := fmt.Sprintf("http://127.0.0.1:%d", s.config.HTTP.Port)
 	private := fmt.Sprintf("http://127.0.0.1:%d", s.config.API.Listener.Port)
-	waitForHealth(t, http.DefaultClient, public+"/healthz")
-	waitForHealth(t, http.DefaultClient, private+"/healthz")
+
 	resp, err := http.Get(public + "/metrics")
 	if err != nil {
 		t.Fatal(err)
@@ -416,15 +458,7 @@ func TestServer_StartWithAPIListener(t *testing.T) {
 		t.Fatalf("expected metrics on the private listener, got %d", resp.StatusCode)
 	}
 
-	cancel()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("server did not stop")
-	}
+	stop()
 	if _, err := http.Get(private + "/healthz"); err == nil {
 		t.Fatal("expected the API listener to be closed")
 	}
@@ -439,5 +473,25 @@ func TestServer_StartFailsOnAPIListenerTLS(t *testing.T) {
 	}
 	if s.httpServer != nil {
 		t.Fatal("expected the public listener not to start")
+	}
+}
+
+func TestAPIErrorWriter(t *testing.T) {
+	for _, tt := range []struct {
+		msg   string
+		level slog.Level
+	}{
+		{`http: TLS handshake error from 10.0.0.9:4242: no certificate available for 'internal-nlb.local'`, slog.LevelWarn},
+		{"http: TLS handshake error from 10.0.0.9:4242: EOF", slog.LevelDebug},
+		{"http: some other server error", slog.LevelError},
+	} {
+		var logs bytes.Buffer
+		w := &apiErrorWriter{logger: slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))}
+		if n, err := w.Write([]byte(tt.msg + "\n")); err != nil || n != len(tt.msg)+1 {
+			t.Fatalf("expected full write, got n=%d err=%v", n, err)
+		}
+		if !strings.Contains(logs.String(), "level="+tt.level.String()) {
+			t.Errorf("%q: expected level %s, got %s", tt.msg, tt.level, logs.String())
+		}
 	}
 }

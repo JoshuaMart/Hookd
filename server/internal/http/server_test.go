@@ -691,7 +691,7 @@ func TestServer_Health(t *testing.T) {
 	// metrics are disabled.
 	server := newObservabilityTestServer(config.ObservabilityConfig{MetricsRequireAuth: true},
 		config.HTTPSConfig{Enabled: true, AutoCert: true})
-	handler := server.newHandler()
+	handler, _ := server.newHandlers()
 
 	for _, path := range []string{"/health", "/healthz"} {
 		for _, host := range []string{"example.com", "127.0.0.1:8080", "hookd.internal"} {
@@ -765,7 +765,8 @@ func TestServer_MetricsAuthentication(t *testing.T) {
 				req.TLS = &tls.ConnectionState{}
 			}
 			w := httptest.NewRecorder()
-			server.newHandler().ServeHTTP(w, req)
+			handler, _ := server.newHandlers()
+			handler.ServeHTTP(w, req)
 			if w.Code != tt.wantStatus {
 				t.Fatalf("status = %d, want %d: %s", w.Code, tt.wantStatus, w.Body)
 			}
@@ -787,7 +788,7 @@ func TestServer_MetricsAuthentication(t *testing.T) {
 func TestServer_ObservabilityPathsOnHookHost(t *testing.T) {
 	server := newObservabilityTestServer(config.ObservabilityConfig{MetricsEnabled: true, MetricsRequireAuth: true},
 		config.HTTPSConfig{Enabled: true, AutoCert: true})
-	handler := server.newHandler()
+	handler, _ := server.newHandlers()
 	hook := server.storage.CreateHook("example.com", storage.CreateOptions{})
 	for _, path := range []string{"/health", "/healthz", "/metrics"} {
 		t.Run(path, func(t *testing.T) {

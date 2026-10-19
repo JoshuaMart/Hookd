@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"strconv"
@@ -12,7 +13,8 @@ import (
 )
 
 // startAPI starts the dedicated API listener once, when enabled. For acme it
-// must run after startHTTPS, whose certificate it reuses.
+// must run after startHTTPS, whose certificate it reuses. It binds before
+// returning, so a taken port fails Start.
 func (s *Server) startAPI(handler http.Handler, errChan chan<- error) error {
 	listener := s.config.API.Listener
 	if !listener.Enabled || s.apiServer != nil {
@@ -22,22 +24,26 @@ func (s *Server) startAPI(handler http.Handler, errChan chan<- error) error {
 	if err != nil {
 		return err
 	}
-	addr := net.JoinHostPort(listener.BindAddress, strconv.Itoa(listener.Port))
-	s.apiServer = newPublicServer(addr, handler, s.logger)
-	s.apiServer.TLSConfig = tlsConfig
+	ln, err := net.Listen("tcp", net.JoinHostPort(listener.BindAddress, strconv.Itoa(listener.Port)))
+	if err != nil {
+		return fmt.Errorf("api server error: %w", err)
+	}
 	if tlsConfig == nil {
 		s.logger.Warn("api listener serves plain HTTP: keep it behind a TLS-terminating proxy or mesh")
 	}
+	s.apiServer = newPublicServer(ln.Addr().String(), handler, s.logger)
+	s.apiServer.TLSConfig = tlsConfig
+	s.apiServer.ErrorLog = log.New(&apiErrorWriter{logger: s.logger}, "", 0)
+	s.logger.Info("api listener starting",
+		"port", listener.Port,
+		"bind_address", listener.BindAddress,
+		"tls", listener.TLS)
 	go func() {
-		s.logger.Info("api listener starting",
-			"port", listener.Port,
-			"bind_address", listener.BindAddress,
-			"tls", listener.TLS)
 		var err error
 		if tlsConfig != nil {
-			err = s.apiServer.ListenAndServeTLS("", "")
+			err = s.apiServer.ServeTLS(ln, "", "")
 		} else {
-			err = s.apiServer.ListenAndServe()
+			err = s.apiServer.Serve(ln)
 		}
 		if err != nil && err != http.ErrServerClosed {
 			errChan <- fmt.Errorf("api server error: %w", err)
@@ -56,14 +62,14 @@ func (s *Server) apiTLSConfig() (*tls.Config, error) {
 		}
 		return s.certTLS.Clone(), nil
 	case config.APIListenerTLSFile:
-		cert, err := tls.LoadX509KeyPair(listener.CertFile, listener.KeyFile)
+		reloader, err := newCertReloader(listener.CertFile, listener.KeyFile, s.logger)
 		if err != nil {
-			return nil, fmt.Errorf("failed to load api listener certificate: %w", err)
+			return nil, err
 		}
 		return &tls.Config{
-			Certificates: []tls.Certificate{cert},
-			MinVersion:   tls.VersionTLS12,
-			NextProtos:   []string{"h2", "http/1.1"},
+			GetCertificate: reloader.GetCertificate,
+			MinVersion:     tls.VersionTLS12,
+			NextProtos:     []string{"h2", "http/1.1"},
 		}, nil
 	case config.APIListenerTLSNone:
 		return nil, nil

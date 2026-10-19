@@ -131,11 +131,13 @@ are no longer exposed there. Three TLS modes:
 
 | `tls` | Certificate | Requirements |
 |-------|-------------|--------------|
-| `acme` (default) | The wildcard certificate managed for `server.domain`, obtained once and shared with the HTTPS listener | `https.enabled` and `https.autocert`; clients connect with SNI/`Host` = `server.domain` |
-| `file` | `cert_file` and `key_file`, e.g. from an internal CA or cert-manager | Both files; read at startup, restart to rotate |
+| `acme` (default) | The wildcard certificate managed for `server.domain`, obtained once and shared with the HTTPS listener | `https.enabled` and `https.autocert`; clients connect with SNI/`Host` = `server.domain` (another SNI fails the handshake, logged as a warning) |
+| `file` | `cert_file` and `key_file`, e.g. from an internal CA or cert-manager | Both files; a rotated pair is picked up within a minute, no restart (a half-written one is retried) |
 | `none` | None: plain HTTP | Only behind a TLS-terminating proxy or mesh; the API's HTTPS requirement is not enforced and a warning is logged |
 
-The port must differ from the HTTP, HTTPS, SMTP and DNS ports. Every key can
+With `acme` or `file` the port speaks HTTPS only: point load balancer health
+checks at `/healthz` over HTTPS, or use a TCP check. The port must differ from
+the HTTP, HTTPS, SMTP and DNS ports. Every key can
 be set from the environment, e.g. `HOOKD_SERVER_API_LISTENER_ENABLED=true`,
 `HOOKD_SERVER_API_LISTENER_PORT=8443`, `HOOKD_SERVER_API_LISTENER_TLS=file`.
 Clients need no change: point their base URL at the private listener, e.g.
@@ -503,7 +505,8 @@ Public HTTP liveness probes returning `200` with `{"status":"ok"}`. Both support
 `HEAD` and remain available over HTTP when the API requires HTTPS. These probes
 do not check DNS, SMTP, or storage. Use the apex domain, server IP, or proxy
 hostname; requests to hook subdomains are captured instead. Both are also served
-on the private API listener when it is enabled.
+on the private API listener when it is enabled — over HTTPS there, unless its
+`tls` is `none`.
 
 ```bash
 curl https://hookd.domain.tld/healthz
