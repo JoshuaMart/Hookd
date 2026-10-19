@@ -34,8 +34,9 @@ func (s *Server) startHTTPS(handler http.Handler, errChan chan<- error) error {
 	if err != nil {
 		return err
 	}
+	s.certTLS = tlsConfig
 	s.httpsServer = newPublicServer(fmt.Sprintf(":%d", s.config.HTTPS.Port), handler, s.logger)
-	s.httpsServer.TLSConfig = tlsConfig
+	s.httpsServer.TLSConfig = tlsConfig.Clone()
 	go func() {
 		s.logger.Info("https server starting (certmagic wildcard)",
 			"port", s.config.HTTPS.Port,

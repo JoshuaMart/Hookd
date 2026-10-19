@@ -64,6 +64,11 @@ server:
     session_timeout: "5m"       # A whole session
   api:
     auth_token: "" # If empty, a random token will be generated at startup
+    listener:
+      enabled: false            # true serves the API on its own (private) port only
+      bind_address: ""          # e.g. the private IP; empty binds all interfaces
+      port: 8443
+      tls: "acme"               # acme, file (cert_file/key_file) or none
 
 eviction:
   interaction_ttl: "1h"      # TTL for interactions
@@ -105,6 +110,37 @@ with `GET /activity`, then read them with `GET /poll/:id` — preferably with a
 cursor (see [Cursor reads](#cursor-reads-and-acknowledgement)), so nothing is
 deleted before you have stored it.
 
+### Private API listener (optional)
+
+By default the API answers on the public HTTP/HTTPS ports, on the apex domain or
+the server IP, protected by `X-API-Key` alone. With
+`server.api.listener.enabled`, it moves to a port of its own, meant to be
+reachable from a private network only (internal load balancer, VPC, mesh):
+
+- The public listeners keep capture and `/health`, `/healthz` only. A request
+  to `/register`, `/poll`, `/read`, `/ack`, `/activity`, `/hooks` or `/metrics`
+  there falls through to capture and gets the same empty `200` as any unknown
+  path — no `401`, nothing that reveals an API.
+- The private listener serves the API (same `X-API-Key` check), `/metrics`
+  (when `metrics_enabled`; `metrics_require_auth` still applies), `/health`
+  and `/healthz`. It never captures: any other path, whatever the `Host`, is a
+  `404`.
+
+A leaked key is then useless from the internet, and `/activity` and `/metrics`
+are no longer exposed there. Three TLS modes:
+
+| `tls` | Certificate | Requirements |
+|-------|-------------|--------------|
+| `acme` (default) | The wildcard certificate managed for `server.domain`, obtained once and shared with the HTTPS listener | `https.enabled` and `https.autocert`; clients connect with SNI/`Host` = `server.domain` |
+| `file` | `cert_file` and `key_file`, e.g. from an internal CA or cert-manager | Both files; read at startup, restart to rotate |
+| `none` | None: plain HTTP | Only behind a TLS-terminating proxy or mesh; the API's HTTPS requirement is not enforced and a warning is logged |
+
+The port must differ from the HTTP, HTTPS, SMTP and DNS ports. Every key can
+be set from the environment, e.g. `HOOKD_SERVER_API_LISTENER_ENABLED=true`,
+`HOOKD_SERVER_API_LISTENER_PORT=8443`, `HOOKD_SERVER_API_LISTENER_TLS=file`.
+Clients need no change: point their base URL at the private listener, e.g.
+`https://hookd.domain.tld:8443`.
+
 ### Running several instances
 
 With `storage.backend: redis`, every hook and interaction is kept in a shared
@@ -121,6 +157,9 @@ instance at a time, under a lease kept in Redis.
   cluster mode, and set `maxmemory-policy noeviction`.
 - Use a network load balancer that preserves the client IP (UDP/TCP 53, TCP 25
   and 80), since the source IP is part of every interaction.
+- With the [private API listener](#private-api-listener-optional), each
+  instance exposes its API port behind an internal load balancer only, and
+  clients use that load balancer's address; the public one carries capture.
 - The TLS private key is stored in Redis: enable TLS in transit, encryption at
   rest and authentication on the server.
 - Put Redis next to the instances (same region, private network): every capture
@@ -204,6 +243,10 @@ sudo systemctl status hookd
 ## Usage
 
 ### API Endpoints
+
+The examples use the apex domain on the public ports. With the
+[private API listener](#private-api-listener-optional) enabled, send them to
+that listener instead.
 
 #### POST /register
 
@@ -459,7 +502,8 @@ curl -X POST https://hookd.domain.tld/poll \
 Public HTTP liveness probes returning `200` with `{"status":"ok"}`. Both support
 `HEAD` and remain available over HTTP when the API requires HTTPS. These probes
 do not check DNS, SMTP, or storage. Use the apex domain, server IP, or proxy
-hostname; requests to hook subdomains are captured instead.
+hostname; requests to hook subdomains are captured instead. Both are also served
+on the private API listener when it is enabled.
 
 ```bash
 curl https://hookd.domain.tld/healthz
@@ -469,7 +513,8 @@ curl https://hookd.domain.tld/healthz
 
 Get server metrics, public by default. Set `observability.metrics_require_auth: true`
 to require `X-API-Key: <server.api.auth_token>` and apply the API's HTTPS policy.
-The endpoint is not mounted when `observability.metrics_enabled: false`.
+The endpoint is not mounted when `observability.metrics_enabled: false`, and is
+served only on the private API listener when that one is enabled.
 Override the auth setting via `HOOKD_OBSERVABILITY_METRICS_REQUIRE_AUTH` if needed.
 
 **Request:**

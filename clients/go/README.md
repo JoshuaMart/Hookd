@@ -163,7 +163,7 @@ return err
 
 The client requires two parameters:
 
-- `server`: The Hookd server URL (e.g., `https://hookd.example.com`)
+- `server`: The Hookd server URL (e.g., `https://hookd.example.com`). When the server runs its private API listener (`server.api.listener`), use that listener's address instead, e.g. `https://hookd.example.com:8443`
 - `token`: Authentication token for API access
 
 ```go

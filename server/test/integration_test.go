@@ -479,6 +479,87 @@ func TestIntegration_Authentication(t *testing.T) {
 	}
 }
 
+func TestIntegration_PrivateAPIListener(t *testing.T) {
+	cfg := defaultTestConfig(filepath.Join(t.TempDir(), "longlived.db"))
+	cfg.Server.API.Listener = config.APIListenerConfig{
+		Enabled: true, BindAddress: "127.0.0.1", Port: 18443, TLS: config.APIListenerTLSNone,
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	ts := startServer(t, cfg, sequentialIDs())
+	defer ts.cleanup()
+	public, private, token := cfg.Server.HTTP.Port, cfg.Server.API.Listener.Port, cfg.Server.API.AuthToken
+
+	// The public listener no longer answers as an API: same empty 200 as any
+	// unknown path, with or without a key.
+	for _, path := range []string{"/register", "/hooks", "/activity", "/metrics"} {
+		for _, key := range []string{"", token} {
+			req, _ := http.NewRequest("POST", fmt.Sprintf("http://localhost:%d%s", public, path), nil)
+			if key != "" {
+				req.Header.Set("X-API-Key", key)
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusOK || len(body) != 0 {
+				t.Fatalf("public %s: expected empty 200, got %d: %q", path, resp.StatusCode, body)
+			}
+		}
+	}
+	if _, err := registerHook(public, token); err == nil {
+		t.Fatal("expected registration on the public listener to fail")
+	}
+
+	hook, err := registerHook(private, token)
+	if err != nil {
+		t.Fatalf("failed to register on the private listener: %v", err)
+	}
+
+	// Capture stays on the public listener.
+	req, _ := http.NewRequest("POST", fmt.Sprintf("http://localhost:%d/callback", public), bytes.NewBufferString("via public"))
+	req.Host = hook.ID + "." + cfg.Server.Domain
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	// The private listener never captures, even for a hook's Host.
+	req, _ = http.NewRequest("POST", fmt.Sprintf("http://localhost:%d/callback", private), bytes.NewBufferString("via private"))
+	req.Host = hook.ID + "." + cfg.Server.Domain
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 on the private listener, got %d", resp.StatusCode)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	interactions, err := pollHook(private, token, hook.ID)
+	if err != nil {
+		t.Fatalf("failed to poll on the private listener: %v", err)
+	}
+	if len(interactions) != 1 || interactions[0].Type != "http" || interactions[0].Data["body"] != "via public" {
+		t.Fatalf("expected only the public callback, got %+v", interactions)
+	}
+
+	resp, err = http.Get(fmt.Sprintf("http://localhost:%d/metrics", private))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var metrics map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&metrics); err != nil || metrics["hooks"] == nil {
+		t.Fatalf("expected metrics on the private listener: %v, %v", metrics, err)
+	}
+}
+
 // Helper functions
 
 func registerHook(port int, token string) (*api.Hook, error) {

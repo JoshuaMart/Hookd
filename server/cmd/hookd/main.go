@@ -75,8 +75,17 @@ func runCLI() int {
 	return 0
 }
 
-// run owns the service lifetime and closes storage when startup fails.
+// run stops on SIGINT or SIGTERM.
 func run(cfg *config.Config) error {
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sigChan)
+	return runUntil(cfg, sigChan)
+}
+
+// runUntil owns the service lifetime until stop fires or a listener fails,
+// and closes storage when startup fails.
+func runUntil(cfg *config.Config, stop <-chan os.Signal) error {
 	// Setup logger
 	logger := setupLogger(cfg.Observability)
 
@@ -95,7 +104,8 @@ func run(cfg *config.Config) error {
 		"domain", cfg.Server.Domain,
 		"dns_enabled", cfg.Server.DNS.Enabled,
 		"https_enabled", cfg.Server.HTTPS.Enabled,
-		"smtp_enabled", cfg.Server.SMTP.Enabled)
+		"smtp_enabled", cfg.Server.SMTP.Enabled,
+		"api_listener_enabled", cfg.Server.API.Listener.Enabled)
 
 	// Create ID generator
 	idGenerator := func() string {
@@ -163,7 +173,7 @@ func run(cfg *config.Config) error {
 		go serve(ctx, cancel, logger, "smtp", smtpServer.Start)
 	}
 
-	// Start HTTP/HTTPS server
+	// Start HTTP/HTTPS servers and, when enabled, the API listener
 	httpServer := http.NewServer(http.ServerOptions{
 		Server:        cfg.Server,
 		LongLived:     cfg.LongLived,
@@ -178,13 +188,8 @@ func run(cfg *config.Config) error {
 
 	go serve(ctx, cancel, logger, "http", httpServer.Start)
 
-	// Wait for interrupt signal
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-	defer signal.Stop(sigChan)
-
 	select {
-	case <-sigChan:
+	case <-stop:
 		logger.Info("shutdown signal received")
 	case <-ctx.Done():
 		logger.Info("context cancelled")
