@@ -12,7 +12,8 @@ import (
 // hooks have fired without polling each one; the details are then drained via
 // GET /poll/:id. It does not mutate state — a hook drops off this list once
 // drained or acknowledged; compare last_seq with a cursor to skip read ones.
-// metadata.<key>=<value> query parameters narrow it to matching hooks.
+// metadata.<key>=<value> query parameters narrow it to matching hooks. With
+// owner secrets, only the requester's hooks are listed.
 func (h *APIHandler) HandleActivity(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		respondJSON(w, http.StatusMethodNotAllowed, map[string]string{
@@ -20,11 +21,15 @@ func (h *APIHandler) HandleActivity(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	owner, ok := h.ownerOrReject(w, r)
+	if !ok {
+		return
+	}
 
 	filter := metadataFilter(r)
 	activity := []storage.HookActivity{}
 	if llm, ok := h.storage.(storage.LongLivedManager); ok {
-		for _, a := range llm.LongLivedActivity() {
+		for _, a := range llm.LongLivedActivity(owner) {
 			if storage.MatchesMetadata(a.Hook.Metadata, filter) {
 				activity = append(activity, a)
 			}
@@ -38,7 +43,8 @@ func (h *APIHandler) HandleActivity(w http.ResponseWriter, r *http.Request) {
 
 // HandleHooks handles GET /hooks: every long-lived hook, without interactions,
 // optionally narrowed by metadata.<key>=<value>. It lets a client rebuild its
-// hook list after losing local state.
+// hook list after losing local state. With owner secrets, only the
+// requester's hooks are listed.
 func (h *APIHandler) HandleHooks(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		respondJSON(w, http.StatusMethodNotAllowed, map[string]string{
@@ -46,11 +52,15 @@ func (h *APIHandler) HandleHooks(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	owner, ok := h.ownerOrReject(w, r)
+	if !ok {
+		return
+	}
 
 	filter := metadataFilter(r)
 	hooks := []*storage.Hook{}
 	if llm, ok := h.storage.(storage.LongLivedManager); ok {
-		all, err := llm.LongLivedHooks()
+		all, err := llm.LongLivedHooks(owner)
 		if err != nil {
 			// An empty list would read as "no hooks" to a client recovering state.
 			h.logger.Error("failed to list long-lived hooks", "error", err)

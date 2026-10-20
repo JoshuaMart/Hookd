@@ -1,9 +1,10 @@
 -- Creates a batch of hooks, all or nothing, under the long-lived cap.
 -- ARGV: P, max_long_lived (0 = no cap), n, then per hook:
 --   kind (eph|ll), id, created_ns, expires_ns, created_us,
---   expires_us (0 = none), expire_at_ms, dns, http, https, smtp, metadata
+--   expires_us (0 = none), expire_at_ms, dns, http, https, smtp, metadata,
+--   owner ('' = none)
 local max, n = tonumber(ARGV[2]), tonumber(ARGV[3])
-local W = 12
+local W = 13
 
 local ll = 0
 for k = 0, n - 1 do
@@ -24,7 +25,7 @@ for k = 0, n - 1 do
   redis.call('HSET', h,
     'created_at', ARGV[b + 3], 'expires_at', ARGV[b + 4],
     'dns', ARGV[b + 8], 'http', ARGV[b + 9], 'https', ARGV[b + 10], 'smtp', ARGV[b + 11],
-    'metadata', ARGV[b + 12], 'kind', kind, 'last_seq', 0, 'dropped_through', 0)
+    'metadata', ARGV[b + 12], 'kind', kind, 'owner', ARGV[b + 13], 'last_seq', 0, 'dropped_through', 0)
   if ARGV[b + 6] ~= '0' then
     redis.call('ZADD', P .. 'exp', ARGV[b + 6], id)
     -- Safety net: the evictor normally deletes the hook first.
@@ -32,6 +33,19 @@ for k = 0, n - 1 do
   end
   if kind == 'll' then
     redis.call('ZADD', P .. 'll', ARGV[b + 5], id)
+    if ARGV[b + 13] ~= '' then
+      local o = P .. 'o:' .. ARGV[b + 13]
+      local fresh = redis.call('EXISTS', o) == 0
+      redis.call('ZADD', o, ARGV[b + 5], id)
+      -- The index outlives its last hook by the same grace as the hashes.
+      if ARGV[b + 6] == '0' then
+        redis.call('PERSIST', o)
+      elseif fresh then
+        redis.call('PEXPIREAT', o, ARGV[b + 7])
+      else
+        redis.call('PEXPIREAT', o, ARGV[b + 7], 'GT')
+      end
+    end
   end
 end
 redis.call('HINCRBY', P .. 'stats', 'hooks', n)

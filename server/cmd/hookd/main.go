@@ -106,7 +106,8 @@ func runUntil(cfg *config.Config, stop <-chan os.Signal) error {
 		"dns_enabled", cfg.Server.DNS.Enabled,
 		"https_enabled", cfg.Server.HTTPS.Enabled,
 		"smtp_enabled", cfg.Server.SMTP.Enabled,
-		"api_listener_enabled", cfg.Server.API.Listener.Enabled)
+		"api_listener_enabled", cfg.Server.API.Listener.Enabled,
+		"owner_secret_enabled", cfg.Server.API.OwnerSecret.Enabled)
 
 	// Create ID generator
 	idGenerator := avoidLabels(generateID, nameserverLabels(cfg.Server))

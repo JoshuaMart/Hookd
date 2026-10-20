@@ -106,6 +106,8 @@ server:
     max_message_bytes: 262144
   api:
     auth_token: ""              # auto-generated if empty, printed once on stderr
+    owner_secret:
+      enabled: false            # true: each hook is readable only with its owner secret
 
 eviction:
   interaction_ttl: "1h"
@@ -139,6 +141,37 @@ observability:
 | `--log-format` | Log format (`json` or `text`) | `json` |
 
 </details>
+
+### Owner secrets
+
+Clients that share the API token can read each other's hooks, and a poll drains
+them: anyone who learns a hook ID (it travels in DNS names and payloads) could
+make its interactions vanish. With `server.api.owner_secret.enabled: true`
+(`HOOKD_SERVER_API_OWNER_SECRET_ENABLED=true`), every hook belongs to the secret
+sent in the `X-Hookd-Secret` header when it was registered. The API token still
+gates the API; the secret decides which hooks a request sees.
+
+- `POST /register` takes an optional `X-Hookd-Secret` of 32 to 256 visible ASCII
+  characters (use a random value of at least 128 bits, e.g. 32 hex characters).
+  Without one, the server generates a 256-bit secret and returns it once, as a
+  top-level `secret` field. Reuse a secret to group hooks under one owner, or use
+  a new one per hook.
+- `/poll`, `/read`, `/ack`, `/hooks` and `/activity` require the header: `401`
+  without it, `400` when malformed. A hook of another owner gets exactly the
+  answer of an unknown hook, and `/hooks` and `/activity` list only the
+  requester's hooks.
+- The server stores only `SHA-256(secret)`, never the secret itself.
+- Hooks created before the option was enabled have no owner: they keep
+  capturing until they expire but are unreachable through the API. Disabling the
+  option makes every hook readable with the API token alone again.
+
+```bash
+curl -X POST https://hookd.example.com/register -H "X-API-Key: YOUR_TOKEN"
+# {"id": "abc123", ..., "secret": "9f86d081884c7d65..."}
+
+curl https://hookd.example.com/poll/abc123 \
+  -H "X-API-Key: YOUR_TOKEN" -H "X-Hookd-Secret: 9f86d081884c7d65..."
+```
 
 ### `POST /register`
 

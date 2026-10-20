@@ -15,6 +15,15 @@ func (m *SQLiteManager) Has(id string) bool {
 	return ok
 }
 
+// owns reports whether owner holds the hook, from memory: unknown and foreign
+// hooks are both refused before any disk access.
+func (m *SQLiteManager) owns(owner, id string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	have, ok := m.known[id]
+	return ok && ownedBy(have, owner)
+}
+
 // LongLivedCount returns the number of long-lived hooks currently stored.
 func (m *SQLiteManager) LongLivedCount() int {
 	m.mu.RLock()
@@ -65,7 +74,7 @@ func (m *SQLiteManager) CreateLongLivedHooks(domain string, opts []CreateOptions
 		return nil, fmt.Errorf("commit hook batch: %w", err)
 	}
 	for _, hook := range hooks {
-		m.known[hook.ID] = struct{}{}
+		m.known[hook.ID] = hook.Owner
 	}
 	return hooks, nil
 }
@@ -82,19 +91,18 @@ func insertHook(tx *sql.Tx, hook *Hook) error {
 	}
 
 	if _, err := tx.Exec(
-		`INSERT INTO hooks (id, dns, http, https, smtp, created_at, expires_at, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		hook.ID, hook.DNS, hook.HTTP, hook.HTTPS, hook.SMTP, hook.CreatedAt.UnixNano(), expiryNanos(hook.ExpiresAt), meta,
+		`INSERT INTO hooks (id, dns, http, https, smtp, created_at, expires_at, metadata, owner) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		hook.ID, hook.DNS, hook.HTTP, hook.HTTPS, hook.SMTP, hook.CreatedAt.UnixNano(), expiryNanos(hook.ExpiresAt), meta, hook.Owner,
 	); err != nil {
 		return fmt.Errorf("persist long-lived hook: %w", err)
 	}
 	return nil
 }
 
-// LongLivedHooks returns every long-lived hook, oldest first.
-func (m *SQLiteManager) LongLivedHooks() ([]*Hook, error) {
-	rows, err := m.readDB.Query(
-		`SELECT id, dns, http, https, smtp, created_at, expires_at, metadata FROM hooks ORDER BY created_at, id`,
-	)
+// LongLivedHooks returns the long-lived hooks of owner, oldest first.
+func (m *SQLiteManager) LongLivedHooks(owner string) ([]*Hook, error) {
+	where, args := ownerFilter("owner", owner)
+	rows, err := m.readDB.Query(`SELECT `+hookColumns+` FROM hooks`+where+` ORDER BY created_at, id`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -126,12 +134,15 @@ func (m *SQLiteManager) CreateHook(domain string, opts CreateOptions) *Hook {
 
 // GetHook retrieves a hook by ID.
 func (m *SQLiteManager) GetHook(id string) (*Hook, bool) {
-	if !m.Has(id) {
+	return m.GetOwnedHook(AnyOwner, id)
+}
+
+// GetOwnedHook retrieves a hook by ID if owner holds it.
+func (m *SQLiteManager) GetOwnedHook(owner, id string) (*Hook, bool) {
+	if !m.owns(owner, id) {
 		return nil, false
 	}
-	row := m.readDB.QueryRow(
-		`SELECT id, dns, http, https, smtp, created_at, expires_at, metadata FROM hooks WHERE id = ?`, id,
-	)
+	row := m.readDB.QueryRow(`SELECT `+hookColumns+` FROM hooks WHERE id = ?`, id)
 	hook, err := scanHook(row)
 	if err != nil {
 		if err != sql.ErrNoRows {

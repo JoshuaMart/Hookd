@@ -61,11 +61,24 @@ func (m *MemoryManager) CreateHook(domain string, opts CreateOptions) *Hook {
 
 // GetHook retrieves a hook by ID
 func (m *MemoryManager) GetHook(id string) (*Hook, bool) {
+	return m.GetOwnedHook(AnyOwner, id)
+}
+
+// GetOwnedHook retrieves a hook by ID if owner holds it.
+func (m *MemoryManager) GetOwnedHook(owner, id string) (*Hook, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
+	return m.owned(owner, id)
+}
+
+// owned looks a hook up for owner. Callers must hold m.mu.
+func (m *MemoryManager) owned(owner, id string) (*Hook, bool) {
 	hook, exists := m.hooks[id]
-	return hook, exists
+	if !exists || !ownedBy(hook.Owner, owner) {
+		return nil, false
+	}
+	return hook, true
 }
 
 // Has reports whether a hook exists.
@@ -116,10 +129,15 @@ func (m *MemoryManager) trim(hookID string, max int) int {
 
 // ReadInteractions returns the interactions past the cursor without deleting them.
 func (m *MemoryManager) ReadInteractions(hookID string, after int64) (CursorRead, error) {
+	return m.ReadOwned(AnyOwner, hookID, after)
+}
+
+// ReadOwned is ReadInteractions restricted to the hooks of owner.
+func (m *MemoryManager) ReadOwned(owner, hookID string, after int64) (CursorRead, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	if _, exists := m.hooks[hookID]; !exists {
+	if _, exists := m.owned(owner, hookID); !exists {
 		return CursorRead{}, ErrHookNotFound
 	}
 	result := make([]*Interaction, 0)
@@ -133,10 +151,15 @@ func (m *MemoryManager) ReadInteractions(hookID string, after int64) (CursorRead
 
 // AckInteractions deletes the interactions up to and including through.
 func (m *MemoryManager) AckInteractions(hookID string, through int64) (int, error) {
+	return m.AckOwned(AnyOwner, hookID, through)
+}
+
+// AckOwned is AckInteractions restricted to the hooks of owner.
+func (m *MemoryManager) AckOwned(owner, hookID string, through int64) (int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if _, exists := m.hooks[hookID]; !exists {
+	if _, exists := m.owned(owner, hookID); !exists {
 		return 0, ErrHookNotFound
 	}
 	interactions := m.interactions[hookID]
@@ -169,6 +192,11 @@ func (m *MemoryManager) PollInteractions(hookID string) []*Interaction {
 
 // PollInteractionsBatch retrieves and deletes interactions for multiple hooks
 func (m *MemoryManager) PollInteractionsBatch(hookIDs []string) map[string]*PollResult {
+	return m.PollOwned(AnyOwner, hookIDs)
+}
+
+// PollOwned is PollInteractionsBatch restricted to the hooks of owner.
+func (m *MemoryManager) PollOwned(owner string, hookIDs []string) map[string]*PollResult {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -178,7 +206,7 @@ func (m *MemoryManager) PollInteractionsBatch(hookIDs []string) map[string]*Poll
 		if _, seen := results[hookID]; seen {
 			continue
 		}
-		if _, exists := m.hooks[hookID]; !exists {
+		if _, exists := m.owned(owner, hookID); !exists {
 			results[hookID] = &PollResult{Error: "Hook not found"}
 			continue
 		}

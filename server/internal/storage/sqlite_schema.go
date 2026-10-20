@@ -19,7 +19,8 @@ CREATE TABLE IF NOT EXISTS hooks (
 	expires_at INTEGER NOT NULL,
 	metadata   TEXT,
 	last_seq        INTEGER NOT NULL DEFAULT 0,
-	dropped_through INTEGER NOT NULL DEFAULT 0
+	dropped_through INTEGER NOT NULL DEFAULT 0,
+	owner           TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_hooks_expires ON hooks(expires_at);
 
@@ -55,6 +56,8 @@ func migrate(db *sql.DB) error {
 		{"hooks", "smtp", "TEXT NOT NULL DEFAULT ''"},
 		{"hooks", "last_seq", "INTEGER NOT NULL DEFAULT 0"},
 		{"hooks", "dropped_through", "INTEGER NOT NULL DEFAULT 0"},
+		// Older rows get no owner, so an owner-scoped request never sees them.
+		{"hooks", "owner", "TEXT NOT NULL DEFAULT ''"},
 	} {
 		if _, err := addColumn(db, col.table, col.name, col.ddl); err != nil {
 			return err
@@ -70,6 +73,10 @@ func migrate(db *sql.DB) error {
 		CREATE INDEX IF NOT EXISTS idx_interactions_hook_seq ON interactions(hook_id, seq);
 		DROP INDEX IF EXISTS idx_interactions_hook;`); err != nil {
 		return fmt.Errorf("index interactions.seq: %w", err)
+	}
+	// Created here, not in sqliteSchema: older databases lack the column there.
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_hooks_owner ON hooks(owner, created_at)`); err != nil {
+		return fmt.Errorf("index hooks.owner: %w", err)
 	}
 	return nil
 }

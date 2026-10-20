@@ -28,6 +28,7 @@ func (s *Server) newHandlers() (public, private http.Handler) {
 		Domain:      s.config.Domain,
 		LongLived:   s.longLived,
 		SMTPEnabled: s.config.SMTP.Enabled,
+		OwnerSecret: s.config.API.OwnerSecret.Enabled,
 		Logger:      s.logger,
 	})
 	capture := NewCaptureHandler(s.storage, s.config.Domain, s.logger, s.idGenerator, s.evictor.MaxInteractionBodyBytes())

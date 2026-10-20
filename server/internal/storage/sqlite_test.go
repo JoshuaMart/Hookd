@@ -240,7 +240,7 @@ func TestSQLite_LongLivedActivity(t *testing.T) {
 	m.AddInteraction(fired.ID, DNSInteraction("i1", "1.2.3.4", "q", "A"))
 	m.AddInteraction(fired.ID, DNSInteraction("i2", "1.2.3.4", "q", "A"))
 
-	activity := m.LongLivedActivity()
+	activity := m.LongLivedActivity(AnyOwner)
 	if len(activity) != 1 {
 		t.Fatalf("expected 1 active hook, got %d", len(activity))
 	}

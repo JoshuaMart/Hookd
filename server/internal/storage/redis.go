@@ -164,6 +164,7 @@ func (m *RedisManager) Close() error {
 func (m *RedisManager) hookKey(id string) string   { return m.prefix + "h:" + id }
 func (m *RedisManager) streamKey(id string) string { return m.prefix + "i:" + id }
 func (m *RedisManager) key(name string) string     { return m.prefix + name }
+func (m *RedisManager) ownerKey(o string) string   { return m.prefix + "o:" + o }
 
 // run executes a script with the prefix as ARGV[1], as every script expects.
 func (m *RedisManager) run(ctx context.Context, s *redis.Script, args ...any) *redis.Cmd {

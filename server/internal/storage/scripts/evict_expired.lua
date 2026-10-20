@@ -10,6 +10,8 @@ for _, id in ipairs(ids) do
       if c ~= 0 then redis.call('HINCRBY', P .. 'stats', t, -c) end
     end
     redis.call('HINCRBY', P .. 'stats', 'hooks', -1)
+    local owner = redis.call('HGET', h, 'owner')
+    if owner and owner ~= '' then redis.call('ZREM', P .. 'o:' .. owner, id) end
   end
   redis.call('DEL', h, skey(id))
   redis.call('ZREM', P .. 'exp', id)

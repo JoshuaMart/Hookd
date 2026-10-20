@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"crypto/subtle"
 	"strconv"
 	"time"
 	"unicode/utf8"
@@ -29,6 +30,16 @@ type Hook struct {
 	CreatedAt time.Time      `json:"created_at"`
 	ExpiresAt time.Time      `json:"expires_at"`
 	Metadata  map[string]any `json:"metadata,omitempty"`
+	// Owner is the SHA-256 of the owner secret, never serialized.
+	Owner string `json:"-"`
+}
+
+// AnyOwner disables the owner check of the owner-scoped operations.
+const AnyOwner = ""
+
+// ownedBy reports whether a hook owned by have may be served to want.
+func ownedBy(have, want string) bool {
+	return want == AnyOwner || subtle.ConstantTimeCompare([]byte(have), []byte(want)) == 1
 }
 
 // CreateOptions carries the per-hook parameters supplied at registration time.
@@ -40,6 +51,8 @@ type CreateOptions struct {
 	// Mirrors server.smtp.enabled: without a listener the address would
 	// black-hole, so it is not advertised.
 	SMTPEnabled bool
+	// Owner is the hash of the owner secret; empty when the feature is off.
+	Owner string
 }
 
 // newHook builds a Hook from an id, domain and options. It is shared by every
@@ -54,6 +67,7 @@ func newHook(id, domain string, opts CreateOptions) *Hook {
 		HTTPS:     "https://" + id + "." + domain,
 		CreatedAt: now,
 		Metadata:  opts.Metadata,
+		Owner:     opts.Owner,
 	}
 	if opts.SMTPEnabled {
 		hook.SMTP = id + "@" + domain

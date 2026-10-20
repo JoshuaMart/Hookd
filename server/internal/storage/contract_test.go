@@ -463,7 +463,7 @@ func TestContract_LongLivedHooksOldestFirst(t *testing.T) {
 			}
 			want = append(want, h.ID)
 		}
-		hooks, err := m.LongLivedHooks()
+		hooks, err := m.LongLivedHooks(AnyOwner)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -491,7 +491,7 @@ func TestContract_LongLivedActivity(t *testing.T) {
 			m.AddInteraction(id, it)
 		}
 
-		activity := m.LongLivedActivity()
+		activity := m.LongLivedActivity(AnyOwner)
 		if len(activity) != 2 {
 			t.Fatalf("expected 2 active hooks, got %d", len(activity))
 		}
@@ -512,7 +512,7 @@ func TestContract_LongLivedActivity(t *testing.T) {
 		}
 
 		m.AckInteractions(older.ID, 2)
-		if activity := m.LongLivedActivity(); len(activity) != 1 || activity[0].Hook.ID != newer.ID {
+		if activity := m.LongLivedActivity(AnyOwner); len(activity) != 1 || activity[0].Hook.ID != newer.ID {
 			t.Errorf("an acknowledged hook is no longer active, got %+v", activity)
 		}
 	})

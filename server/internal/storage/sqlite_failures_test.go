@@ -36,7 +36,7 @@ func TestSQLiteStartupFailures(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, err = db.Exec(`CREATE TABLE hooks (expires_at INTEGER)`)
+			_, err = db.Exec(`CREATE TABLE hooks (expires_at INTEGER, created_at INTEGER)`)
 			db.Close()
 			if err != nil {
 				t.Fatal(err)
@@ -109,7 +109,7 @@ func TestSQLiteClosedStoreReportsFailures(t *testing.T) {
 	if n := m.EnforcePerHookLimit(0); n != 0 {
 		t.Fatal("reported unsuccessful trim")
 	}
-	if activity := m.LongLivedActivity(); activity != nil {
+	if activity := m.LongLivedActivity(AnyOwner); activity != nil {
 		t.Fatal("closed store returned activity")
 	}
 	if stats := m.Stats(); stats.InteractionsTotal != 0 || stats.HooksActive != 1 {

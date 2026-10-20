@@ -18,8 +18,8 @@ type AckResult struct {
 
 // readCursor reads one hook past a cursor. A store failure is logged and
 // reported as an error so the client retries instead of seeing "nothing new".
-func (h *APIHandler) readCursor(hookID string, after int64) (*storage.PollResult, int) {
-	read, err := h.storage.ReadInteractions(hookID, after)
+func (h *APIHandler) readCursor(owner, hookID string, after int64) (*storage.PollResult, int) {
+	read, err := h.storage.ReadOwned(owner, hookID, after)
 	if err != nil {
 		return &storage.PollResult{Error: h.storeError(err, hookID)}, storeErrorStatus(err)
 	}
@@ -27,8 +27,8 @@ func (h *APIHandler) readCursor(hookID string, after int64) (*storage.PollResult
 }
 
 // ackCursor acknowledges one hook through a seq.
-func (h *APIHandler) ackCursor(hookID string, through int64) (AckResult, int) {
-	removed, err := h.storage.AckInteractions(hookID, through)
+func (h *APIHandler) ackCursor(owner, hookID string, through int64) (AckResult, int) {
+	removed, err := h.storage.AckOwned(owner, hookID, through)
 	if err != nil {
 		return AckResult{Error: h.storeError(err, hookID)}, storeErrorStatus(err)
 	}
@@ -96,11 +96,15 @@ func (h *APIHandler) HandleRead(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	owner, ok := h.ownerOrReject(w, r)
+	if !ok {
+		return
+	}
 	results := make(map[string]*storage.PollResult, len(cursors))
 	for id, after := range cursors {
-		results[id], _ = h.readCursor(id, after)
+		results[id], _ = h.readCursor(owner, id, after)
 	}
-	h.logger.Info("batch interactions read", "hook_count", len(cursors), "client", r.RemoteAddr)
+	h.logger.Info("batch interactions read", withOwner(owner, "hook_count", len(cursors), "client", r.RemoteAddr)...)
 	respondJSON(w, http.StatusOK, map[string]interface{}{"results": results})
 }
 
@@ -111,11 +115,15 @@ func (h *APIHandler) HandleAck(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	owner, ok := h.ownerOrReject(w, r)
+	if !ok {
+		return
+	}
 	results := make(map[string]AckResult, len(cursors))
 	for id, through := range cursors {
-		results[id], _ = h.ackCursor(id, through)
+		results[id], _ = h.ackCursor(owner, id, through)
 	}
-	h.logger.Info("interactions acknowledged", "hook_count", len(cursors), "client", r.RemoteAddr)
+	h.logger.Info("interactions acknowledged", withOwner(owner, "hook_count", len(cursors), "client", r.RemoteAddr)...)
 	respondJSON(w, http.StatusOK, map[string]interface{}{"results": results})
 }
 
@@ -135,7 +143,7 @@ func parseCursor(r *http.Request, name string) (int64, bool, *apiError) {
 
 // ackOne serves DELETE /poll/:id?through=. through is required so a bare
 // DELETE cannot wipe a hook by accident.
-func (h *APIHandler) ackOne(w http.ResponseWriter, r *http.Request, hookID string) {
+func (h *APIHandler) ackOne(w http.ResponseWriter, r *http.Request, owner, hookID string) {
 	through, ok, errResp := parseCursor(r, "through")
 	if errResp == nil && !ok {
 		errResp = &apiError{http.StatusBadRequest, "through is required"}
@@ -145,11 +153,11 @@ func (h *APIHandler) ackOne(w http.ResponseWriter, r *http.Request, hookID strin
 		return
 	}
 
-	result, status := h.ackCursor(hookID, through)
+	result, status := h.ackCursor(owner, hookID, through)
 	if status != http.StatusOK {
 		respondJSON(w, status, map[string]string{"error": result.Error})
 		return
 	}
-	h.logger.Info("interactions acknowledged", "hook_id", hookID, "through", through, "count", result.Acknowledged, "client", r.RemoteAddr)
+	h.logger.Info("interactions acknowledged", withOwner(owner, "hook_id", hookID, "through", through, "count", result.Acknowledged, "client", r.RemoteAddr)...)
 	respondJSON(w, status, result)
 }

@@ -126,6 +126,15 @@ server:
       cert_file: ""
       key_file: ""
 
+    # Owner secrets. When enabled, each hook belongs to the X-Hookd-Secret
+    # header sent to /register (generated and returned once when absent), and
+    # /poll, /read, /ack, /hooks and /activity serve only the hooks of the
+    # secret they receive; any other hook reads as unknown. Only the SHA-256 of
+    # the secret is stored. Hooks created while it was disabled have no owner
+    # and become unreachable through the API. Disabled by default.
+    owner_secret:
+      enabled: false
+
 eviction:
   # TTL for interactions (interactions are deleted after this duration)
   # Supported formats: 30s, 5m, 1h, 24h, 48h

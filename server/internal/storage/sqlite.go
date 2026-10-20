@@ -23,7 +23,7 @@ type SQLiteManager struct {
 	logger       *slog.Logger
 
 	mu    sync.RWMutex
-	known map[string]struct{}
+	known map[string]string // id -> owner
 }
 
 // NewSQLiteManager opens (creating if needed) the database at dbPath and loads
@@ -60,7 +60,7 @@ func NewSQLiteManager(dbPath string, idGenerator func() string, maxBodyBytes int
 		idGenerator:  idGenerator,
 		maxBodyBytes: maxBodyBytes,
 		logger:       logger,
-		known:        make(map[string]struct{}),
+		known:        make(map[string]string),
 	}
 
 	if err := m.loadIndex(); err != nil {
@@ -107,20 +107,20 @@ func openSQLiteReaders(dsn string) (*sql.DB, error) {
 	return readers, nil
 }
 
-// loadIndex populates the in-memory hook-ID set from the database.
+// loadIndex populates the in-memory hook index from the database.
 func (m *SQLiteManager) loadIndex() error {
-	rows, err := m.db.Query(`SELECT id FROM hooks`)
+	rows, err := m.db.Query(`SELECT id, owner FROM hooks`)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
+		var id, owner string
+		if err := rows.Scan(&id, &owner); err != nil {
 			return err
 		}
-		m.known[id] = struct{}{}
+		m.known[id] = owner
 	}
 	return rows.Err()
 }

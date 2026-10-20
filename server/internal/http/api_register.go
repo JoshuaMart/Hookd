@@ -15,6 +15,11 @@ func (h *APIHandler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 		return
 	}
+	owner, secret, errResp := h.registrationOwner(r)
+	if errResp != nil {
+		respondJSON(w, errResp.status, map[string]string{"error": errResp.message})
+		return
+	}
 	req, errResp := decodeRegistration(w, r)
 	if errResp != nil {
 		respondJSON(w, errResp.status, map[string]string{"error": errResp.message})
@@ -25,19 +30,36 @@ func (h *APIHandler) HandleRegister(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, errResp.status, map[string]string{"error": errResp.message})
 		return
 	}
+	for i := range batch {
+		batch[i].Owner = owner
+	}
 	hooks, errResp := h.createHooks(batch)
 	if errResp != nil {
 		respondJSON(w, errResp.status, map[string]string{"error": errResp.message})
 		return
 	}
-	h.logger.Info("hooks created", "count", len(hooks), "client", r.RemoteAddr)
+	h.logger.Info("hooks created", withOwner(owner, "count", len(hooks), "client", r.RemoteAddr)...)
+	// A generated secret is returned this once; keep it out of caches.
+	if secret != "" {
+		w.Header().Set("Cache-Control", "no-store")
+	}
 	// Only legacy single-hook requests return the object directly. A specs
 	// request always returns an array, even when it contains a single hook.
 	if req.Hooks == nil && len(hooks) == 1 {
-		respondJSON(w, http.StatusOK, hooks[0])
-	} else {
-		respondJSON(w, http.StatusOK, map[string]interface{}{"hooks": hooks})
+		respondJSON(w, http.StatusOK, registeredHook{Hook: hooks[0], Secret: secret})
+		return
 	}
+	resp := map[string]interface{}{"hooks": hooks}
+	if secret != "" {
+		resp["secret"] = secret
+	}
+	respondJSON(w, http.StatusOK, resp)
+}
+
+// registeredHook is the legacy single-hook response, with a generated secret.
+type registeredHook struct {
+	*storage.Hook
+	Secret string `json:"secret,omitempty"`
 }
 
 // decodeRegistration preserves the historical fallback to a single ephemeral

@@ -17,6 +17,8 @@ type APIHandler struct {
 	// A hook carries a mail address only when a listener is running, so a
 	// deployment without one never hands out a black hole.
 	smtpEnabled bool
+	// Ties each hook to the secret sent at registration.
+	ownerSecret bool
 	logger      *slog.Logger
 }
 
@@ -27,6 +29,7 @@ type APIHandlerOptions struct {
 	Domain      string
 	LongLived   config.LongLivedConfig
 	SMTPEnabled bool
+	OwnerSecret bool
 	Logger      *slog.Logger
 }
 
@@ -38,6 +41,7 @@ func NewAPIHandler(opts APIHandlerOptions) *APIHandler {
 		domain:      opts.Domain,
 		longLived:   opts.LongLived,
 		smtpEnabled: opts.SMTPEnabled,
+		ownerSecret: opts.OwnerSecret,
 		logger:      opts.Logger,
 	}
 }

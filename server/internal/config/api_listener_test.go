@@ -135,3 +135,20 @@ func TestLoad_APIListenerInvalid(t *testing.T) {
 		t.Fatal("expected acme without autocert to be rejected")
 	}
 }
+
+func TestLoad_OwnerSecret(t *testing.T) {
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+
+	if DefaultConfig().Server.API.OwnerSecret.Enabled {
+		t.Fatal("expected owner secrets to be disabled by default")
+	}
+	t.Setenv("HOOKD_SERVER_API_OWNER_SECRET_ENABLED", "true")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+	if !cfg.Server.API.OwnerSecret.Enabled {
+		t.Error("env override not applied")
+	}
+}

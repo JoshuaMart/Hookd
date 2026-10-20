@@ -75,6 +75,11 @@ func (c *CompositeManager) GetHook(id string) (*Hook, bool) {
 	return c.routeFor(id).GetHook(id)
 }
 
+// GetOwnedHook retrieves a hook of owner from whichever store holds it.
+func (c *CompositeManager) GetOwnedHook(owner, id string) (*Hook, bool) {
+	return c.routeFor(id).GetOwnedHook(owner, id)
+}
+
 // AddInteraction records an interaction against the hook's owning store.
 func (c *CompositeManager) AddInteraction(hookID string, interaction *Interaction) {
 	c.routeFor(hookID).AddInteraction(hookID, interaction)
@@ -87,18 +92,33 @@ func (c *CompositeManager) PollInteractions(hookID string) []*Interaction {
 
 // ReadInteractions reads past a cursor from the hook's owning store.
 func (c *CompositeManager) ReadInteractions(hookID string, after int64) (CursorRead, error) {
-	return c.routeFor(hookID).ReadInteractions(hookID, after)
+	return c.ReadOwned(AnyOwner, hookID, after)
+}
+
+// ReadOwned reads past a cursor from the hook's owning store, for owner.
+func (c *CompositeManager) ReadOwned(owner, hookID string, after int64) (CursorRead, error) {
+	return c.routeFor(hookID).ReadOwned(owner, hookID, after)
 }
 
 // AckInteractions acknowledges interactions in the hook's owning store.
 func (c *CompositeManager) AckInteractions(hookID string, through int64) (int, error) {
-	return c.routeFor(hookID).AckInteractions(hookID, through)
+	return c.AckOwned(AnyOwner, hookID, through)
+}
+
+// AckOwned acknowledges interactions in the hook's owning store, for owner.
+func (c *CompositeManager) AckOwned(owner, hookID string, through int64) (int, error) {
+	return c.routeFor(hookID).AckOwned(owner, hookID, through)
 }
 
 // PollInteractionsBatch polls several hooks, routing each to its owning store.
 func (c *CompositeManager) PollInteractionsBatch(hookIDs []string) map[string]*PollResult {
+	return c.PollOwned(AnyOwner, hookIDs)
+}
+
+// PollOwned polls several hooks of owner, routing each to its owning store.
+func (c *CompositeManager) PollOwned(owner string, hookIDs []string) map[string]*PollResult {
 	if c.longLived == nil {
-		return c.memory.PollInteractionsBatch(hookIDs)
+		return c.memory.PollOwned(owner, hookIDs)
 	}
 	memoryIDs := make([]string, 0, len(hookIDs))
 	var durableIDs []string
@@ -109,9 +129,9 @@ func (c *CompositeManager) PollInteractionsBatch(hookIDs []string) map[string]*P
 			memoryIDs = append(memoryIDs, id)
 		}
 	}
-	results := c.memory.PollInteractionsBatch(memoryIDs)
+	results := c.memory.PollOwned(owner, memoryIDs)
 	if len(durableIDs) > 0 {
-		for id, result := range c.longLived.PollInteractionsBatch(durableIDs) {
+		for id, result := range c.longLived.PollOwned(owner, durableIDs) {
 			results[id] = result
 		}
 	}
@@ -180,20 +200,20 @@ func (c *CompositeManager) CreateLongLivedHooks(domain string, opts []CreateOpti
 	return c.longLived.CreateLongLivedHooks(domain, opts, maxHooks)
 }
 
-// LongLivedHooks lists every long-lived hook.
-func (c *CompositeManager) LongLivedHooks() ([]*Hook, error) {
+// LongLivedHooks lists the long-lived hooks of owner.
+func (c *CompositeManager) LongLivedHooks(owner string) ([]*Hook, error) {
 	if c.longLived == nil {
 		return nil, nil
 	}
-	return c.longLived.LongLivedHooks()
+	return c.longLived.LongLivedHooks(owner)
 }
 
-// LongLivedActivity lists long-lived hooks with pending interactions.
-func (c *CompositeManager) LongLivedActivity() []HookActivity {
+// LongLivedActivity lists the long-lived hooks of owner with pending interactions.
+func (c *CompositeManager) LongLivedActivity(owner string) []HookActivity {
 	if c.longLived == nil {
 		return nil
 	}
-	return c.longLived.LongLivedActivity()
+	return c.longLived.LongLivedActivity(owner)
 }
 
 // LongLivedCount returns the number of long-lived hooks stored.

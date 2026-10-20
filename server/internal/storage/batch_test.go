@@ -55,7 +55,7 @@ func TestSQLite_HookBatchRollsBackOnInsertFailure(t *testing.T) {
 			if m.LongLivedCount() != 1 || !m.Has(existing.ID) || m.Has("hook-2") || m.Has("hook-3") {
 				t.Fatal("failed batch changed the hook index")
 			}
-			hooks, err := m.LongLivedHooks()
+			hooks, err := m.LongLivedHooks(AnyOwner)
 			if err != nil || len(hooks) != 1 || hooks[0].ID != existing.ID {
 				t.Fatalf("failed batch changed persisted hooks: %v, %v", hooks, err)
 			}
@@ -72,7 +72,7 @@ func TestSQLite_LongLivedHooks(t *testing.T) {
 	first := m.CreateHook("example.com", CreateOptions{TTL: time.Hour, Metadata: map[string]any{"run": "a"}})
 	second := m.CreateHook("example.com", CreateOptions{TTL: time.Hour})
 
-	hooks, err := m.LongLivedHooks()
+	hooks, err := m.LongLivedHooks(AnyOwner)
 	if err != nil {
 		t.Fatalf("LongLivedHooks: %v", err)
 	}
@@ -84,7 +84,7 @@ func TestSQLite_LongLivedHooks(t *testing.T) {
 	}
 
 	m.Close()
-	if _, err := m.LongLivedHooks(); err == nil {
+	if _, err := m.LongLivedHooks(AnyOwner); err == nil {
 		t.Error("expected a storage error to surface")
 	}
 }

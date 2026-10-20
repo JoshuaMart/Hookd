@@ -36,6 +36,13 @@ type Manager interface {
 	// returns how many were removed. It returns ErrHookNotFound for an unknown hook.
 	AckInteractions(hookID string, through int64) (int, error)
 
+	// The Owned forms serve only hooks of owner (AnyOwner disables the check);
+	// any other hook reads exactly like an unknown one.
+	GetOwnedHook(owner, id string) (*Hook, bool)
+	PollOwned(owner string, hookIDs []string) map[string]*PollResult
+	ReadOwned(owner, hookID string, after int64) (CursorRead, error)
+	AckOwned(owner, hookID string, through int64) (int, error)
+
 	// Stats returns storage statistics
 	Stats() Stats
 
@@ -90,12 +97,14 @@ type LongLivedManager interface {
 	// is persisted, in order, or none is.
 	CreateLongLivedHooks(domain string, opts []CreateOptions, maxHooks int) ([]*Hook, error)
 
-	// LongLivedHooks returns every long-lived hook, oldest first.
-	LongLivedHooks() ([]*Hook, error)
+	// LongLivedHooks returns the long-lived hooks of owner (AnyOwner for all),
+	// oldest first.
+	LongLivedHooks(owner string) ([]*Hook, error)
 
-	// LongLivedActivity returns the long-lived hooks that currently have pending
-	// interactions, so a client can discover which ones fired.
-	LongLivedActivity() []HookActivity
+	// LongLivedActivity returns the long-lived hooks of owner (AnyOwner for
+	// all) that currently have pending interactions, so a client can discover
+	// which ones fired.
+	LongLivedActivity(owner string) []HookActivity
 
 	// LongLivedCount returns the number of long-lived hooks currently stored.
 	LongLivedCount() int
