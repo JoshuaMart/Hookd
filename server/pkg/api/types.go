@@ -93,4 +93,7 @@ type RegisterResponse struct {
 
 	// Multiple hooks response (when count>1)
 	Hooks []Hook `json:"hooks,omitempty"`
+
+	// Secret is the owner secret the server generated, returned only once.
+	Secret string `json:"secret,omitempty"`
 }

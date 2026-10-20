@@ -39,7 +39,7 @@ func (m *SQLiteManager) EvictExpiredHooks(now time.Time) int {
 	// passing Has() and hitting an FK failure when the row disappears mid-insert.
 	m.mu.Lock()
 	for _, id := range ids {
-		delete(m.known, id)
+		m.forget(id)
 	}
 	m.mu.Unlock()
 

@@ -119,6 +119,8 @@ func (m *RedisManager) createHooks(domain string, opts []CreateOptions, kind fun
 			return hooks, nil
 		case isScriptError(err, "HOOKD_LIMIT"):
 			return nil, ErrHookLimitReached
+		case isScriptError(err, "HOOKD_OWNER_LIMIT"):
+			return nil, ErrOwnerHookLimitReached
 		case isScriptError(err, "HOOKD_COLLISION") && attempt < maxIDAttempts:
 			continue
 		case isScriptError(err, "HOOKD_COLLISION"):
@@ -132,7 +134,7 @@ func (m *RedisManager) createHooks(domain string, opts []CreateOptions, kind fun
 // hookArgs builds the hooks and the create_hooks.lua arguments for them.
 func (m *RedisManager) hookArgs(domain string, opts []CreateOptions, kind func(CreateOptions) string, maxLongLived int) ([]*Hook, []any, error) {
 	hooks := make([]*Hook, 0, len(opts))
-	args := []any{maxLongLived, len(opts)}
+	args := []any{maxLongLived, m.maxPerOwner, len(opts)}
 	for _, o := range opts {
 		hook := newHook(m.idGenerator(), domain, o)
 		var meta string
@@ -151,7 +153,7 @@ func (m *RedisManager) hookArgs(domain string, opts []CreateOptions, kind func(C
 		args = append(args,
 			kind(o), hook.ID, hook.CreatedAt.UnixNano(), expiryNanos(hook.ExpiresAt),
 			micros(hook.CreatedAt), expiresMicros, expireAtMillis,
-			hook.DNS, hook.HTTP, hook.HTTPS, hook.SMTP, meta,
+			hook.DNS, hook.HTTP, hook.HTTPS, hook.SMTP, meta, hook.Owner,
 		)
 		hooks = append(hooks, hook)
 	}
@@ -165,20 +167,31 @@ func isScriptError(err error, code string) bool {
 
 // GetHook retrieves a hook by ID.
 func (m *RedisManager) GetHook(id string) (*Hook, bool) {
-	fields, err := m.client.HGetAll(context.Background(), m.hookKey(id)).Result()
+	return m.GetOwnedHook(AllOwners(), id)
+}
+
+// GetOwnedHook retrieves a hook by ID if it is in scope. The script checks
+// the owner before reading the hash, so a foreign hook costs no more than an
+// unknown one. It never consults the has cache.
+func (m *RedisManager) GetOwnedHook(scope Scope, id string) (*Hook, bool) {
+	reply, err := m.run(context.Background(), getHookScript, scope.scriptArg(), id).StringSlice()
+	if errors.Is(err, redis.Nil) {
+		return nil, false
+	}
 	if err != nil {
 		m.logFailure("get hook", err, "hook_id", id)
 		return nil, false
 	}
-	if len(fields) == 0 {
-		return nil, false
+	fields := make(map[string]string, len(reply)/2)
+	for i := 0; i+1 < len(reply); i += 2 {
+		fields[reply[i]] = reply[i+1]
 	}
 	return decodeHook(id, fields), true
 }
 
 // decodeHook rebuilds a hook from its hash.
 func decodeHook(id string, f map[string]string) *Hook {
-	hook := &Hook{ID: id, DNS: f["dns"], HTTP: f["http"], HTTPS: f["https"], SMTP: f["smtp"]}
+	hook := &Hook{ID: id, DNS: f["dns"], HTTP: f["http"], HTTPS: f["https"], SMTP: f["smtp"], Owner: f["owner"]}
 	created, _ := strconv.ParseInt(f["created_at"], 10, 64)
 	expires, _ := strconv.ParseInt(f["expires_at"], 10, 64)
 	hook.CreatedAt = time.Unix(0, created).UTC()
@@ -191,10 +204,17 @@ func decodeHook(id string, f map[string]string) *Hook {
 	return hook
 }
 
-// LongLivedHooks returns every long-lived hook, oldest first.
-func (m *RedisManager) LongLivedHooks() ([]*Hook, error) {
+// LongLivedHooks returns the long-lived hooks in scope, oldest first.
+func (m *RedisManager) LongLivedHooks(scope Scope) ([]*Hook, error) {
 	ctx := context.Background()
-	ids, err := m.client.ZRange(ctx, m.key("ll"), 0, -1).Result()
+	index := m.key("ll")
+	if !scope.all {
+		if scope.owner == "" {
+			return []*Hook{}, nil
+		}
+		index = m.ownerKey(scope.owner)
+	}
+	ids, err := m.client.ZRange(ctx, index, 0, -1).Result()
 	if err != nil {
 		return nil, err
 	}
@@ -210,10 +230,22 @@ func (m *RedisManager) LongLivedHooks() ([]*Hook, error) {
 	if _, err := pipe.Exec(ctx); err != nil {
 		return nil, err
 	}
+	var gone []any
 	for i, cmd := range cmds {
-		// Skips a hook whose safety-net expiry fired before the evictor ran.
-		if fields := cmd.Val(); len(fields) > 0 {
+		fields := cmd.Val()
+		// A hook whose safety-net expiry fired before the evictor ran.
+		if len(fields) == 0 {
+			gone = append(gone, ids[i])
+			continue
+		}
+		if scope.allows(fields["owner"]) {
 			hooks = append(hooks, decodeHook(ids[i], fields))
+		}
+	}
+	// evict_expired cannot read the owner of such a hook, so its entry goes here.
+	if !scope.all && len(gone) > 0 {
+		if err := m.client.ZRem(ctx, index, gone...).Err(); err != nil {
+			m.logFailure("prune owner index", err)
 		}
 	}
 	return hooks, nil

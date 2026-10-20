@@ -72,7 +72,12 @@ func (m *RedisManager) encodeInteraction(it *Interaction) (full, longLived strin
 
 // ReadInteractions returns the interactions past the cursor without deleting them.
 func (m *RedisManager) ReadInteractions(hookID string, after int64) (CursorRead, error) {
-	reply, err := m.run(context.Background(), readScript, hookID, startAfter(after)).Slice()
+	return m.ReadOwned(AllOwners(), hookID, after)
+}
+
+// ReadOwned is ReadInteractions restricted to the hooks in scope.
+func (m *RedisManager) ReadOwned(scope Scope, hookID string, after int64) (CursorRead, error) {
+	reply, err := m.run(context.Background(), readScript, scope.scriptArg(), hookID, startAfter(after)).Slice()
 	if errors.Is(err, redis.Nil) {
 		return CursorRead{}, ErrHookNotFound
 	}
@@ -109,8 +114,13 @@ func startAfter(after int64) string { return streamID(clampSeq(after) + 1) }
 
 // AckInteractions deletes the interactions up to and including through.
 func (m *RedisManager) AckInteractions(hookID string, through int64) (int, error) {
+	return m.AckOwned(AllOwners(), hookID, through)
+}
+
+// AckOwned is AckInteractions restricted to the hooks in scope.
+func (m *RedisManager) AckOwned(scope Scope, hookID string, through int64) (int, error) {
 	through = clampSeq(through)
-	n, err := m.run(context.Background(), ackScript, hookID, streamID(through), streamID(through+1)).Int64()
+	n, err := m.run(context.Background(), ackScript, scope.scriptArg(), hookID, streamID(through), streamID(through+1)).Int64()
 	if err != nil {
 		return 0, err
 	}
@@ -132,10 +142,16 @@ func (m *RedisManager) PollInteractions(hookID string) []*Interaction {
 // PollInteractionsBatch drains several hooks. Unknown hooks yield a not-found
 // error, matching the other backends.
 func (m *RedisManager) PollInteractionsBatch(hookIDs []string) map[string]*PollResult {
+	return m.PollOwned(AllOwners(), hookIDs)
+}
+
+// PollOwned is PollInteractionsBatch restricted to the hooks in scope; the
+// script checks the owner in the same step as the drain.
+func (m *RedisManager) PollOwned(scope Scope, hookIDs []string) map[string]*PollResult {
 	ids := uniqueIDs(hookIDs)
 	results := make(map[string]*PollResult, len(ids))
 	for start := 0; start < len(ids); start += pollChunkSize {
-		m.pollChunk(ids[start:min(start+pollChunkSize, len(ids))], results)
+		m.pollChunk(scope, ids[start:min(start+pollChunkSize, len(ids))], results)
 	}
 	return results
 }
@@ -155,8 +171,8 @@ func uniqueIDs(ids []string) []string {
 }
 
 // pollChunk drains one script's worth of hooks into results.
-func (m *RedisManager) pollChunk(ids []string, results map[string]*PollResult) {
-	reply, err := m.run(context.Background(), pollScript, idArgs(ids)...).Slice()
+func (m *RedisManager) pollChunk(scope Scope, ids []string, results map[string]*PollResult) {
+	reply, err := m.run(context.Background(), pollScript, idArgs(ids, scope.scriptArg())...).Slice()
 	if err == nil && len(reply) != len(ids) {
 		err = fmt.Errorf("unexpected poll reply of length %d", len(reply))
 	}

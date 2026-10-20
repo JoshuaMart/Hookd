@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 )
 
@@ -835,5 +837,151 @@ func TestHooksAndActivityMatching(t *testing.T) {
 	activity, err := client.ActivityMatching(filter)
 	if err != nil || len(activity) != 1 || activity[0].LastSeq != 4 {
 		t.Errorf("unexpected activity %+v (%v)", activity, err)
+	}
+}
+
+func TestOwnerSecretIsAdoptedAndSent(t *testing.T) {
+	var seen []string
+	server, client := setupServer(func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, r.Header.Get("X-Hookd-Secret"))
+		resp := map[string]any{"id": "abc123", "created_at": "2024-01-01T00:00:00Z"}
+		switch {
+		case r.URL.Path != "/register":
+			resp = map[string]any{"interactions": []any{}}
+		case r.Header.Get("X-Hookd-Secret") == "":
+			resp["secret"] = "generated-secret"
+		}
+		writeJSON(t, w, resp)
+	})
+	defer server.Close()
+
+	if _, err := client.Register(1); err != nil {
+		t.Fatal(err)
+	}
+	if client.Secret() != "generated-secret" {
+		t.Fatalf("expected the generated secret to be adopted, got %q", client.Secret())
+	}
+	if _, err := client.Register(1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Poll("abc123"); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"", "generated-secret", "generated-secret"}; fmt.Sprint(seen) != fmt.Sprint(want) {
+		t.Errorf("X-Hookd-Secret sent: %q, want %q", seen, want)
+	}
+
+	// An empty secret lets the next registration start a new owner.
+	client.SetSecret("")
+	if _, err := client.Register(1); err != nil || client.Secret() != "generated-secret" || seen[3] != "" {
+		t.Errorf("expected a fresh registration without secret, sent %q, err %v", seen[3], err)
+	}
+}
+
+func TestOwnerSecretProvided(t *testing.T) {
+	server, client := setupServer(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("X-Hookd-Secret"); got != "my-own-secret" {
+			t.Errorf("X-Hookd-Secret = %q", got)
+		}
+		writeJSON(t, w, map[string]any{"hooks": []any{map[string]any{"id": "a"}}})
+	})
+	defer server.Close()
+
+	client.SetSecret("my-own-secret")
+	if _, err := client.RegisterBatch([]HookSpec{{}}); err != nil {
+		t.Fatal(err)
+	}
+	if client.Secret() != "my-own-secret" {
+		t.Errorf("a provided secret must be kept, got %q", client.Secret())
+	}
+}
+
+func TestOwnerSecretAbsentWhenServerIssuesNone(t *testing.T) {
+	server, client := setupServer(func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := r.Header["X-Hookd-Secret"]; ok {
+			t.Error("no secret header expected")
+		}
+		writeJSON(t, w, map[string]any{"id": "abc123"})
+	})
+	defer server.Close()
+
+	for i := 0; i < 2; i++ {
+		if _, err := client.Register(1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if client.Secret() != "" {
+		t.Errorf("got %q", client.Secret())
+	}
+}
+
+func TestOwnerSecretConcurrentFirstRegistrations(t *testing.T) {
+	var mu sync.Mutex
+	generated := 0
+	server, client := setupServer(func(w http.ResponseWriter, r *http.Request) {
+		resp := map[string]any{"id": "abc123"}
+		if r.Header.Get("X-Hookd-Secret") == "" {
+			mu.Lock()
+			generated++
+			resp["secret"] = fmt.Sprintf("secret-%d", generated)
+			mu.Unlock()
+		}
+		writeJSON(t, w, resp)
+	})
+	defer server.Close()
+
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := client.Register(1); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	if generated != 1 || client.Secret() != "secret-1" {
+		t.Errorf("concurrent first registrations must share one owner: %d generated, kept %q", generated, client.Secret())
+	}
+}
+
+func TestRegisteredHooksCarryTheirSecret(t *testing.T) {
+	arrived, release := make(chan struct{}), make(chan struct{})
+	server, client := setupServer(func(w http.ResponseWriter, r *http.Request) {
+		resp := map[string]any{"hooks": []any{map[string]any{"id": "a"}, map[string]any{"id": "b"}}}
+		if r.Header.Get("X-Hookd-Secret") == "" {
+			close(arrived)
+			<-release
+			resp["secret"] = "generated"
+		}
+		writeJSON(t, w, resp)
+	})
+	defer server.Close()
+
+	// A secret set while the first registration is in flight must not orphan
+	// the hooks it creates.
+	done := make(chan []Hook)
+	go func() {
+		hooks, err := client.RegisterHooks(RegisterOptions{Count: 2})
+		if err != nil {
+			t.Error(err)
+		}
+		done <- hooks
+	}()
+	<-arrived
+	client.SetSecret("mine-instead")
+	close(release)
+	hooks := <-done
+	if len(hooks) != 2 || hooks[0].Secret != "generated" || hooks[1].Secret != "generated" {
+		t.Errorf("hooks must carry the generated secret: %+v", hooks)
+	}
+	if client.Secret() != "mine-instead" {
+		t.Errorf("the explicit secret must win on the client, got %q", client.Secret())
+	}
+
+	hooks, err := client.RegisterBatch([]HookSpec{{}})
+	if err != nil || hooks[0].Secret != "mine-instead" {
+		t.Errorf("hooks must carry the secret sent: %+v %v", hooks, err)
 	}
 }

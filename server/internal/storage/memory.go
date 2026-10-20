@@ -61,11 +61,24 @@ func (m *MemoryManager) CreateHook(domain string, opts CreateOptions) *Hook {
 
 // GetHook retrieves a hook by ID
 func (m *MemoryManager) GetHook(id string) (*Hook, bool) {
+	return m.GetOwnedHook(AllOwners(), id)
+}
+
+// GetOwnedHook retrieves a hook by ID if it is in scope.
+func (m *MemoryManager) GetOwnedHook(scope Scope, id string) (*Hook, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
+	return m.owned(scope, id)
+}
+
+// owned looks a hook up for owner. Callers must hold m.mu.
+func (m *MemoryManager) owned(scope Scope, id string) (*Hook, bool) {
 	hook, exists := m.hooks[id]
-	return hook, exists
+	if !exists || !scope.allows(hook.Owner) {
+		return nil, false
+	}
+	return hook, true
 }
 
 // Has reports whether a hook exists.
@@ -116,10 +129,15 @@ func (m *MemoryManager) trim(hookID string, max int) int {
 
 // ReadInteractions returns the interactions past the cursor without deleting them.
 func (m *MemoryManager) ReadInteractions(hookID string, after int64) (CursorRead, error) {
+	return m.ReadOwned(AllOwners(), hookID, after)
+}
+
+// ReadOwned is ReadInteractions restricted to the hooks in scope.
+func (m *MemoryManager) ReadOwned(scope Scope, hookID string, after int64) (CursorRead, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	if _, exists := m.hooks[hookID]; !exists {
+	if _, exists := m.owned(scope, hookID); !exists {
 		return CursorRead{}, ErrHookNotFound
 	}
 	result := make([]*Interaction, 0)
@@ -133,10 +151,15 @@ func (m *MemoryManager) ReadInteractions(hookID string, after int64) (CursorRead
 
 // AckInteractions deletes the interactions up to and including through.
 func (m *MemoryManager) AckInteractions(hookID string, through int64) (int, error) {
+	return m.AckOwned(AllOwners(), hookID, through)
+}
+
+// AckOwned is AckInteractions restricted to the hooks in scope.
+func (m *MemoryManager) AckOwned(scope Scope, hookID string, through int64) (int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if _, exists := m.hooks[hookID]; !exists {
+	if _, exists := m.owned(scope, hookID); !exists {
 		return 0, ErrHookNotFound
 	}
 	interactions := m.interactions[hookID]
@@ -169,6 +192,11 @@ func (m *MemoryManager) PollInteractions(hookID string) []*Interaction {
 
 // PollInteractionsBatch retrieves and deletes interactions for multiple hooks
 func (m *MemoryManager) PollInteractionsBatch(hookIDs []string) map[string]*PollResult {
+	return m.PollOwned(AllOwners(), hookIDs)
+}
+
+// PollOwned is PollInteractionsBatch restricted to the hooks in scope.
+func (m *MemoryManager) PollOwned(scope Scope, hookIDs []string) map[string]*PollResult {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -178,7 +206,7 @@ func (m *MemoryManager) PollInteractionsBatch(hookIDs []string) map[string]*Poll
 		if _, seen := results[hookID]; seen {
 			continue
 		}
-		if _, exists := m.hooks[hookID]; !exists {
+		if _, exists := m.owned(scope, hookID); !exists {
 			results[hookID] = &PollResult{Error: "Hook not found"}
 			continue
 		}

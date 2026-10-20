@@ -11,6 +11,20 @@ type scanner interface {
 	Scan(dest ...any) error
 }
 
+// hookColumns is the column list scanHook reads.
+const hookColumns = `id, dns, http, https, smtp, created_at, expires_at, metadata, owner`
+
+// ownerFilter is the WHERE clause narrowing hooks to a scope.
+func ownerFilter(column string, scope Scope) (string, []any) {
+	switch {
+	case scope.all:
+		return "", nil
+	case scope.owner == "":
+		return " WHERE 0", nil
+	}
+	return " WHERE " + column + " = ?", []any{scope.owner}
+}
+
 // scanHook reads a full hook row.
 func scanHook(s scanner) (*Hook, error) {
 	var (
@@ -19,7 +33,7 @@ func scanHook(s scanner) (*Hook, error) {
 		expiresNanos int64
 		meta         sql.NullString
 	)
-	if err := s.Scan(&hook.ID, &hook.DNS, &hook.HTTP, &hook.HTTPS, &hook.SMTP, &createdNanos, &expiresNanos, &meta); err != nil {
+	if err := s.Scan(&hook.ID, &hook.DNS, &hook.HTTP, &hook.HTTPS, &hook.SMTP, &createdNanos, &expiresNanos, &meta, &hook.Owner); err != nil {
 		return nil, err
 	}
 	assignHookTimes(&hook, createdNanos, expiresNanos, meta)

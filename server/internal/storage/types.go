@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"crypto/subtle"
 	"strconv"
 	"time"
 	"unicode/utf8"
@@ -29,6 +30,38 @@ type Hook struct {
 	CreatedAt time.Time      `json:"created_at"`
 	ExpiresAt time.Time      `json:"expires_at"`
 	Metadata  map[string]any `json:"metadata,omitempty"`
+	// Owner is the SHA-256 of the owner secret, never serialized.
+	Owner string `json:"-"`
+}
+
+// Scope restricts the API's per-hook operations to one owner. The zero value
+// matches no hook, so a forgotten owner fails closed.
+type Scope struct {
+	owner string
+	all   bool
+}
+
+// AllOwners matches every hook, for when owner secrets are disabled.
+func AllOwners() Scope { return Scope{all: true} }
+
+// OwnerScope matches the hooks of owner; an empty owner matches none.
+func OwnerScope(owner string) Scope { return Scope{owner: owner} }
+
+// Owner returns the owner hash, empty for AllOwners.
+func (s Scope) Owner() string { return s.owner }
+
+// allows reports whether a hook owned by have is in scope.
+func (s Scope) allows(have string) bool {
+	return s.all || (s.owner != "" && subtle.ConstantTimeCompare([]byte(have), []byte(s.owner)) == 1)
+}
+
+// scriptArg encodes the scope for the Lua scripts: "*" for every owner, which
+// a hex hash cannot be.
+func (s Scope) scriptArg() string {
+	if s.all {
+		return "*"
+	}
+	return s.owner
 }
 
 // CreateOptions carries the per-hook parameters supplied at registration time.
@@ -40,6 +73,8 @@ type CreateOptions struct {
 	// Mirrors server.smtp.enabled: without a listener the address would
 	// black-hole, so it is not advertised.
 	SMTPEnabled bool
+	// Owner is the hash of the owner secret; empty when the feature is off.
+	Owner string
 }
 
 // newHook builds a Hook from an id, domain and options. It is shared by every
@@ -54,6 +89,7 @@ func newHook(id, domain string, opts CreateOptions) *Hook {
 		HTTPS:     "https://" + id + "." + domain,
 		CreatedAt: now,
 		Metadata:  opts.Metadata,
+		Owner:     opts.Owner,
 	}
 	if opts.SMTPEnabled {
 		hook.SMTP = id + "@" + domain

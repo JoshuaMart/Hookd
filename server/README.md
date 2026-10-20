@@ -76,6 +76,9 @@ server:
       bind_address: ""          # e.g. the private IP; empty binds all interfaces
       port: 8443
       tls: "acme"               # acme, file (cert_file/key_file) or none
+    owner_secret:
+      enabled: false            # true: each hook is readable only with its owner secret
+      max_long_lived_hooks: 0   # per-owner share of long_lived.max_hooks; 0 = no per-owner cap
 
 eviction:
   interaction_ttl: "1h"      # TTL for interactions
@@ -149,6 +152,39 @@ be set from the environment, e.g. `HOOKD_SERVER_API_LISTENER_ENABLED=true`,
 `HOOKD_SERVER_API_LISTENER_PORT=8443`, `HOOKD_SERVER_API_LISTENER_TLS=file`.
 Clients need no change: point their base URL at the private listener, e.g.
 `https://hookd.domain.tld:8443`.
+
+### Owner secrets (optional)
+
+Every client holding the API token can read, and drain, any hook whose ID it
+learns, and hook IDs are not secret: they travel in DNS names and payloads.
+With `server.api.owner_secret.enabled` (`HOOKD_SERVER_API_OWNER_SECRET_ENABLED`),
+each hook belongs to the secret sent in the `X-Hookd-Secret` header at
+registration, and only requests carrying that secret can poll, read,
+acknowledge or list it. The API token is still required.
+
+- `POST /register` accepts a secret of 32 to 256 visible ASCII characters (`400`
+  otherwise); pick a random value of at least 128 bits. Without one, the server
+  generates a 256-bit secret and returns it once, in a top-level `secret`
+  field. The same secret on several registrations groups their hooks under one
+  owner.
+- `GET`/`DELETE /poll/:id`, `POST /poll`, `/read`, `/ack`, `GET /hooks` and
+  `/activity` answer `401` without the header, before looking at the body. A
+  hook of another owner gets the same response as an unknown one; `/hooks` and
+  `/activity` list only the requester's hooks, the metadata filter applying
+  within them.
+- `long_lived.max_hooks` is shared by every owner. Set
+  `server.api.owner_secret.max_long_lived_hooks` to cap each owner's share
+  (`429` "long-lived hook limit reached for this owner" past it), so one client
+  cannot exhaust it for the others. Hooks without an owner are not counted.
+- A secret sent over plaintext to a server that enforces HTTPS is refused and
+  logged as a warning: it cannot be revoked, so register new hooks under a new
+  secret.
+- Only `SHA-256(secret)` is stored (a hook field in memory, an indexed `owner`
+  column in SQLite, an `owner` field plus an `o:<hash>` index in Redis). Logs show
+  its first 8 hex characters at most.
+- Hooks that exist when the option is turned on have no owner: they keep
+  capturing until they expire, but no request can reach them through the API.
+  Turning the option off again makes every hook readable with the token alone.
 
 ### Running several instances
 
@@ -369,6 +405,10 @@ curl -X POST https://hookd.domain.tld/register \
 
 Long-lived responses include a non-zero `expires_at` and echo `metadata`.
 Registering past `long_lived.max_hooks` returns HTTP 429.
+
+With [owner secrets](#owner-secrets-optional) enabled, send `X-Hookd-Secret`
+to choose the owner; without it, the response gains a top-level `secret` (next
+to the hook fields, or next to `hooks`) that the server never returns again.
 
 **Request (one hook per entry, each with its own metadata):**
 ```bash
@@ -749,6 +789,7 @@ store evicts with indexed SQL rather than loading everything into memory.
 
 - Bearer token authentication for API endpoints
 - Token can be configured or auto-generated
+- Optional [owner secrets](#owner-secrets-optional) isolate clients sharing the token
 
 ### TLS/HTTPS
 

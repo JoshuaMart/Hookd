@@ -140,7 +140,7 @@ func TestOpenStorageLifetimeAndCapacity(t *testing.T) {
 			hook := m.CreateHook(cfg.Server.Domain, storage.CreateOptions{TTL: cfg.Eviction.HookTTL})
 			m.AddInteraction(hook.ID, storage.DNSInteraction("one", "127.0.0.1", "q", "A"))
 			m.AddInteraction(hook.ID, storage.DNSInteraction("two", "127.0.0.1", "q", "A"))
-			read, err := m.ReadInteractions(hook.ID, 0)
+			read, err := m.ReadOwned(storage.AllOwners(), hook.ID, 0)
 			if err != nil || len(read.Interactions) != 1 || read.Interactions[0].ID != "two" {
 				t.Fatalf("per-hook cap not applied: %+v, %v", read, err)
 			}
@@ -222,7 +222,7 @@ func TestOpenRedisStorage(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer reopened.Close()
-		read, err := reopened.ReadInteractions(hook.ID, 0)
+		read, err := reopened.ReadOwned(storage.AllOwners(), hook.ID, 0)
 		if err != nil || len(read.Interactions) != 1 || read.Interactions[0].ID != "two" {
 			t.Fatalf("per-hook cap not applied or hook lost: %+v, %v", read, err)
 		}

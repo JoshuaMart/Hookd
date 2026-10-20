@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"crypto/tls"
 	"encoding/hex"
 	"fmt"
@@ -22,6 +21,7 @@ import (
 	"github.com/jomar/hookd/internal/acme"
 	"github.com/jomar/hookd/internal/certstore"
 	"github.com/jomar/hookd/internal/config"
+	"github.com/jomar/hookd/internal/credential"
 	"github.com/jomar/hookd/internal/dns"
 	"github.com/jomar/hookd/internal/eviction"
 	"github.com/jomar/hookd/internal/http"
@@ -97,7 +97,7 @@ func runUntil(cfg *config.Config, stop <-chan os.Signal) error {
 		fmt.Fprintf(os.Stderr, "Generated API token: %s\n"+
 			"Store it now — set server.api.auth_token to keep it across restarts.\n", token)
 	}
-	logger.Info("auth token ready", "generated", generated, "fingerprint", tokenFingerprint(token))
+	logger.Info("auth token ready", "generated", generated, "fingerprint", credential.Fingerprint(token))
 
 	// Display startup banner
 	logger.Info("hookd starting",
@@ -106,7 +106,8 @@ func runUntil(cfg *config.Config, stop <-chan os.Signal) error {
 		"dns_enabled", cfg.Server.DNS.Enabled,
 		"https_enabled", cfg.Server.HTTPS.Enabled,
 		"smtp_enabled", cfg.Server.SMTP.Enabled,
-		"api_listener_enabled", cfg.Server.API.Listener.Enabled)
+		"api_listener_enabled", cfg.Server.API.Listener.Enabled,
+		"owner_secret_enabled", cfg.Server.API.OwnerSecret.Enabled)
 
 	// Create ID generator
 	idGenerator := avoidLabels(generateID, nameserverLabels(cfg.Server))
@@ -261,6 +262,7 @@ func openLocalStorage(cfg *config.Config, logger *slog.Logger, idGenerator func(
 		if err != nil {
 			return nil, fmt.Errorf("Error opening long-lived store: %w", err)
 		}
+		longLived.SetMaxPerOwner(maxPerOwner(cfg))
 		logger.Info("long-lived store enabled",
 			"db_path", cfg.LongLived.DBPath,
 			"max_hooks", cfg.LongLived.MaxHooks,
@@ -300,15 +302,16 @@ func openRedisStorage(cfg *config.Config, client *redis.Client, logger *slog.Log
 	ctx, cancel := context.WithTimeout(context.Background(), rc.DialTimeout+rc.ReadTimeout)
 	defer cancel()
 	m, err := storage.NewRedisManager(ctx, client, storage.RedisOptions{
-		KeyPrefix:          rc.KeyPrefix,
-		IDGenerator:        idGenerator,
-		EphemeralThreshold: cfg.Eviction.HookTTL,
-		LongLivedEnabled:   cfg.LongLived.Enabled,
-		MaxPerHook:         cfg.Eviction.MaxPerHook,
-		MaxBodyBytes:       cfg.LongLived.MaxInteractionBodyBytes,
-		HasCacheSize:       rc.HasCacheSize,
-		HasCacheTTL:        rc.HasCacheTTL,
-		Logger:             logger,
+		KeyPrefix:            rc.KeyPrefix,
+		IDGenerator:          idGenerator,
+		EphemeralThreshold:   cfg.Eviction.HookTTL,
+		LongLivedEnabled:     cfg.LongLived.Enabled,
+		MaxPerHook:           cfg.Eviction.MaxPerHook,
+		MaxBodyBytes:         cfg.LongLived.MaxInteractionBodyBytes,
+		MaxLongLivedPerOwner: maxPerOwner(cfg),
+		HasCacheSize:         rc.HasCacheSize,
+		HasCacheTTL:          rc.HasCacheTTL,
+		Logger:               logger,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("Error opening redis store: %w", err)
@@ -325,10 +328,13 @@ func serve(ctx context.Context, cancel context.CancelFunc, logger *slog.Logger, 
 	}
 }
 
-// tokenFingerprint names which credential is in use without disclosing it.
-func tokenFingerprint(token string) string {
-	sum := sha256.Sum256([]byte(token))
-	return hex.EncodeToString(sum[:4])
+// maxPerOwner is the per-owner long-lived cap, which only applies with owner
+// secrets.
+func maxPerOwner(cfg *config.Config) int {
+	if !cfg.Server.API.OwnerSecret.Enabled {
+		return 0
+	}
+	return cfg.Server.API.OwnerSecret.MaxLongLivedHooks
 }
 
 // setupLogger creates and configures a logger

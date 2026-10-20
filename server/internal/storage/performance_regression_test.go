@@ -119,7 +119,7 @@ func TestBatchDuplicateDoesNotDiscardDrainedInteractions(t *testing.T) {
 	disk := newTestSQLite(t, 1024)
 	memory := NewMemoryManager(perfIDs())
 	composite := NewCompositeManager(memory, disk, time.Hour)
-	for _, store := range []Manager{memory, disk, composite} {
+	for _, store := range []testManager{memory, disk, composite} {
 		hook := store.CreateHook("example.test", CreateOptions{TTL: 2 * time.Hour})
 		store.AddInteraction(hook.ID, &Interaction{ID: "entry-" + hook.ID, Type: InteractionTypeDNS})
 		result := store.PollInteractionsBatch([]string{hook.ID, "missing", hook.ID})
@@ -157,7 +157,7 @@ func TestSQLiteBatchFailureRollsBackWholeChunk(t *testing.T) {
 func TestPendingCountsTrackAllRemovals(t *testing.T) {
 	for _, backend := range []string{"memory", "sqlite"} {
 		t.Run(backend, func(t *testing.T) {
-			var store Manager
+			var store testManager
 			if backend == "memory" {
 				m := NewMemoryManager(perfIDs())
 				m.SetMaxPerHook(3)

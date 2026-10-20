@@ -1,10 +1,12 @@
 package http
 
 import (
+	"bytes"
 	"crypto/tls"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -118,6 +120,23 @@ func TestRequireTLSMiddleware(t *testing.T) {
 		}
 		if got := w.Header().Get("Upgrade"); got == "" {
 			t.Error("expected a 426 to advertise an Upgrade header")
+		}
+	})
+
+	t.Run("warns about a plaintext owner secret", func(t *testing.T) {
+		const secret = "0123456789abcdef0123456789abcdef"
+		req := httptest.NewRequest(http.MethodGet, "/poll/x", nil)
+		req.Header.Set(ownerSecretHeader, secret)
+		var logs bytes.Buffer
+		w := httptest.NewRecorder()
+
+		RequireTLSMiddleware(true, slog.New(slog.NewTextHandler(&logs, nil)))(next).ServeHTTP(w, req)
+
+		if w.Code != http.StatusUpgradeRequired || !strings.Contains(logs.String(), "owner secret received over plaintext") {
+			t.Errorf("expected a 426 and a warning, got %d:\n%s", w.Code, logs.String())
+		}
+		if strings.Contains(logs.String(), secret) {
+			t.Error("the warning must not log the secret")
 		}
 	})
 

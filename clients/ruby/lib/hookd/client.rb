@@ -7,6 +7,8 @@ require 'uri'
 module Hookd
   # HTTP client for interacting with Hookd server
   class Client
+    include OwnerSecret
+
     # Caps the payload materialised as a String. Generous, since a poll can
     # return many interactions with full bodies. Zero or less disables it.
     DEFAULT_MAX_RESPONSE_BYTES = 64 * 1024 * 1024
@@ -16,10 +18,13 @@ module Hookd
 
     attr_reader :server, :token, :max_response_bytes
 
-    def initialize(server:, token:, max_response_bytes: DEFAULT_MAX_RESPONSE_BYTES)
+    # @param secret [String, nil] owner secret sent with every request; when nil,
+    #   the first registration adopts the one the server generates
+    def initialize(server:, token:, secret: nil, max_response_bytes: DEFAULT_MAX_RESPONSE_BYTES)
       @server = server
       @token = token
       @max_response_bytes = max_response_bytes
+      init_secret(secret)
       @http = HTTPX.with(
         headers: { 'X-API-Key' => token },
         timeout: {
@@ -44,7 +49,7 @@ module Hookd
     def register(count: nil, ttl: nil, metadata: nil)
       raise ArgumentError, 'count must be a positive integer' if count && (!count.is_a?(Integer) || count < 1)
 
-      parse_register_response(post('/register', register_body(count, ttl, metadata)))
+      parse_register_response(*post_register(register_body(count, ttl, metadata)))
     end
 
     # Register one hook per spec in a single request, each with its own ttl and
@@ -56,7 +61,7 @@ module Hookd
       raise ArgumentError, 'specs must be a non-empty array' unless specs.is_a?(Array) && !specs.empty?
 
       body = specs.map { |spec| register_body(nil, spec[:ttl], spec[:metadata]) || {} }
-      hook_list(post('/register', { hooks: body }))
+      hook_list(*post_register({ hooks: body }))
     end
 
     # List long-lived hooks, without interactions, whose metadata matches every
@@ -98,7 +103,7 @@ module Hookd
       validate_hook_ids(hook_ids)
 
       url = "#{@server}/poll"
-      options = { headers: { 'Content-Type' => 'application/json' }, json: hook_ids }
+      options = { headers: { 'Content-Type' => 'application/json' }.merge(secret_headers), json: hook_ids }
       response = @http.post(url, **options)
       response_data = handle_response(response)
 
@@ -135,7 +140,8 @@ module Hookd
     # @raise [ArgumentError] if through is invalid
     def ack(hook_id, through:)
       validate_cursor(through, 'through')
-      handle_response(@http.delete("#{@server}/poll/#{hook_id}?through=#{through}"))['acknowledged']
+      url = "#{@server}/poll/#{hook_id}?through=#{through}"
+      handle_response(@http.delete(url, headers: secret_headers))['acknowledged']
     end
 
     # Read several hooks past their cursors in one request
@@ -200,25 +206,25 @@ module Hookd
       body.empty? ? nil : body
     end
 
-    def parse_register_response(response)
+    def parse_register_response(response, secret)
       # Single hook response (backward compatible)
-      return Hook.from_hash(response) if response.key?('id')
+      return Hook.from_hash(response, secret: secret) if response.key?('id')
 
       # Multiple hooks response
       return [] if response['hooks'].nil? || response['hooks'].empty?
 
-      response['hooks'].map { |h| Hook.from_hash(h) }
+      response['hooks'].map { |h| Hook.from_hash(h, secret: secret) }
     end
 
     def get(path)
       url = "#{@server}#{path}"
-      response = @http.get(url)
+      response = @http.get(url, headers: secret_headers)
       handle_response(response)
     end
 
-    def post(path, body = nil)
+    def post(path, body = nil, as: secret)
       url = "#{@server}#{path}"
-      options = { headers: { 'Content-Type' => 'application/json' } }
+      options = { headers: { 'Content-Type' => 'application/json' }.merge(secret_headers(as)) }
       options[:json] = body if body
 
       response = @http.post(url, **options)
@@ -231,11 +237,11 @@ module Hookd
       "?#{URI.encode_www_form(metadata.to_h { |k, v| ["metadata.#{k}", v.to_s] })}"
     end
 
-    def hook_list(response)
+    def hook_list(response, secret = nil)
       hooks = response['hooks']
       raise Error, 'Invalid response format: missing hooks' unless hooks.is_a?(Array)
 
-      hooks.map { |h| Hook.from_hash(h) }
+      hooks.map { |h| Hook.from_hash(h, secret: secret) }
     end
 
     def validate_cursor(seq, name)

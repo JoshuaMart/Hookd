@@ -792,7 +792,7 @@ func TestServer_ObservabilityPathsOnHookHost(t *testing.T) {
 	hook := server.storage.CreateHook("example.com", storage.CreateOptions{})
 	for _, path := range []string{"/health", "/healthz", "/metrics"} {
 		t.Run(path, func(t *testing.T) {
-			before := len(server.storage.PollInteractions(hook.ID))
+			before := len(server.storage.PollOwned(storage.AllOwners(), []string{hook.ID})[hook.ID].Interactions)
 			req := httptest.NewRequest(http.MethodGet, path, nil)
 			req.Host = hook.ID + ".example.com"
 			w := httptest.NewRecorder()
@@ -800,7 +800,7 @@ func TestServer_ObservabilityPathsOnHookHost(t *testing.T) {
 			if w.Code != http.StatusOK {
 				t.Fatalf("expected hook capture to return 200, got %d", w.Code)
 			}
-			if after := len(server.storage.PollInteractions(hook.ID)); after != before+1 {
+			if after := len(server.storage.PollOwned(storage.AllOwners(), []string{hook.ID})[hook.ID].Interactions); after != before+1 {
 				t.Errorf("expected callback to be captured, interactions: before=%d after=%d", before, after)
 			}
 		})

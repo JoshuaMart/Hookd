@@ -14,9 +14,19 @@ import (
 // Backend-specific behaviour (SQLite truncation, memory pressure, migrations)
 // stays in that backend's own tests.
 
+// testManager adds the unscoped forms every backend keeps for tests.
+type testManager interface {
+	Manager
+	GetHook(id string) (*Hook, bool)
+	PollInteractions(hookID string) []*Interaction
+	PollInteractionsBatch(hookIDs []string) map[string]*PollResult
+	ReadInteractions(hookID string, after int64) (CursorRead, error)
+	AckInteractions(hookID string, through int64) (int, error)
+}
+
 // fullManager is a backend that also supports long-lived hooks.
 type fullManager interface {
-	Manager
+	testManager
 	LongLivedManager
 }
 
@@ -29,15 +39,15 @@ type contractStore[M any] struct {
 // store hooks created with a TTL as ephemeral and as long-lived respectively;
 // hooks without a TTL are always ephemeral. The redis stores are skipped
 // unless HOOKD_TEST_REDIS_ADDR is set.
-var managerStores = []contractStore[Manager]{
-	{"memory", func(t *testing.T) Manager { return NewMemoryManager(perfIDs()) }},
-	{"sqlite", func(t *testing.T) Manager { return newTestSQLiteWithID(t, 1024, perfIDs()) }},
-	{"composite/ephemeral", func(t *testing.T) Manager { return newContractComposite(t, ephemeralTTL) }},
-	{"composite/long-lived", func(t *testing.T) Manager { return newContractComposite(t, time.Minute) }},
-	{"redis/ephemeral", func(t *testing.T) Manager { return newTestRedis(t, ephemeralTTL) }},
-	{"redis/long-lived", func(t *testing.T) Manager { return newTestRedis(t, time.Minute) }},
+var managerStores = []contractStore[testManager]{
+	{"memory", func(t *testing.T) testManager { return NewMemoryManager(perfIDs()) }},
+	{"sqlite", func(t *testing.T) testManager { return newTestSQLiteWithID(t, 1024, perfIDs()) }},
+	{"composite/ephemeral", func(t *testing.T) testManager { return newContractComposite(t, ephemeralTTL) }},
+	{"composite/long-lived", func(t *testing.T) testManager { return newContractComposite(t, time.Minute) }},
+	{"redis/ephemeral", func(t *testing.T) testManager { return newTestRedis(t, ephemeralTTL) }},
+	{"redis/long-lived", func(t *testing.T) testManager { return newTestRedis(t, time.Minute) }},
 	// Production enables the cache, which must not change the contract.
-	{"redis/cached", func(t *testing.T) Manager {
+	{"redis/cached", func(t *testing.T) testManager {
 		return newTestRedisWith(t, RedisOptions{EphemeralThreshold: time.Minute, HasCacheSize: 1000, HasCacheTTL: time.Hour})
 	}},
 }
@@ -53,7 +63,7 @@ func newContractComposite(t *testing.T, threshold time.Duration) *CompositeManag
 	return NewCompositeManager(NewMemoryManager(idGen), newTestSQLiteWithID(t, 1024, idGen), threshold)
 }
 
-func forEachStore(t *testing.T, run func(t *testing.T, m Manager)) {
+func forEachStore(t *testing.T, run func(t *testing.T, m testManager)) {
 	for _, s := range managerStores {
 		t.Run(s.name, func(t *testing.T) { run(t, s.open(t)) })
 	}
@@ -91,7 +101,7 @@ func sameJSON(t *testing.T, got, want any) bool {
 }
 
 func TestContract_HookRoundTrip(t *testing.T) {
-	forEachStore(t, func(t *testing.T, m Manager) {
+	forEachStore(t, func(t *testing.T, m testManager) {
 		meta := map[string]any{"target": "acme", "n": float64(3), "ok": true}
 		created := m.CreateHook("example.com", CreateOptions{TTL: time.Hour, Metadata: meta, SMTPEnabled: true})
 
@@ -127,7 +137,7 @@ func TestContract_HookRoundTrip(t *testing.T) {
 }
 
 func TestContract_UnknownHook(t *testing.T) {
-	forEachStore(t, func(t *testing.T, m Manager) {
+	forEachStore(t, func(t *testing.T, m testManager) {
 		if m.Has("missing") {
 			t.Error("Has reported an unknown hook")
 		}
@@ -159,7 +169,7 @@ func TestContract_UnknownHook(t *testing.T) {
 }
 
 func TestContract_InteractionRoundTrip(t *testing.T) {
-	forEachStore(t, func(t *testing.T, m Manager) {
+	forEachStore(t, func(t *testing.T, m testManager) {
 		hook := m.CreateHook("example.com", CreateOptions{TTL: time.Hour})
 		want := []*Interaction{
 			DNSInteraction("dns", "10.0.0.1", hook.DNS+".", "TXT"),
@@ -191,7 +201,7 @@ func TestContract_InteractionRoundTrip(t *testing.T) {
 }
 
 func TestContract_SeqIsPerHookAndNeverReused(t *testing.T) {
-	forEachStore(t, func(t *testing.T, m Manager) {
+	forEachStore(t, func(t *testing.T, m testManager) {
 		a := m.CreateHook("example.com", CreateOptions{TTL: time.Hour})
 		b := m.CreateHook("example.com", CreateOptions{TTL: time.Hour})
 
@@ -216,7 +226,7 @@ func TestContract_SeqIsPerHookAndNeverReused(t *testing.T) {
 }
 
 func TestContract_PollDrainsInOrder(t *testing.T) {
-	forEachStore(t, func(t *testing.T, m Manager) {
+	forEachStore(t, func(t *testing.T, m testManager) {
 		hook := m.CreateHook("example.com", CreateOptions{TTL: time.Hour})
 		addDNS(m, hook.ID, 3)
 
@@ -233,7 +243,7 @@ func TestContract_PollDrainsInOrder(t *testing.T) {
 }
 
 func TestContract_PollBatch(t *testing.T) {
-	forEachStore(t, func(t *testing.T, m Manager) {
+	forEachStore(t, func(t *testing.T, m testManager) {
 		fired := m.CreateHook("example.com", CreateOptions{TTL: time.Hour})
 		quiet := m.CreateHook("example.com", CreateOptions{TTL: time.Hour})
 		addDNS(m, fired.ID, 2)
@@ -258,7 +268,7 @@ func TestContract_PollBatch(t *testing.T) {
 }
 
 func TestContract_StatsTrackEveryRemoval(t *testing.T) {
-	forEachStore(t, func(t *testing.T, m Manager) {
+	forEachStore(t, func(t *testing.T, m testManager) {
 		polled := m.CreateHook("example.com", CreateOptions{TTL: time.Hour})
 		acked := m.CreateHook("example.com", CreateOptions{TTL: time.Hour})
 		m.AddInteraction(polled.ID, DNSInteraction("d", "1.2.3.4", "q", "A"))
@@ -287,7 +297,7 @@ func TestContract_StatsTrackEveryRemoval(t *testing.T) {
 }
 
 func TestContract_EvictExpiredHooks(t *testing.T) {
-	forEachStore(t, func(t *testing.T, m Manager) {
+	forEachStore(t, func(t *testing.T, m testManager) {
 		short := m.CreateHook("example.com", CreateOptions{TTL: time.Hour})
 		long := m.CreateHook("example.com", CreateOptions{TTL: 3 * time.Hour})
 		forever := m.CreateHook("example.com", CreateOptions{})
@@ -315,7 +325,7 @@ func TestContract_EvictExpiredHooks(t *testing.T) {
 }
 
 func TestContract_PerHookLimitReportsLoss(t *testing.T) {
-	forEachStore(t, func(t *testing.T, m Manager) {
+	forEachStore(t, func(t *testing.T, m testManager) {
 		hook := m.CreateHook("example.com", CreateOptions{TTL: time.Hour})
 		addDNS(m, hook.ID, 10)
 
@@ -336,7 +346,7 @@ func TestContract_PerHookLimitReportsLoss(t *testing.T) {
 }
 
 func TestContract_ConcurrentCaptureReadAndAck(t *testing.T) {
-	forEachStore(t, func(t *testing.T, store Manager) {
+	forEachStore(t, func(t *testing.T, store testManager) {
 		const writers, perWriter = 4, 100
 		id := store.CreateHook("example.test", CreateOptions{TTL: time.Hour}).ID
 		var wg sync.WaitGroup
@@ -463,7 +473,7 @@ func TestContract_LongLivedHooksOldestFirst(t *testing.T) {
 			}
 			want = append(want, h.ID)
 		}
-		hooks, err := m.LongLivedHooks()
+		hooks, err := m.LongLivedHooks(AllOwners())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -491,7 +501,7 @@ func TestContract_LongLivedActivity(t *testing.T) {
 			m.AddInteraction(id, it)
 		}
 
-		activity := m.LongLivedActivity()
+		activity := m.LongLivedActivity(AllOwners())
 		if len(activity) != 2 {
 			t.Fatalf("expected 2 active hooks, got %d", len(activity))
 		}
@@ -512,7 +522,7 @@ func TestContract_LongLivedActivity(t *testing.T) {
 		}
 
 		m.AckInteractions(older.ID, 2)
-		if activity := m.LongLivedActivity(); len(activity) != 1 || activity[0].Hook.ID != newer.ID {
+		if activity := m.LongLivedActivity(AllOwners()); len(activity) != 1 || activity[0].Hook.ID != newer.ID {
 			t.Errorf("an acknowledged hook is no longer active, got %+v", activity)
 		}
 	})

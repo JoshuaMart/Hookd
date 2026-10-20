@@ -34,6 +34,7 @@ type RedisManager struct {
 	longLivedEnabled   bool
 	maxPerHook         int
 	maxBodyBytes       int
+	maxPerOwner        int
 	logger             *slog.Logger
 	known              *hasCache
 
@@ -60,6 +61,9 @@ type RedisOptions struct {
 	MaxPerHook int
 	// MaxBodyBytes truncates bodies stored for long-lived hooks, like SQLite.
 	MaxBodyBytes int
+	// MaxLongLivedPerOwner caps the long-lived hooks of each owner; zero
+	// disables it.
+	MaxLongLivedPerOwner int
 	// HasCacheSize bounds the hook IDs remembered as existing for
 	// HasCacheTTL, which spares most captures a round-trip. A hook deleted on
 	// another instance can then still read as existing until the TTL ends.
@@ -119,6 +123,7 @@ func NewRedisManager(ctx context.Context, client redis.UniversalClient, opts Red
 		longLivedEnabled:   opts.LongLivedEnabled,
 		maxPerHook:         opts.MaxPerHook,
 		maxBodyBytes:       opts.MaxBodyBytes,
+		maxPerOwner:        opts.MaxLongLivedPerOwner,
 		logger:             logger,
 		known:              newHasCache(opts.HasCacheSize, opts.HasCacheTTL),
 		queue:              make(chan pendingCapture, asyncQueueSize),
@@ -164,6 +169,7 @@ func (m *RedisManager) Close() error {
 func (m *RedisManager) hookKey(id string) string   { return m.prefix + "h:" + id }
 func (m *RedisManager) streamKey(id string) string { return m.prefix + "i:" + id }
 func (m *RedisManager) key(name string) string     { return m.prefix + name }
+func (m *RedisManager) ownerKey(o string) string   { return m.prefix + "o:" + o }
 
 // run executes a script with the prefix as ARGV[1], as every script expects.
 func (m *RedisManager) run(ctx context.Context, s *redis.Script, args ...any) *redis.Cmd {
@@ -209,6 +215,7 @@ func newScript(name string) *redis.Script {
 
 var (
 	createHooksScript    = newScript("create_hooks")
+	getHookScript        = newScript("get_hook")
 	addInteractionScript = newScript("add_interaction")
 	readScript           = newScript("read")
 	ackScript            = newScript("ack")
@@ -219,7 +226,7 @@ var (
 	leaseScript          = newScript("lease")
 
 	allScripts = []*redis.Script{
-		createHooksScript, addInteractionScript, readScript, ackScript, pollScript,
+		createHooksScript, getHookScript, addInteractionScript, readScript, ackScript, pollScript,
 		evictExpiredScript, evictBeforeScript, trimScript, leaseScript,
 	}
 )

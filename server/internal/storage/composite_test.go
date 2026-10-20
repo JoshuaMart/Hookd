@@ -148,7 +148,7 @@ func TestComposite_NilLongLivedFallsBackToMemory(t *testing.T) {
 	if c.LongLivedCount() != 0 {
 		t.Errorf("expected 0 long-lived hooks, got %d", c.LongLivedCount())
 	}
-	if c.LongLivedActivity() != nil {
+	if c.LongLivedActivity(AllOwners()) != nil {
 		t.Error("expected nil activity when long-lived disabled")
 	}
 	if err := c.Close(); err != nil {

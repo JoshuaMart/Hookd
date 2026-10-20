@@ -23,6 +23,12 @@ const testEphemeralTTL = 24 * time.Hour
 // long-lived feature enabled (small caps so limits are easy to exercise).
 func newLongLivedHandler(t *testing.T) (*APIHandler, *storage.CompositeManager) {
 	t.Helper()
+	return newLongLivedHandlerWith(t, func(*storage.SQLiteManager) {})
+}
+
+// newLongLivedHandlerWith lets a test configure the SQLite store first.
+func newLongLivedHandlerWith(t *testing.T, configure func(*storage.SQLiteManager)) (*APIHandler, *storage.CompositeManager) {
+	t.Helper()
 	counter := 0
 	idGen := func() string { counter++; return fmt.Sprintf("id-%d", counter) }
 
@@ -39,6 +45,7 @@ func newLongLivedHandler(t *testing.T) (*APIHandler, *storage.CompositeManager) 
 		t.Fatalf("NewSQLiteManager: %v", err)
 	}
 	t.Cleanup(func() { sqlite.Close() })
+	configure(sqlite)
 
 	composite := storage.NewCompositeManager(storage.NewMemoryManager(idGen), sqlite, testEphemeralTTL)
 	evictor := eviction.NewEvictor(composite, config.EvictionConfig{

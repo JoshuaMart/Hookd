@@ -20,7 +20,7 @@ func seqs(interactions []*Interaction) []int64 {
 }
 
 func TestCursor_ReadIsNonDestructive(t *testing.T) {
-	forEachStore(t, func(t *testing.T, m Manager) {
+	forEachStore(t, func(t *testing.T, m testManager) {
 		hook := m.CreateHook("example.com", CreateOptions{TTL: time.Hour})
 		for i := 0; i < 3; i++ {
 			m.AddInteraction(hook.ID, DNSInteraction(fmt.Sprintf("i%d", i), "1.2.3.4", "q", "A"))
@@ -44,7 +44,7 @@ func TestCursor_ReadIsNonDestructive(t *testing.T) {
 }
 
 func TestCursor_Ack(t *testing.T) {
-	forEachStore(t, func(t *testing.T, m Manager) {
+	forEachStore(t, func(t *testing.T, m testManager) {
 		hook := m.CreateHook("example.com", CreateOptions{TTL: time.Hour})
 		for i := 0; i < 3; i++ {
 			m.AddInteraction(hook.ID, DNSInteraction(fmt.Sprintf("i%d", i), "1.2.3.4", "q", "A"))

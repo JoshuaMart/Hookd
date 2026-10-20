@@ -1,10 +1,10 @@
--- Drains several hooks. Returns one reply per id: nil for an unknown hook,
--- else its entries. ARGV: P, id...
+-- Drains several hooks. Returns one reply per id: nil for an unknown hook or
+-- one out of scope, else its entries. ARGV: P, scope ('*' = any owner), id...
 local out = {}
-for i = 2, #ARGV do
+for i = 3, #ARGV do
   local id = ARGV[i]
   local h, s = hkey(id), skey(id)
-  if redis.call('EXISTS', h) == 0 then
+  if not owned(h, ARGV[2]) then
     out[#out + 1] = false
   else
     local entries = redis.call('XRANGE', s, '-', '+')

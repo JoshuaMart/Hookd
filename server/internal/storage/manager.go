@@ -11,9 +11,6 @@ type Manager interface {
 	// CreateHook creates a new hook and returns it
 	CreateHook(domain string, opts CreateOptions) *Hook
 
-	// GetHook retrieves a hook by ID
-	GetHook(id string) (*Hook, bool)
-
 	// Has reports whether a hook exists, answered from memory so the capture
 	// path never hits disk to decide.
 	Has(id string) bool
@@ -22,19 +19,23 @@ type Manager interface {
 	// hooks are silently dropped.
 	AddInteraction(hookID string, interaction *Interaction)
 
-	// PollInteractions retrieves and deletes interactions for a hook
-	PollInteractions(hookID string) []*Interaction
+	// The per-hook reads serve only hooks in scope; any other hook reads
+	// exactly like an unknown one. Backends also keep unscoped forms
+	// (GetHook, PollInteractions...) for tests, outside this interface.
 
-	// PollInteractionsBatch retrieves and deletes interactions for multiple hooks
-	PollInteractionsBatch(hookIDs []string) map[string]*PollResult
+	// GetOwnedHook retrieves a hook by ID.
+	GetOwnedHook(scope Scope, id string) (*Hook, bool)
 
-	// ReadInteractions returns the interactions with a seq above after, without
+	// PollOwned retrieves and deletes the interactions of several hooks.
+	PollOwned(scope Scope, hookIDs []string) map[string]*PollResult
+
+	// ReadOwned returns the interactions with a seq above after, without
 	// deleting them. It returns ErrHookNotFound for an unknown hook.
-	ReadInteractions(hookID string, after int64) (CursorRead, error)
+	ReadOwned(scope Scope, hookID string, after int64) (CursorRead, error)
 
-	// AckInteractions deletes the interactions with a seq up to through and
-	// returns how many were removed. It returns ErrHookNotFound for an unknown hook.
-	AckInteractions(hookID string, through int64) (int, error)
+	// AckOwned deletes the interactions with a seq up to through and returns
+	// how many were removed. It returns ErrHookNotFound for an unknown hook.
+	AckOwned(scope Scope, hookID string, through int64) (int, error)
 
 	// Stats returns storage statistics
 	Stats() Stats
@@ -75,6 +76,22 @@ var ErrHookNotFound = errors.New("hook not found")
 // long-lived hook cap has been reached.
 var ErrHookLimitReached = errors.New("long-lived hook limit reached")
 
+// ErrOwnerHookLimitReached is returned when one owner reached its share of
+// long-lived hooks.
+var ErrOwnerHookLimitReached = errors.New("long-lived hook limit reached for this owner")
+
+// ownerCounts tallies the hooks each owner adds in a batch; hooks without an
+// owner are not capped per owner.
+func ownerCounts(opts []CreateOptions) map[string]int {
+	counts := map[string]int{}
+	for _, o := range opts {
+		if o.Owner != "" {
+			counts[o.Owner]++
+		}
+	}
+	return counts
+}
+
 // LongLivedManager is implemented by managers that support durable long-lived
 // hooks. It is an optional capability: callers type-assert a Manager to it and
 // degrade gracefully (no long-lived support) when the assertion fails.
@@ -90,12 +107,12 @@ type LongLivedManager interface {
 	// is persisted, in order, or none is.
 	CreateLongLivedHooks(domain string, opts []CreateOptions, maxHooks int) ([]*Hook, error)
 
-	// LongLivedHooks returns every long-lived hook, oldest first.
-	LongLivedHooks() ([]*Hook, error)
+	// LongLivedHooks returns the long-lived hooks in scope, oldest first.
+	LongLivedHooks(scope Scope) ([]*Hook, error)
 
-	// LongLivedActivity returns the long-lived hooks that currently have pending
-	// interactions, so a client can discover which ones fired.
-	LongLivedActivity() []HookActivity
+	// LongLivedActivity returns the long-lived hooks in scope that currently
+	// have pending interactions, so a client can discover which ones fired.
+	LongLivedActivity(scope Scope) []HookActivity
 
 	// LongLivedCount returns the number of long-lived hooks currently stored.
 	LongLivedCount() int

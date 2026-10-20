@@ -727,4 +727,88 @@ RSpec.describe Hookd::Client do
       expect(client.activity(metadata: { run_id: '0f3a' }).first.last_seq).to eq(2)
     end
   end
+
+  describe 'owner secret' do
+    let(:json_headers) { { 'Content-Type' => 'application/json' } }
+    let(:hook) { { 'id' => 'abc123', 'created_at' => '2024-01-01T00:00:00Z' } }
+    let(:without_secret) { ->(req) { !req.headers.key?('X-Hookd-Secret') } }
+
+    it 'adopts the secret the server generates and sends it afterwards' do
+      stub_request(:post, "#{server}/register").with(&without_secret)
+                                               .to_return(status: 200, headers: json_headers,
+                                                          body: hook.merge('secret' => 'generated').to_json)
+      stub_request(:post, "#{server}/register").with(headers: { 'X-Hookd-Secret' => 'generated' })
+                                               .to_return(status: 200, headers: json_headers, body: hook.to_json)
+      stub_request(:get, "#{server}/poll/abc123").with(headers: { 'X-Hookd-Secret' => 'generated' })
+                                                 .to_return(status: 200, headers: json_headers,
+                                                            body: { 'interactions' => [] }.to_json)
+      stub_request(:delete, "#{server}/poll/abc123?through=1").with(headers: { 'X-Hookd-Secret' => 'generated' })
+                                                              .to_return(status: 200, headers: json_headers,
+                                                                         body: { 'acknowledged' => 1 }.to_json)
+
+      client.register
+      expect(client.secret).to eq('generated')
+      client.register
+      expect(client.poll('abc123')).to eq([])
+      expect(client.ack('abc123', through: 1)).to eq(1)
+    end
+
+    it 'sends a provided secret and keeps it' do
+      stub_request(:post, "#{server}/poll").with(headers: { 'X-Hookd-Secret' => 'mine' })
+                                           .to_return(status: 200, headers: json_headers,
+                                                      body: { 'results' => {} }.to_json)
+      stub_request(:post, "#{server}/register").with(headers: { 'X-Hookd-Secret' => 'mine' })
+                                               .to_return(status: 200, headers: json_headers,
+                                                          body: { 'hooks' => [hook] }.to_json)
+
+      owned = described_class.new(server: server, token: token, secret: 'mine')
+      owned.register_batch([{}])
+      expect(owned.poll_batch(['abc123'])).to eq({})
+      expect(owned.secret).to eq('mine')
+    end
+
+    it 'adopts a new secret after being reset' do
+      stub_request(:post, "#{server}/register").with(&without_secret)
+                                               .to_return(status: 200, headers: json_headers,
+                                                          body: hook.merge('secret' => 'fresh').to_json)
+      client.secret = 'old'
+      client.secret = ''
+      client.register
+      expect(client.secret).to eq('fresh')
+    end
+
+    it 'sends no secret to a server that issues none' do
+      stub_request(:post, "#{server}/register").with(&without_secret)
+                                               .to_return(status: 200, headers: json_headers, body: hook.to_json)
+      2.times { client.register }
+      expect(client.secret).to be_nil
+    end
+
+    it 'stamps registered hooks with the secret they belong to' do
+      stub_request(:post, "#{server}/register").to_return do |req|
+        # A secret set while the first registration is in flight.
+        client.secret = 'mine-instead' unless req.headers.key?('X-Hookd-Secret')
+        body = { 'hooks' => [hook] }
+        body['secret'] = 'generated' unless req.headers.key?('X-Hookd-Secret')
+        { status: 200, headers: json_headers, body: body.to_json }
+      end
+
+      expect(client.register(count: 2).map(&:secret)).to eq(['generated'])
+      expect(client.secret).to eq('mine-instead')
+      expect(client.register_batch([{}]).first.secret).to eq('mine-instead')
+    end
+
+    it 'serializes concurrent first registrations under one owner' do
+      generated = 0
+      stub_request(:post, "#{server}/register").to_return do |req|
+        body = hook.dup
+        body['secret'] = "secret-#{generated += 1}" unless req.headers.key?('X-Hookd-Secret')
+        { status: 200, headers: json_headers, body: body.to_json }
+      end
+
+      Array.new(5) { Thread.new { client.register } }.each(&:join)
+      expect(generated).to eq(1)
+      expect(client.secret).to eq('secret-1')
+    end
+  end
 end

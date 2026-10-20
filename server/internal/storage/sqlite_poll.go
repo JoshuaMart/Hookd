@@ -36,17 +36,23 @@ func (m *SQLiteManager) PollInteractions(hookID string) []*Interaction {
 // PollInteractionsBatch polls several hooks. Unknown hooks yield a not-found
 // error, matching the in-memory manager's contract.
 func (m *SQLiteManager) PollInteractionsBatch(hookIDs []string) map[string]*PollResult {
+	return m.PollOwned(AllOwners(), hookIDs)
+}
+
+// PollOwned is PollInteractionsBatch restricted to the hooks in scope.
+func (m *SQLiteManager) PollOwned(scope Scope, hookIDs []string) map[string]*PollResult {
 	results := make(map[string]*PollResult, len(hookIDs))
 	ids := make([]string, 0, len(hookIDs))
 	for _, id := range hookIDs {
 		if _, seen := results[id]; seen {
 			continue
 		}
-		results[id] = &PollResult{Interactions: []*Interaction{}}
-		if !m.Has(id) {
-			results[id].Error = "Hook not found"
+		// The same body as the other backends, or a foreign hook would stand out.
+		if !m.owns(scope, id) {
+			results[id] = &PollResult{Error: "Hook not found"}
 			continue
 		}
+		results[id] = &PollResult{Interactions: []*Interaction{}}
 		ids = append(ids, id)
 	}
 	// Bound writer occupancy instead of holding one transaction for the entire

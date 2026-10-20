@@ -12,6 +12,9 @@ type Hook struct {
 	CreatedAt string         `json:"created_at"`
 	ExpiresAt string         `json:"expires_at,omitempty"`
 	Metadata  map[string]any `json:"metadata,omitempty"`
+	// Secret is the owner secret the hook was registered under, set by
+	// Register* on servers with owner secrets.
+	Secret string `json:"secret,omitempty"`
 }
 
 // RegisterOptions configures hook registration. A TTL above the server's

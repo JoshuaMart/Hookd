@@ -23,6 +23,11 @@ func RequireTLSMiddleware(enforce bool, logger *slog.Logger) func(http.Handler) 
 				logger.Warn("api key received over plaintext, consider rotating it",
 					"path", r.URL.Path, "client", r.RemoteAddr)
 			}
+			// An owner secret cannot be revoked: its hooks must move to a new one.
+			if r.Header.Get(ownerSecretHeader) != "" {
+				logger.Warn("owner secret received over plaintext, register new hooks under a new secret",
+					"path", r.URL.Path, "client", r.RemoteAddr)
+			}
 
 			// RFC 9110: a 426 must advertise what to upgrade to.
 			w.Header().Set("Upgrade", "TLS/1.3, HTTP/1.1")

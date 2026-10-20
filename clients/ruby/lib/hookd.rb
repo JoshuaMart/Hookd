@@ -6,6 +6,7 @@ require_relative 'hookd/hook'
 require_relative 'hookd/hook_activity'
 require_relative 'hookd/interaction'
 require_relative 'hookd/cursor_read'
+require_relative 'hookd/owner_secret'
 require_relative 'hookd/client'
 
 # Hookd client library for interacting with Hookd DNS/HTTP interaction server

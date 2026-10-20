@@ -29,13 +29,11 @@ func (m *RedisManager) Stats() Stats {
 	return stats
 }
 
-// LongLivedActivity returns the long-lived hooks with pending interactions,
-// most recent activity first.
-func (m *RedisManager) LongLivedActivity() []HookActivity {
+// LongLivedActivity returns the long-lived hooks in scope with pending
+// interactions, most recent activity first.
+func (m *RedisManager) LongLivedActivity(scope Scope) []HookActivity {
 	ctx := context.Background()
-	ids, err := m.client.ZRangeArgs(ctx, redis.ZRangeArgs{
-		Key: m.key("ll:active"), Start: "+inf", Stop: "-inf", ByScore: true, Rev: true,
-	}).Result()
+	ids, err := m.activeIDs(ctx, scope)
 	if err != nil {
 		m.logFailure("list long-lived activity", err)
 		return nil
@@ -69,6 +67,9 @@ func (m *RedisManager) LongLivedActivity() []HookActivity {
 		if len(fields) == 0 || len(last) == 0 {
 			continue // acknowledged or expired since the index was read
 		}
+		if !scope.allows(fields["owner"]) {
+			continue
+		}
 		data, _ := last[0].Values["j"].(string)
 		it, err := decodeInteraction(last[0].ID, data)
 		if err != nil {
@@ -83,4 +84,28 @@ func (m *RedisManager) LongLivedActivity() []HookActivity {
 		})
 	}
 	return activity
+}
+
+// activeIDs lists the active long-lived hooks in scope, latest first. An
+// owner's index is intersected with ll:active, keeping the latter's scores.
+func (m *RedisManager) activeIDs(ctx context.Context, scope Scope) ([]string, error) {
+	switch {
+	case scope.all:
+		return m.client.ZRangeArgs(ctx, redis.ZRangeArgs{
+			Key: m.key("ll:active"), Start: "+inf", Stop: "-inf", ByScore: true, Rev: true,
+		}).Result()
+	case scope.owner == "":
+		return nil, nil
+	}
+	active, err := m.client.ZInterWithScores(ctx, &redis.ZStore{
+		Keys: []string{m.key("ll:active"), m.ownerKey(scope.owner)}, Weights: []float64{1, 0},
+	}).Result()
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, len(active))
+	for i, z := range active { // ascending by score
+		ids[len(active)-1-i], _ = z.Member.(string)
+	}
+	return ids, nil
 }
