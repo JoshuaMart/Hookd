@@ -9,14 +9,19 @@ import (
 )
 
 func (c *Client) get(path string) (map[string]any, error) {
-	return c.request(http.MethodGet, path, nil)
+	return c.request(http.MethodGet, path, nil, c.Secret())
 }
 
 func (c *Client) delete(path string) (map[string]any, error) {
-	return c.request(http.MethodDelete, path, nil)
+	return c.request(http.MethodDelete, path, nil, c.Secret())
 }
 
 func (c *Client) post(path string, body any) (map[string]any, error) {
+	return c.postAs(path, body, c.Secret())
+}
+
+// postAs posts with a given owner secret, empty for none.
+func (c *Client) postAs(path string, body any, secret string) (map[string]any, error) {
 	var bodyReader io.Reader
 	if body != nil {
 		jsonBody, err := json.Marshal(body)
@@ -26,17 +31,17 @@ func (c *Client) post(path string, body any) (map[string]any, error) {
 		bodyReader = bytes.NewReader(jsonBody)
 	}
 
-	return c.request(http.MethodPost, path, bodyReader)
+	return c.request(http.MethodPost, path, bodyReader, secret)
 }
 
 // request applies authentication consistently to every endpoint.
-func (c *Client) request(method, path string, body io.Reader) (map[string]any, error) {
+func (c *Client) request(method, path string, body io.Reader, secret string) (map[string]any, error) {
 	req, err := http.NewRequest(method, c.server+path, body)
 	if err != nil {
 		return nil, &ConnectionError{Message: fmt.Sprintf("failed to create request: %v", err)}
 	}
 	req.Header.Set("X-API-Key", c.token)
-	if secret := c.Secret(); secret != "" {
+	if secret != "" {
 		req.Header.Set("X-Hookd-Secret", secret)
 	}
 	if body != nil {

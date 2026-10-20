@@ -945,3 +945,43 @@ func TestOwnerSecretConcurrentFirstRegistrations(t *testing.T) {
 		t.Errorf("concurrent first registrations must share one owner: %d generated, kept %q", generated, client.Secret())
 	}
 }
+
+func TestRegisteredHooksCarryTheirSecret(t *testing.T) {
+	arrived, release := make(chan struct{}), make(chan struct{})
+	server, client := setupServer(func(w http.ResponseWriter, r *http.Request) {
+		resp := map[string]any{"hooks": []any{map[string]any{"id": "a"}, map[string]any{"id": "b"}}}
+		if r.Header.Get("X-Hookd-Secret") == "" {
+			close(arrived)
+			<-release
+			resp["secret"] = "generated"
+		}
+		writeJSON(t, w, resp)
+	})
+	defer server.Close()
+
+	// A secret set while the first registration is in flight must not orphan
+	// the hooks it creates.
+	done := make(chan []Hook)
+	go func() {
+		hooks, err := client.RegisterHooks(RegisterOptions{Count: 2})
+		if err != nil {
+			t.Error(err)
+		}
+		done <- hooks
+	}()
+	<-arrived
+	client.SetSecret("mine-instead")
+	close(release)
+	hooks := <-done
+	if len(hooks) != 2 || hooks[0].Secret != "generated" || hooks[1].Secret != "generated" {
+		t.Errorf("hooks must carry the generated secret: %+v", hooks)
+	}
+	if client.Secret() != "mine-instead" {
+		t.Errorf("the explicit secret must win on the client, got %q", client.Secret())
+	}
+
+	hooks, err := client.RegisterBatch([]HookSpec{{}})
+	if err != nil || hooks[0].Secret != "mine-instead" {
+		t.Errorf("hooks must carry the secret sent: %+v %v", hooks, err)
+	}
+}

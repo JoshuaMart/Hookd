@@ -188,9 +188,13 @@ client.SetSecret(secret)
 interactions, _ := client.Poll(hooks[0].ID)
 ```
 
+Every hook a `Register*` call returns also carries its owner secret in
+`Hook.Secret`, so it is never lost, even if the client's secret changes in
+the meantime.
+
 To use your own secret (32 to 256 visible ASCII characters, at least 128 random
 bits), call `SetSecret` before registering. For one owner per hook, call
-`SetSecret("")` before each registration and read `Secret()` after it. On a
+`SetSecret("")` before each registration and keep each `Hook.Secret`. On a
 server without owner secrets, nothing changes and `Secret()` stays empty.
 
 ### API Reference

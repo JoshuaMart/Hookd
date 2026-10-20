@@ -33,14 +33,18 @@ func (c *Client) RegisterHooks(opts RegisterOptions) ([]Hook, error) {
 		body = fields
 	}
 
-	data, err := c.postRegister(body)
+	data, secret, err := c.postRegister(body)
 	if err != nil {
 		return nil, err
 	}
 
 	// Multiple hooks response
 	if _, ok := data["hooks"]; ok {
-		return parseHookList(data)
+		hooks, err := parseHookList(data)
+		if err != nil {
+			return nil, err
+		}
+		return stampSecret(hooks, secret), nil
 	}
 
 	// Single hook response
@@ -48,7 +52,7 @@ func (c *Client) RegisterHooks(opts RegisterOptions) ([]Hook, error) {
 	if err != nil {
 		return nil, err
 	}
-	return []Hook{h}, nil
+	return stampSecret([]Hook{h}, secret), nil
 }
 
 // RegisterBatch creates one hook per spec, each with its own TTL and metadata,
@@ -57,17 +61,22 @@ func (c *Client) RegisterBatch(specs []HookSpec) ([]Hook, error) {
 	if len(specs) == 0 {
 		return nil, fmt.Errorf("specs must not be empty")
 	}
-	data, err := c.postRegister(map[string]any{"hooks": specs})
+	data, secret, err := c.postRegister(map[string]any{"hooks": specs})
 	if err != nil {
 		return nil, err
 	}
-	return parseHookList(data)
+	hooks, err := parseHookList(data)
+	if err != nil {
+		return nil, err
+	}
+	return stampSecret(hooks, secret), nil
 }
 
-// postRegister adopts the secret the server generates when none is set.
-// Until one is known, registrations run one at a time, so concurrent first
-// calls end up under the same owner.
-func (c *Client) postRegister(body any) (map[string]any, error) {
+// postRegister registers and returns the secret the hooks belong to: the one
+// sent, or the one the server generated, which the client adopts when it has
+// none. Until one is known, registrations run one at a time, so concurrent
+// first calls end up under the same owner.
+func (c *Client) postRegister(body any) (map[string]any, string, error) {
 	c.mu.Lock()
 	settled := c.settled
 	c.mu.Unlock()
@@ -76,18 +85,30 @@ func (c *Client) postRegister(body any) (map[string]any, error) {
 		defer c.register.Unlock()
 	}
 
-	data, err := c.post("/register", body)
+	sent := c.Secret()
+	data, err := c.postAs("/register", body, sent)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	secret, _ := data["secret"].(string)
+	secret := sent
+	if generated, _ := data["secret"].(string); generated != "" {
+		secret = generated
+	}
 	c.mu.Lock()
 	if c.secret == "" {
 		c.secret = secret
 	}
 	c.settled = true
 	c.mu.Unlock()
-	return data, nil
+	return data, secret, nil
+}
+
+// stampSecret records the owner secret on registered hooks.
+func stampSecret(hooks []Hook, secret string) []Hook {
+	for i := range hooks {
+		hooks[i].Secret = secret
+	}
+	return hooks
 }
 
 // Hooks lists the long-lived hooks, without interactions, whose metadata
