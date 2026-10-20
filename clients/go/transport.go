@@ -36,6 +36,9 @@ func (c *Client) request(method, path string, body io.Reader) (map[string]any, e
 		return nil, &ConnectionError{Message: fmt.Sprintf("failed to create request: %v", err)}
 	}
 	req.Header.Set("X-API-Key", c.token)
+	if secret := c.Secret(); secret != "" {
+		req.Header.Set("X-Hookd-Secret", secret)
+	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}

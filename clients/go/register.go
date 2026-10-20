@@ -33,7 +33,7 @@ func (c *Client) RegisterHooks(opts RegisterOptions) ([]Hook, error) {
 		body = fields
 	}
 
-	data, err := c.post("/register", body)
+	data, err := c.postRegister(body)
 	if err != nil {
 		return nil, err
 	}
@@ -57,11 +57,37 @@ func (c *Client) RegisterBatch(specs []HookSpec) ([]Hook, error) {
 	if len(specs) == 0 {
 		return nil, fmt.Errorf("specs must not be empty")
 	}
-	data, err := c.post("/register", map[string]any{"hooks": specs})
+	data, err := c.postRegister(map[string]any{"hooks": specs})
 	if err != nil {
 		return nil, err
 	}
 	return parseHookList(data)
+}
+
+// postRegister adopts the secret the server generates when none is set.
+// Until one is known, registrations run one at a time, so concurrent first
+// calls end up under the same owner.
+func (c *Client) postRegister(body any) (map[string]any, error) {
+	c.mu.Lock()
+	settled := c.settled
+	c.mu.Unlock()
+	if !settled {
+		c.register.Lock()
+		defer c.register.Unlock()
+	}
+
+	data, err := c.post("/register", body)
+	if err != nil {
+		return nil, err
+	}
+	secret, _ := data["secret"].(string)
+	c.mu.Lock()
+	if c.secret == "" {
+		c.secret = secret
+	}
+	c.settled = true
+	c.mu.Unlock()
+	return data, nil
 }
 
 // Hooks lists the long-lived hooks, without interactions, whose metadata
