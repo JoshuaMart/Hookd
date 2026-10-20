@@ -1,9 +1,11 @@
 package storage
 
 import (
+	"database/sql"
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -310,5 +312,33 @@ func TestSQLite_EvictInteractionsBeforeIsNoOp(t *testing.T) {
 	}
 	if got := m.PollInteractions(hook.ID); len(got) != 1 {
 		t.Errorf("expected interaction retained, got %d", len(got))
+	}
+}
+
+// URI metacharacters in db_path must not move the database or drop its pragmas.
+func TestSQLite_PathWithURIMetacharacters(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "a#b?c%41d")
+	path := filepath.Join(dir, "longlived.db")
+	m, err := NewSQLiteManager(path, func() string { return "hook" }, 1024, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("NewSQLiteManager: %v", err)
+	}
+	defer m.Close()
+
+	if _, err := m.CreateLongLivedHook("example.com", CreateOptions{TTL: time.Hour}, 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("expected the database at %s: %v", path, err)
+	}
+	for _, db := range []*sql.DB{m.db, m.readDB} {
+		var mode string
+		if err := db.QueryRow(`PRAGMA journal_mode`).Scan(&mode); err != nil || mode != "wal" {
+			t.Errorf("journal_mode = %q (%v), want wal", mode, err)
+		}
+	}
+	var readOnly int
+	if err := m.readDB.QueryRow(`PRAGMA query_only`).Scan(&readOnly); err != nil || readOnly != 1 {
+		t.Errorf("the reader pool lost its pragmas: query_only = %d (%v)", readOnly, err)
 	}
 }
