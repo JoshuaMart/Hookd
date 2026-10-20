@@ -9,7 +9,7 @@ require (
 	github.com/redis/go-redis/v9 v9.23.0
 	github.com/spf13/pflag v1.0.10
 	github.com/spf13/viper v1.21.0
-	modernc.org/sqlite v1.53.0
+	modernc.org/sqlite v1.60.1
 )
 
 require (
