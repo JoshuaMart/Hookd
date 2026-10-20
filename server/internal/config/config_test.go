@@ -133,20 +133,6 @@ func TestConfig_Validate(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "valid public_ip",
-			modify: func(c *Config) {
-				c.Server.PublicIP = "203.0.113.7"
-			},
-			wantErr: false,
-		},
-		{
-			name: "invalid public_ip",
-			modify: func(c *Config) {
-				c.Server.PublicIP = "not-an-ip"
-			},
-			wantErr: true,
-		},
-		{
 			name: "valid dns bind_address",
 			modify: func(c *Config) {
 				c.Server.DNS.BindAddress = "203.0.113.7"

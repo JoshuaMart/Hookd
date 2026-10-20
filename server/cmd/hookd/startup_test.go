@@ -66,7 +66,7 @@ func startupConfig(t *testing.T) *config.Config {
 	t.Helper()
 	cfg := config.DefaultConfig()
 	cfg.Server.Domain = "startup.test"
-	cfg.Server.PublicIP = "127.0.0.1"
+	cfg.Server.PublicIPs = []string{"127.0.0.1"}
 	cfg.Server.DNS.Enabled = false
 	cfg.Server.DNS.BindAddress = "127.0.0.1"
 	cfg.Server.DNS.Port = 0

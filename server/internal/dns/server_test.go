@@ -30,12 +30,12 @@ func TestNewServer(t *testing.T) {
 		t.Errorf("expected domain example.com, got %s", server.domain)
 	}
 
-	if server.port != 5353 {
-		t.Errorf("expected port 5353, got %d", server.port)
+	if server.addr != ":5353" {
+		t.Errorf("expected addr :5353, got %s", server.addr)
 	}
 
-	if server.serverIP == "" {
-		t.Error("expected server IP to be set")
+	if len(server.publicIPs) != 1 {
+		t.Errorf("expected one auto-detected IP, got %v", server.publicIPs)
 	}
 }
 
@@ -47,13 +47,13 @@ func TestNewServer_PublicIPOverride(t *testing.T) {
 
 	// An explicit public IP must be used verbatim, without auto-detection, so a
 	// host behind NAT can advertise its real public address.
-	server, err := NewServer(ServerOptions{Domain: "example.com", Port: 5353, PublicIP: "203.0.113.7", Storage: manager, ACMEProvider: acmeProvider, Logger: logger, IDGenerator: idGen})
+	server, err := NewServer(ServerOptions{Domain: "example.com", Port: 5353, PublicIPs: []string{"203.0.113.7"}, Storage: manager, ACMEProvider: acmeProvider, Logger: logger, IDGenerator: idGen})
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
 	}
 
-	if server.serverIP != "203.0.113.7" {
-		t.Errorf("expected serverIP 203.0.113.7, got %s", server.serverIP)
+	if len(server.publicIPs) != 1 || server.publicIPs[0].String() != "203.0.113.7" {
+		t.Errorf("expected public IPs [203.0.113.7], got %v", server.publicIPs)
 	}
 }
 
@@ -70,8 +70,8 @@ func TestNewServer_BindAddress(t *testing.T) {
 		t.Fatalf("failed to create server: %v", err)
 	}
 
-	if server.server.Addr != "127.0.0.1:5353" {
-		t.Errorf("expected listener addr 127.0.0.1:5353, got %s", server.server.Addr)
+	if server.addr != "127.0.0.1:5353" {
+		t.Errorf("expected listener addr 127.0.0.1:5353, got %s", server.addr)
 	}
 }
 
@@ -87,8 +87,8 @@ func TestNewServer_DefaultBindAllInterfaces(t *testing.T) {
 		t.Fatalf("failed to create server: %v", err)
 	}
 
-	if server.server.Addr != ":5353" {
-		t.Errorf("expected listener addr :5353, got %s", server.server.Addr)
+	if server.addr != ":5353" {
+		t.Errorf("expected listener addr :5353, got %s", server.addr)
 	}
 }
 
@@ -171,8 +171,8 @@ func TestServer_HandleDNSRequest_TypeA(t *testing.T) {
 		t.Fatal("expected A record")
 	}
 
-	if aRecord.A.String() != server.serverIP {
-		t.Errorf("expected IP %s, got %s", server.serverIP, aRecord.A.String())
+	if !aRecord.A.Equal(server.publicIPs[0]) {
+		t.Errorf("expected IP %s, got %s", server.publicIPs[0], aRecord.A)
 	}
 
 	// Verify interaction was stored
@@ -189,7 +189,7 @@ func TestServer_HandleDNSRequest_TypeA(t *testing.T) {
 func TestServer_HandleDNSRequest_RegisteredHookAfterPrefixLabels(t *testing.T) {
 	idGen := func() string { return "test-id" }
 	manager := storage.NewMemoryManager(idGen)
-	server, err := NewServer(ServerOptions{Domain: "example.com", Port: 5353, PublicIP: "203.0.113.7", Storage: manager, ACMEProvider: acme.NewProvider(slog.Default()), Logger: slog.Default(), IDGenerator: idGen})
+	server, err := NewServer(ServerOptions{Domain: "example.com", Port: 5353, PublicIPs: []string{"203.0.113.7"}, Storage: manager, ACMEProvider: acme.NewProvider(slog.Default()), Logger: slog.Default(), IDGenerator: idGen})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -299,8 +299,8 @@ func TestServer_HandleDNSRequest_TypeNS(t *testing.T) {
 		t.Fatal("expected NS record")
 	}
 
-	if !strings.HasPrefix(nsRecord.Ns, server.domain) {
-		t.Errorf("expected NS to contain domain %s, got %s", server.domain, nsRecord.Ns)
+	if nsRecord.Ns != "example.com." {
+		t.Errorf("expected NS example.com. without configured name servers, got %s", nsRecord.Ns)
 	}
 }
 
@@ -561,7 +561,7 @@ func (s *asyncStore) RecordAsync(hookID string, it *storage.Interaction) {
 func TestServer_HandleDNSRequest_RecordsAsyncWhenSupported(t *testing.T) {
 	idGen := func() string { return "test-id" }
 	store := &asyncStore{MemoryManager: storage.NewMemoryManager(idGen)}
-	server, _ := NewServer(ServerOptions{Domain: "example.com", Port: 5353, PublicIP: "127.0.0.1", Storage: store, ACMEProvider: acme.NewProvider(slog.Default()), Logger: slog.Default(), IDGenerator: idGen})
+	server, _ := NewServer(ServerOptions{Domain: "example.com", Port: 5353, PublicIPs: []string{"127.0.0.1"}, Storage: store, ACMEProvider: acme.NewProvider(slog.Default()), Logger: slog.Default(), IDGenerator: idGen})
 	hook := store.CreateHook("example.com", storage.CreateOptions{})
 
 	m := new(dns.Msg)

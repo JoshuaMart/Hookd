@@ -13,10 +13,12 @@ import (
 // Unmarshal, so each key must be bound for env overrides to take effect.
 var configKeys = []string{
 	"server.domain",
-	"server.public_ip",
+	"server.public_ips",
 	"server.dns.enabled",
 	"server.dns.port",
 	"server.dns.bind_address",
+	"server.dns.soa_minimum_ttl",
+	"server.dns.max_tcp_connections",
 	"server.http.port",
 	"server.https.enabled",
 	"server.https.port",
@@ -92,6 +94,11 @@ func Load(configPath string) (*Config, error) {
 		}
 	}
 
+	// Unknown keys are ignored, so a leftover public_ip would fall back to auto-detection.
+	if viper.IsSet("server.public_ip") {
+		return nil, fmt.Errorf("server.public_ip was removed: use server.public_ips (a list)")
+	}
+
 	// Unmarshal file + environment values over the defaults. Keys absent from
 	// both viper's config and the environment are left at their default value.
 	if err := viper.Unmarshal(cfg); err != nil {
@@ -100,6 +107,11 @@ func Load(configPath string) (*Config, error) {
 
 	// Apply CLI flags (highest priority)
 	applyFlags(cfg)
+
+	// Env and flag lists are split on commas only: "a, b" keeps the space.
+	for i, ip := range cfg.Server.PublicIPs {
+		cfg.Server.PublicIPs[i] = strings.TrimSpace(ip)
+	}
 
 	// Validate configuration
 	if err := cfg.Validate(); err != nil {
@@ -114,7 +126,7 @@ func RegisterFlags() {
 	pflag.String("config", "", "Path to configuration file")
 	pflag.String("token", "", "Override authentication token")
 	pflag.String("domain", "", "Override server domain")
-	pflag.String("public-ip", "", "Override the public IP returned in DNS answers")
+	pflag.StringSlice("public-ips", nil, "Override the public IPv4s returned in DNS answers (comma-separated)")
 	pflag.Int("dns-port", 0, "Override DNS port")
 	pflag.String("dns-bind", "", "Override the DNS listener bind address")
 	pflag.Int("http-port", 0, "Override HTTP port")
@@ -135,8 +147,8 @@ func applyFlags(cfg *Config) {
 		cfg.Server.Domain = domain
 	}
 
-	if publicIP := viper.GetString("public-ip"); publicIP != "" {
-		cfg.Server.PublicIP = publicIP
+	if publicIPs := viper.GetStringSlice("public-ips"); len(publicIPs) > 0 {
+		cfg.Server.PublicIPs = publicIPs
 	}
 
 	if dnsPort := viper.GetInt("dns-port"); dnsPort > 0 {

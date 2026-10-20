@@ -41,11 +41,14 @@ Edit `/etc/hookd/config.yaml`:
 ```yaml
 server:
   domain: "hookd.domain.tld"  # Your domain
-  public_ip: ""               # DNS answer IP; auto-detected if empty (set behind NAT)
+  public_ips: []              # IPv4s in DNS A answers; auto-detected if empty (set behind NAT)
   dns:
     enabled: true
-    port: 53
+    port: 53                  # UDP and TCP
     bind_address: ""          # bind a single IP to coexist with a stub resolver
+    nameservers: []           # delegated NS names and their glue IPs; empty = the apex
+    soa_minimum_ttl: "60s"    # negative-caching TTL (SOA MINIMUM)
+    max_tcp_connections: 256  # beyond it, new TCP connections are closed
   http:
     port: 80
   https:
@@ -196,6 +199,44 @@ Configure your DNS records:
 hookd.domain.tld.        A       YOUR_SERVER_IP
 hookd.domain.tld.        NS      hookd.domain.tld.
 ```
+
+Hookd answers DNS on UDP and TCP (truncated UDP answers set TC so resolvers
+retry over TCP; open TCP connections are capped by
+`server.dns.max_tcp_connections`), and returns an SOA at the apex and in the
+authority section of empty answers, except for ACME challenge names, so a
+challenge is never cached as missing.
+
+#### Several addresses (load balancer, one IP per zone)
+
+To survive the loss of one address, delegate to two name servers, each with a
+glue record pointing at a different public IP, and list every IP in
+`server.public_ips`. For a load balancer with one static IP per availability
+zone:
+
+```
+; in the parent zone (domain.tld)
+hookd.domain.tld.        NS      ns1.hookd.domain.tld.
+hookd.domain.tld.        NS      ns2.hookd.domain.tld.
+ns1.hookd.domain.tld.    A       203.0.113.7
+ns2.hookd.domain.tld.    A       198.51.100.9
+```
+
+```yaml
+server:
+  public_ips: ["203.0.113.7", "198.51.100.9"]
+  dns:
+    nameservers:
+      - name: "ns1.hookd.domain.tld"
+        ip: "203.0.113.7"
+      - name: "ns2.hookd.domain.tld"
+        ip: "198.51.100.9"
+```
+
+A answers for hook names then carry both IPs, so HTTP(S) and SMTP callbacks
+fall back to the other one; NS at the apex returns `ns1`/`ns2` with their glue,
+and `ns1`/`ns2` resolve to their own IP only, matching the parent zone. Name
+server labels are never issued as hook IDs. The load balancer must forward port
+53 on both UDP and TCP (e.g. an NLB `TCP_UDP` listener).
 
 ### Running
 
@@ -597,7 +638,7 @@ Options:
   --config PATH       Path to YAML configuration file
   --token TOKEN       Override authentication token
   --domain DOMAIN     Override server domain
-  --public-ip IP      Override the public IP returned in DNS answers
+  --public-ips IPS    Override the public IPv4s returned in DNS answers (comma-separated)
   --dns-port PORT     Override DNS port
   --dns-bind IP       Override the DNS listener bind address
   --http-port PORT    Override HTTP port
@@ -757,7 +798,7 @@ port. `systemd-resolved` keeps `127.0.0.53:53`; Hookd owns `<public-ip>:53`:
 
 ```yaml
 server:
-  public_ip: "203.0.113.7"      # returned in DNS answers
+  public_ips: ["203.0.113.7"]   # returned in DNS answers
   dns:
     bind_address: "203.0.113.7" # listen only on the public interface
 ```
@@ -769,8 +810,12 @@ process-wide DNS resolver.
 
 If auto-detection returns a private address (`10.x`, `172.16–31.x`, `192.168.x`)
 because the host is behind NAT or multi-homed, hooks will advertise an
-unreachable IP. Set `server.public_ip` (or `--public-ip`) to the real public
+unreachable IP. Set `server.public_ips` (or `--public-ips`) to the real public
 address.
+
+`server.public_ip` was replaced by the `server.public_ips` list in server v3;
+a configuration (or `HOOKD_SERVER_PUBLIC_IP`) that still sets it is refused at
+startup.
 
 ### HTTPS certificate issues
 

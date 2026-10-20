@@ -5,11 +5,12 @@ server:
   # All hooks will be subdomains of this domain
   domain: "hookd.domain.tld"
 
-  # Public IP returned in DNS A answers (the address clients dial back).
-  # Leave empty to auto-detect the outbound interface IP. Set it explicitly
-  # when the auto-detected value is wrong — e.g. behind NAT, on a multi-homed
-  # host, or when the public IP differs from the local interface IP.
-  public_ip: ""
+  # Public IPv4 addresses returned together in DNS A answers (the addresses
+  # clients dial back). Leave empty to auto-detect the outbound interface IP.
+  # Set them explicitly behind NAT or a load balancer: list one address per
+  # availability zone so callbacks survive the loss of one of them.
+  # Env: HOOKD_SERVER_PUBLIC_IPS="203.0.113.7,198.51.100.9"
+  public_ips: []
 
   dns:
     # Enable DNS server
@@ -19,8 +20,24 @@ server:
     # Local address the DNS listener binds to. Leave empty to bind all
     # interfaces. Set it to the server's public IP to coexist with a local stub
     # resolver (e.g. systemd-resolved on 127.0.0.53:53) without stopping it —
-    # stopping it would break the host's own DNS resolution.
+    # stopping it would break the host's own DNS resolution. DNS is served on
+    # UDP and TCP at this address and port.
     bind_address: ""
+    # Name servers the parent zone delegates to, each with the IPv4 of its glue
+    # record. NS queries at the apex return these names, and an A query for
+    # each name returns its own IP only. Names must sit under server.domain.
+    # Leave empty to answer NS with the apex itself. YAML only (no env var).
+    # nameservers:
+    #   - name: "ns1.hookd.domain.tld"
+    #     ip: "203.0.113.7"
+    #   - name: "ns2.hookd.domain.tld"
+    #     ip: "198.51.100.9"
+    # SOA MINIMUM and SOA TTL: how long resolvers cache an empty (NODATA)
+    # answer, such as AAAA for a hook name. Between 1s and 24h.
+    soa_minimum_ttl: "60s"
+    # Open TCP connections on the DNS port; beyond it, new ones are closed
+    # on accept. Resolvers mostly use UDP and fall back to TCP on truncation.
+    max_tcp_connections: 256
 
   http:
     # HTTP port

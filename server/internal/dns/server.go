@@ -2,16 +2,19 @@ package dns
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/libdns/libdns"
 	"github.com/miekg/dns"
 
 	"github.com/jomar/hookd/internal/acme"
+	"github.com/jomar/hookd/internal/config"
 	"github.com/jomar/hookd/internal/netutil"
 	"github.com/jomar/hookd/internal/storage"
 )
@@ -19,27 +22,44 @@ import (
 // Server represents a DNS server
 type Server struct {
 	domain       string
-	port         int
-	serverIP     string
+	publicIPs    []net.IP
+	nameservers  map[string]net.IP // FQDN, lowercase, without the trailing dot
+	nsNames      []string          // FQDNs in config order; the first is the SOA MNAME
+	soaMinTTL    uint32
+	maxTCPConns  int
 	storage      storage.Manager
 	acmeProvider *acme.Provider
 	logger       *slog.Logger
 	idGenerator  func() string
-	server       *dns.Server
+	addr         string
+	udp          *dns.Server
+	tcp          *dns.Server
+}
+
+// Nameserver is a delegated name server and the IPv4 of its glue record.
+type Nameserver struct {
+	Name string
+	IP   string
 }
 
 // ServerOptions groups the DNS listener configuration and its dependencies.
 type ServerOptions struct {
 	Domain string
 	Port   int
-	// PublicIP is the address returned in A answers. When empty it is
-	// auto-detected from the outbound interface, which is wrong behind NAT
-	// or on a multi-homed host.
-	PublicIP string
-	// BindAddress is the local address the UDP listener binds to; empty binds
-	// all interfaces. Setting it to the host's public IP lets Hookd coexist
-	// with a loopback stub resolver (e.g. systemd-resolved on 127.0.0.53:53)
-	// instead of having to stop it.
+	// PublicIPs are returned together in A answers. When empty the outbound
+	// interface IP is auto-detected, which is wrong behind NAT or on a
+	// multi-homed host.
+	PublicIPs []string
+	// Nameservers answer NS at the apex; empty answers with the apex itself.
+	Nameservers []Nameserver
+	// SOAMinimumTTL bounds negative caching; zero means the config default.
+	SOAMinimumTTL time.Duration
+	// MaxTCPConnections caps open TCP connections; zero means the config default.
+	MaxTCPConnections int
+	// BindAddress is the local address the UDP and TCP listeners bind to; empty
+	// binds all interfaces. Setting it to the host's public IP lets Hookd
+	// coexist with a loopback stub resolver (e.g. systemd-resolved on
+	// 127.0.0.53:53) instead of having to stop it.
 	BindAddress  string
 	Storage      storage.Manager
 	ACMEProvider *acme.Provider
@@ -47,63 +67,132 @@ type ServerOptions struct {
 	IDGenerator  func() string
 }
 
+const (
+	answerTTL = 60
+	// Plain UDP limit, and the EDNS0 size that avoids IP fragmentation.
+	maxUDPSize = 1232
+	// Fixed, so every instance reports the same serial.
+	soaSerial = 1
+)
+
 // NewServer creates a new DNS server.
 func NewServer(opts ServerOptions) (*Server, error) {
-	serverIP := opts.PublicIP
-	if serverIP == "" {
+	domain := strings.ToLower(strings.TrimSuffix(opts.Domain, "."))
+
+	ips := opts.PublicIPs
+	if len(ips) == 0 {
 		detected, err := getOutboundIP()
 		if err != nil {
-			return nil, fmt.Errorf("failed to detect server IP (set server.public_ip to override): %w", err)
+			return nil, fmt.Errorf("failed to detect server IP (set server.public_ips to override): %w", err)
 		}
-		serverIP = detected
+		if net.ParseIP(detected).To4() == nil {
+			return nil, fmt.Errorf("auto-detected server IP %s is not IPv4: set server.public_ips", detected)
+		}
+		ips = []string{detected}
+	}
+	publicIPs := make([]net.IP, 0, len(ips))
+	for _, raw := range ips {
+		ip := net.ParseIP(raw).To4()
+		if ip == nil {
+			return nil, fmt.Errorf("public IP %q is not an IPv4 address", raw)
+		}
+		publicIPs = append(publicIPs, ip)
 	}
 
 	s := &Server{
-		domain:       opts.Domain,
-		port:         opts.Port,
-		serverIP:     serverIP,
+		domain:       domain,
+		publicIPs:    publicIPs,
+		nameservers:  make(map[string]net.IP, len(opts.Nameservers)),
+		soaMinTTL:    uint32(config.DefaultSOAMinimumTTL / time.Second),
+		maxTCPConns:  config.DefaultMaxTCPConnections,
 		storage:      opts.Storage,
 		acmeProvider: opts.ACMEProvider,
 		logger:       opts.Logger,
 		idGenerator:  opts.IDGenerator,
+		addr:         net.JoinHostPort(opts.BindAddress, strconv.Itoa(opts.Port)),
+	}
+	if opts.SOAMinimumTTL > 0 {
+		s.soaMinTTL = uint32(opts.SOAMinimumTTL / time.Second)
+	}
+	if opts.MaxTCPConnections > 0 {
+		s.maxTCPConns = opts.MaxTCPConnections
+	}
+	for _, ns := range opts.Nameservers {
+		name := strings.ToLower(strings.TrimSuffix(ns.Name, "."))
+		ip := net.ParseIP(ns.IP).To4()
+		if ip == nil {
+			return nil, fmt.Errorf("name server %s: %q is not an IPv4 address", ns.Name, ns.IP)
+		}
+		if netutil.HookIDFromHost(name, domain) == "" {
+			return nil, fmt.Errorf("name server %s is not under %s", ns.Name, domain)
+		}
+		s.nameservers[name] = ip
+		s.nsNames = append(s.nsNames, name)
 	}
 
-	// Create DNS server
 	mux := dns.NewServeMux()
 	mux.HandleFunc(".", s.handleDNSRequest)
-
-	s.server = &dns.Server{
-		Addr:    net.JoinHostPort(opts.BindAddress, strconv.Itoa(opts.Port)),
-		Net:     "udp",
-		Handler: mux,
-	}
+	s.udp = &dns.Server{Net: "udp", Handler: mux}
+	s.tcp = &dns.Server{Net: "tcp", Handler: mux}
 
 	return s, nil
 }
 
-// Start starts the DNS server
+// Start serves DNS over UDP and TCP on the same address until ctx is done.
 func (s *Server) Start(ctx context.Context) error {
+	pc, err := net.ListenPacket("udp", s.addr)
+	if err != nil {
+		return fmt.Errorf("dns udp listen: %w", err)
+	}
+	ln, err := net.Listen("tcp", s.addr)
+	if err != nil {
+		_ = pc.Close()
+		return fmt.Errorf("dns tcp listen: %w", err)
+	}
+	s.udp.PacketConn = pc
+	s.tcp.Listener = newLimitListener(ln, s.maxTCPConns)
+
 	s.logger.Info("dns server starting",
-		"listen_addr", s.server.Addr,
+		"listen_addr", s.addr,
 		"domain", s.domain,
-		"server_ip", s.serverIP)
+		"public_ips", s.publicIPs,
+		"nameservers", s.nsNames,
+		"max_tcp_connections", s.maxTCPConns)
 
-	errChan := make(chan error, 1)
-
-	go func() {
-		if err := s.server.ListenAndServe(); err != nil {
-			errChan <- fmt.Errorf("dns server error: %w", err)
+	// Shutdown refuses a server that has not started yet.
+	started := make(chan struct{}, 2)
+	errChan := make(chan error, 2)
+	for _, srv := range []*dns.Server{s.udp, s.tcp} {
+		srv.NotifyStartedFunc = func() { started <- struct{}{} }
+		go func(srv *dns.Server) {
+			if err := srv.ActivateAndServe(); err != nil {
+				errChan <- fmt.Errorf("dns %s server error: %w", srv.Net, err)
+			}
+		}(srv)
+	}
+	for range 2 {
+		select {
+		case <-started:
+		case err := <-errChan:
+			_ = pc.Close()
+			_ = ln.Close()
+			return err
 		}
-	}()
+	}
 
-	// Wait for context cancellation or error
 	select {
 	case <-ctx.Done():
 		s.logger.Info("dns server shutting down")
-		return s.server.Shutdown()
+		return s.shutdown()
 	case err := <-errChan:
-		return err
+		return errors.Join(err, s.shutdown())
 	}
+}
+
+func (s *Server) shutdown() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return errors.Join(s.udp.ShutdownContext(ctx), s.tcp.ShutdownContext(ctx))
 }
 
 // handleDNSRequest handles incoming DNS queries
@@ -111,6 +200,7 @@ func (s *Server) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 	m := new(dns.Msg)
 	m.SetReply(r)
 	m.Authoritative = true
+	inZone := false
 
 	// Process each question
 	for _, q := range r.Question {
@@ -121,8 +211,8 @@ func (s *Server) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 
 		// Check if this query is for our domain or a subdomain
 		qnameLower := strings.ToLower(strings.TrimSuffix(q.Name, "."))
-		domainLower := strings.ToLower(s.domain)
-		isOurDomain := qnameLower == domainLower || strings.HasSuffix(qnameLower, "."+domainLower)
+		isApex := qnameLower == s.domain
+		isOurDomain := isApex || strings.HasSuffix(qnameLower, "."+s.domain)
 
 		// Normalize qname for case-insensitive comparison
 		qnameLowerForCheck := strings.ToLower(q.Name)
@@ -133,7 +223,6 @@ func (s *Server) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 			s.logger.Debug("skipping query for external domain", "qname", q.Name)
 			continue
 		}
-
 		// Check if this is an ACME TXT challenge (case-insensitive)
 		if q.Qtype == dns.TypeTXT && strings.HasPrefix(qnameLowerForCheck, "_acme-challenge.") {
 			s.logger.Info("acme challenge request detected", "qname", q.Name)
@@ -143,9 +232,12 @@ func (s *Server) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 			// Don't continue processing - just return the ACME response
 			continue
 		}
+		// After ACME: an SOA would let resolvers cache a challenge that is not yet published.
+		inZone = inZone || isOurDomain
 
-		// Extract hook ID from domain
-		if hookID, found := netutil.ResolveHookID(q.Name, s.domain, s.firstExisting); found {
+		// Extract hook ID from domain; name servers are never hooks.
+		nsIP, isNameserver := s.nameservers[qnameLower]
+		if hookID, found := s.resolveHookID(q.Name, isNameserver); found {
 			// Log interaction
 			sourceIP := netutil.ExtractIP(w.RemoteAddr().String())
 			interaction := storage.DNSInteraction(
@@ -161,16 +253,14 @@ func (s *Server) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 		// Respond based on query type
 		switch q.Qtype {
 		case dns.TypeA:
-			rr := &dns.A{
-				Hdr: dns.RR_Header{
-					Name:   q.Name,
-					Rrtype: dns.TypeA,
-					Class:  dns.ClassINET,
-					Ttl:    60,
-				},
-				A: net.ParseIP(s.serverIP),
+			ips := s.publicIPs
+			// Same address as the parent's glue record.
+			if isNameserver {
+				ips = []net.IP{nsIP}
 			}
-			m.Answer = append(m.Answer, rr)
+			for _, ip := range ips {
+				m.Answer = append(m.Answer, s.aRecord(q.Name, ip))
+			}
 
 		case dns.TypeAAAA:
 			// Respond with empty answer for IPv6
@@ -186,23 +276,21 @@ func (s *Server) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 					Name:   q.Name,
 					Rrtype: dns.TypeTXT,
 					Class:  dns.ClassINET,
-					Ttl:    60,
+					Ttl:    answerTTL,
 				},
 				Txt: []string{"hookd interaction server"},
 			}
 			m.Answer = append(m.Answer, rr)
 
 		case dns.TypeNS:
-			rr := &dns.NS{
-				Hdr: dns.RR_Header{
-					Name:   q.Name,
-					Rrtype: dns.TypeNS,
-					Class:  dns.ClassINET,
-					Ttl:    60,
-				},
-				Ns: s.domain + ".",
+			if isApex {
+				s.answerNS(q.Name, m)
 			}
-			m.Answer = append(m.Answer, rr)
+
+		case dns.TypeSOA:
+			if isApex {
+				m.Answer = append(m.Answer, s.soa(q.Name))
+			}
 
 		case dns.TypeMX:
 			rr := &dns.MX{
@@ -210,7 +298,7 @@ func (s *Server) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 					Name:   q.Name,
 					Rrtype: dns.TypeMX,
 					Class:  dns.ClassINET,
-					Ttl:    60,
+					Ttl:    answerTTL,
 				},
 				Preference: 10,
 				Mx:         s.domain + ".",
@@ -222,8 +310,68 @@ func (s *Server) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 		}
 	}
 
+	// NODATA carries the SOA so resolvers can cache it (RFC 2308).
+	if inZone && len(m.Answer) == 0 {
+		m.Ns = append(m.Ns, s.soa(s.domain+"."))
+	}
+	fitReply(w, r, m)
+
 	if err := w.WriteMsg(m); err != nil {
 		s.logger.Error("failed to write dns response", "error", err)
+	}
+}
+
+// answerNS lists the delegated name servers, with their glue as additional records.
+func (s *Server) answerNS(qname string, m *dns.Msg) {
+	names := s.nsNames
+	if len(names) == 0 {
+		names = []string{s.domain}
+	}
+	for _, name := range names {
+		m.Answer = append(m.Answer, &dns.NS{
+			Hdr: dns.RR_Header{Name: qname, Rrtype: dns.TypeNS, Class: dns.ClassINET, Ttl: answerTTL},
+			Ns:  name + ".",
+		})
+		if ip, ok := s.nameservers[name]; ok {
+			m.Extra = append(m.Extra, s.aRecord(name+".", ip))
+		}
+	}
+}
+
+func (s *Server) aRecord(name string, ip net.IP) *dns.A {
+	return &dns.A{
+		Hdr: dns.RR_Header{Name: name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: answerTTL},
+		A:   ip,
+	}
+}
+
+func (s *Server) soa(name string) *dns.SOA {
+	mname := s.domain + "."
+	if len(s.nsNames) > 0 {
+		mname = s.nsNames[0] + "."
+	}
+	return &dns.SOA{
+		Hdr:     dns.RR_Header{Name: name, Rrtype: dns.TypeSOA, Class: dns.ClassINET, Ttl: s.soaMinTTL},
+		Ns:      mname,
+		Mbox:    "hostmaster." + s.domain + ".",
+		Serial:  soaSerial,
+		Refresh: 3600,
+		Retry:   600,
+		Expire:  1209600,
+		Minttl:  s.soaMinTTL,
+	}
+}
+
+// fitReply echoes EDNS0 (RFC 6891 6.1.1) and truncates a UDP reply to the size
+// the client accepts, setting TC so it retries over TCP.
+func fitReply(w dns.ResponseWriter, r, m *dns.Msg) {
+	size := dns.MinMsgSize
+	if opt := r.IsEdns0(); opt != nil {
+		size = min(max(int(opt.UDPSize()), dns.MinMsgSize), maxUDPSize)
+		m.SetEdns0(maxUDPSize, false)
+	}
+	if w.LocalAddr().Network() == "udp" {
+		m.Truncate(size)
 	}
 }
 
@@ -325,6 +473,13 @@ func (s *Server) record(hookID string, interaction *storage.Interaction) {
 		return
 	}
 	s.storage.AddInteraction(hookID, interaction)
+}
+
+func (s *Server) resolveHookID(qname string, isNameserver bool) (string, bool) {
+	if isNameserver {
+		return "", false
+	}
+	return netutil.ResolveHookID(qname, s.domain, s.firstExisting)
 }
 
 func (s *Server) firstExisting(ids ...string) int {

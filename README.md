@@ -21,7 +21,7 @@ Lightweight interaction server for capturing out-of-band DNS, HTTP and SMTP call
         v
 3. Capture — Hookd records every DNS query, HTTP request and mail hitting the hook
         |  ┌─────────────────────────────────────────────────────┐
-        |  │  DNS server (UDP 53)  → captures qname, qtype, IP   │
+        |  │  DNS (UDP+TCP 53)     → captures qname, qtype, IP   │
         |  │  HTTP/HTTPS (80/443)  → captures method, target,    │
         |  │                          headers, body, IP          │
         |  │  SMTP (TCP 25)        → captures the raw message,   │
@@ -81,11 +81,14 @@ See [`server/config.example.yaml`](./server/config.example.yaml) for all options
 ```yaml
 server:
   domain: "hookd.domain.tld"
-  public_ip: ""                 # DNS answer IP; auto-detected if empty
+  public_ips: []                # IPv4s in DNS A answers; auto-detected if empty
   dns:
     enabled: true
-    port: 53
+    port: 53                    # UDP and TCP
     bind_address: ""            # bind a single IP to coexist with a stub resolver
+    nameservers: []             # [{name, ip}] delegated NS names and glue; empty = the apex
+    soa_minimum_ttl: "60s"      # negative-caching TTL (SOA MINIMUM)
+    max_tcp_connections: 256    # beyond it, new TCP connections are closed
   http:
     port: 80
   https:
@@ -120,7 +123,7 @@ observability:
 |---|---|---|
 | `--config` | Path to YAML config file | (none) |
 | `--domain` | Override domain | (from config) |
-| `--public-ip` | Override the public IP returned in DNS answers | (auto-detected) |
+| `--public-ips` | Override the public IPv4s returned in DNS answers (comma-separated) | (auto-detected) |
 | `--dns-port` | Override DNS port | `53` |
 | `--dns-bind` | Override the DNS listener bind address | (all interfaces) |
 | `--http-port` | Override HTTP port | `80` |
