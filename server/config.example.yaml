@@ -38,6 +38,16 @@ server:
     # Open TCP connections on the DNS port; beyond it, new ones are closed
     # on accept. Resolvers mostly use UDP and fall back to TCP on truncation.
     max_tcp_connections: 256
+    # Response rate limiting (RRL) of UDP replies per source /24 (IPv4) or
+    # /56 (IPv6), so the server cannot be used to reflect traffic at a spoofed
+    # victim. Queries are recorded either way; beyond the rate and burst, the
+    # reply is an empty truncated one (no larger than the query) and real
+    # resolvers retry over TCP, which is not limited. TCP/53 must therefore be
+    # reachable, and the source IP preserved by any load balancer in front.
+    rate_limit:
+      enabled: true
+      responses_per_second: 100
+      burst: 500
 
   http:
     # HTTP port

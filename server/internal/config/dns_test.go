@@ -50,6 +50,11 @@ func TestValidate_DNS(t *testing.T) {
 		{"zero soa_minimum_ttl", func(c *Config) { c.Server.DNS.SOAMinimumTTL = 0 }, "soa_minimum_ttl"},
 		{"soa_minimum_ttl over 24h", func(c *Config) { c.Server.DNS.SOAMinimumTTL = 1200000 * time.Hour }, "soa_minimum_ttl"},
 		{"zero max_tcp_connections", func(c *Config) { c.Server.DNS.MaxTCPConnections = 0 }, "max_tcp_connections"},
+		{"zero rate_limit responses_per_second", func(c *Config) { c.Server.DNS.RateLimit.ResponsesPerSecond = 0 }, "rate_limit"},
+		{"zero rate_limit burst", func(c *Config) { c.Server.DNS.RateLimit.Burst = 0 }, "rate_limit"},
+		{"disabled rate_limit ignores its values", func(c *Config) {
+			c.Server.DNS.RateLimit = DNSRateLimitConfig{Enabled: false}
+		}, ""},
 	}
 
 	for _, tt := range tests {
@@ -105,6 +110,28 @@ server:
 	}
 	if cfg.Server.DNS.SOAMinimumTTL != 5*time.Minute {
 		t.Errorf("soa_minimum_ttl = %s", cfg.Server.DNS.SOAMinimumTTL)
+	}
+}
+
+func TestLoad_DNSRateLimit(t *testing.T) {
+	viper.Reset()
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rl := cfg.Server.DNS.RateLimit; !rl.Enabled || rl.ResponsesPerSecond != DefaultRateLimitPerSecond || rl.Burst != DefaultRateLimitBurst {
+		t.Errorf("default rate_limit = %+v", rl)
+	}
+
+	viper.Reset()
+	t.Setenv("HOOKD_SERVER_DNS_RATE_LIMIT_ENABLED", "false")
+	t.Setenv("HOOKD_SERVER_DNS_RATE_LIMIT_RESPONSES_PER_SECOND", "20")
+	t.Setenv("HOOKD_SERVER_DNS_RATE_LIMIT_BURST", "40")
+	if cfg, err = Load(""); err != nil {
+		t.Fatal(err)
+	}
+	if rl := cfg.Server.DNS.RateLimit; rl != (DNSRateLimitConfig{Enabled: false, ResponsesPerSecond: 20, Burst: 40}) {
+		t.Errorf("rate_limit from env = %+v", rl)
 	}
 }
 

@@ -138,18 +138,24 @@ func runUntil(cfg *config.Config, stop <-chan os.Signal) error {
 
 	// Start DNS server if enabled
 	if cfg.Server.DNS.Enabled {
+		var rl config.DNSRateLimitConfig
+		if cfg.Server.DNS.RateLimit.Enabled {
+			rl = cfg.Server.DNS.RateLimit
+		}
 		dnsServer, err := dns.NewServer(dns.ServerOptions{
-			Domain:            cfg.Server.Domain,
-			Port:              cfg.Server.DNS.Port,
-			PublicIPs:         cfg.Server.PublicIPs,
-			Nameservers:       nameservers(cfg.Server.DNS.Nameservers),
-			SOAMinimumTTL:     cfg.Server.DNS.SOAMinimumTTL,
-			MaxTCPConnections: cfg.Server.DNS.MaxTCPConnections,
-			BindAddress:       cfg.Server.DNS.BindAddress,
-			Storage:           storageManager,
-			ACMEProvider:      acmeProvider,
-			Logger:            logger,
-			IDGenerator:       idGenerator,
+			Domain:             cfg.Server.Domain,
+			Port:               cfg.Server.DNS.Port,
+			PublicIPs:          cfg.Server.PublicIPs,
+			Nameservers:        nameservers(cfg.Server.DNS.Nameservers),
+			SOAMinimumTTL:      cfg.Server.DNS.SOAMinimumTTL,
+			MaxTCPConnections:  cfg.Server.DNS.MaxTCPConnections,
+			RateLimitPerSecond: rl.ResponsesPerSecond,
+			RateLimitBurst:     rl.Burst,
+			BindAddress:        cfg.Server.DNS.BindAddress,
+			Storage:            storageManager,
+			ACMEProvider:       acmeProvider,
+			Logger:             logger,
+			IDGenerator:        idGenerator,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to create dns server: %w", err)
