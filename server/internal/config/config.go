@@ -5,7 +5,10 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net"
+	"strings"
 	"time"
+
+	"github.com/miekg/dns"
 )
 
 // Config represents the application configuration
@@ -20,16 +23,14 @@ type Config struct {
 // ServerConfig holds server-related configuration
 type ServerConfig struct {
 	Domain string `mapstructure:"domain"`
-	// PublicIP is the address returned in DNS A answers and used as the value
-	// clients dial back. Leave empty to auto-detect the outbound interface IP;
-	// set it explicitly when the auto-detected address is wrong (behind NAT, on
-	// a multi-homed host, or when the public IP differs from the local one).
-	PublicIP string      `mapstructure:"public_ip"`
-	DNS      DNSConfig   `mapstructure:"dns"`
-	HTTP     HTTPConfig  `mapstructure:"http"`
-	HTTPS    HTTPSConfig `mapstructure:"https"`
-	SMTP     SMTPConfig  `mapstructure:"smtp"`
-	API      APIConfig   `mapstructure:"api"`
+	// PublicIPs are the IPv4 addresses returned together in DNS A answers, one
+	// per load balancer address. Empty auto-detects the outbound interface IP.
+	PublicIPs []string    `mapstructure:"public_ips"`
+	DNS       DNSConfig   `mapstructure:"dns"`
+	HTTP      HTTPConfig  `mapstructure:"http"`
+	HTTPS     HTTPSConfig `mapstructure:"https"`
+	SMTP      SMTPConfig  `mapstructure:"smtp"`
+	API       APIConfig   `mapstructure:"api"`
 }
 
 // DNSConfig holds DNS server configuration
@@ -41,6 +42,17 @@ type DNSConfig struct {
 	// local stub resolver (e.g. systemd-resolved on 127.0.0.53:53) without having
 	// to stop it — which would otherwise break the host's own DNS resolution.
 	BindAddress string `mapstructure:"bind_address"`
+	// Nameservers are the delegated NS names, each with its glue IP. Empty
+	// answers NS with the apex itself.
+	Nameservers []NameserverConfig `mapstructure:"nameservers"`
+	// SOAMinimumTTL is the SOA MINIMUM and TTL, which bounds negative caching.
+	SOAMinimumTTL time.Duration `mapstructure:"soa_minimum_ttl"`
+}
+
+// NameserverConfig is one delegated name server and the IPv4 of its glue record.
+type NameserverConfig struct {
+	Name string `mapstructure:"name"`
+	IP   string `mapstructure:"ip"`
 }
 
 // HTTPConfig holds HTTP server configuration
@@ -178,8 +190,9 @@ func DefaultConfig() *Config {
 		Server: ServerConfig{
 			Domain: "hookd.example.com",
 			DNS: DNSConfig{
-				Enabled: true,
-				Port:    53,
+				Enabled:       true,
+				Port:          53,
+				SOAMinimumTTL: 60 * time.Second,
 			},
 			HTTP: HTTPConfig{
 				Port: 80,
@@ -253,16 +266,8 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("server.domain is required")
 	}
 
-	if c.Server.PublicIP != "" && net.ParseIP(c.Server.PublicIP) == nil {
-		return fmt.Errorf("server.public_ip must be a valid IP address")
-	}
-
-	if c.Server.DNS.Enabled && (c.Server.DNS.Port < 1 || c.Server.DNS.Port > 65535) {
-		return fmt.Errorf("server.dns.port must be between 1 and 65535")
-	}
-
-	if c.Server.DNS.BindAddress != "" && net.ParseIP(c.Server.DNS.BindAddress) == nil {
-		return fmt.Errorf("server.dns.bind_address must be a valid IP address")
+	if err := c.Server.validateDNS(); err != nil {
+		return err
 	}
 
 	if c.Server.HTTP.Port < 1 || c.Server.HTTP.Port > 65535 {
@@ -366,6 +371,54 @@ func (c *Config) Validate() error {
 	}
 
 	return c.Storage.validate()
+}
+
+// validateDNS checks the answer IPs and the DNS listener settings.
+func (s ServerConfig) validateDNS() error {
+	seen := make(map[string]bool, len(s.PublicIPs))
+	for _, ip := range s.PublicIPs {
+		if !isIPv4(ip) {
+			return fmt.Errorf("server.public_ips: %q is not a valid IPv4 address", ip)
+		}
+		if seen[ip] {
+			return fmt.Errorf("server.public_ips: %q is listed twice", ip)
+		}
+		seen[ip] = true
+	}
+
+	d := s.DNS
+	if d.Enabled && (d.Port < 1 || d.Port > 65535) {
+		return fmt.Errorf("server.dns.port must be between 1 and 65535")
+	}
+	if d.BindAddress != "" && net.ParseIP(d.BindAddress) == nil {
+		return fmt.Errorf("server.dns.bind_address must be a valid IP address")
+	}
+	if d.SOAMinimumTTL < time.Second {
+		return fmt.Errorf("server.dns.soa_minimum_ttl must be at least 1s")
+	}
+
+	zone := "." + strings.ToLower(strings.TrimSuffix(s.Domain, "."))
+	names := make(map[string]bool, len(d.Nameservers))
+	for _, ns := range d.Nameservers {
+		name := strings.ToLower(strings.TrimSuffix(ns.Name, "."))
+		// In-bailiwick only: the parent zone can hold glue for names below the delegation.
+		if _, ok := dns.IsDomainName(name); !ok || !strings.HasSuffix(name, zone) {
+			return fmt.Errorf("server.dns.nameservers: %q must be a name under %s", ns.Name, s.Domain)
+		}
+		if names[name] {
+			return fmt.Errorf("server.dns.nameservers: %q is listed twice", ns.Name)
+		}
+		names[name] = true
+		if !isIPv4(ns.IP) {
+			return fmt.Errorf("server.dns.nameservers: %q needs a valid IPv4 address, got %q", ns.Name, ns.IP)
+		}
+	}
+	return nil
+}
+
+func isIPv4(s string) bool {
+	ip := net.ParseIP(s)
+	return ip != nil && ip.To4() != nil
 }
 
 // validateAPIListener checks the dedicated API listener, when enabled.

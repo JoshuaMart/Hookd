@@ -140,14 +140,16 @@ func runUntil(cfg *config.Config, stop <-chan os.Signal) error {
 	// Start DNS server if enabled
 	if cfg.Server.DNS.Enabled {
 		dnsServer, err := dns.NewServer(dns.ServerOptions{
-			Domain:       cfg.Server.Domain,
-			Port:         cfg.Server.DNS.Port,
-			PublicIP:     cfg.Server.PublicIP,
-			BindAddress:  cfg.Server.DNS.BindAddress,
-			Storage:      storageManager,
-			ACMEProvider: acmeProvider,
-			Logger:       logger,
-			IDGenerator:  idGenerator,
+			Domain:        cfg.Server.Domain,
+			Port:          cfg.Server.DNS.Port,
+			PublicIPs:     cfg.Server.PublicIPs,
+			Nameservers:   nameservers(cfg.Server.DNS.Nameservers),
+			SOAMinimumTTL: cfg.Server.DNS.SOAMinimumTTL,
+			BindAddress:   cfg.Server.DNS.BindAddress,
+			Storage:       storageManager,
+			ACMEProvider:  acmeProvider,
+			Logger:        logger,
+			IDGenerator:   idGenerator,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to create dns server: %w", err)
@@ -351,6 +353,14 @@ func setupLogger(cfg config.ObservabilityConfig) *slog.Logger {
 	}
 
 	return slog.New(handler)
+}
+
+func nameservers(in []config.NameserverConfig) []dns.Nameserver {
+	out := make([]dns.Nameserver, len(in))
+	for i, ns := range in {
+		out[i] = dns.Nameserver{Name: ns.Name, IP: ns.IP}
+	}
+	return out
 }
 
 // generateID generates a random alphanumeric ID

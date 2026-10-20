@@ -53,7 +53,7 @@ func defaultTestConfig(dbPath string) *config.Config {
 	// Loopback both: the listener must be where the test queries it, and an
 	// explicit public IP keeps startup off the auto-detection path.
 	cfg.Server.DNS.BindAddress = "127.0.0.1"
-	cfg.Server.PublicIP = "127.0.0.1"
+	cfg.Server.PublicIPs = []string{"127.0.0.1"}
 	cfg.Server.HTTP.Port = 18080
 	cfg.Server.HTTPS.Enabled = false
 	// Enabled so a registered hook advertises its address; tests opt out by
@@ -99,7 +99,7 @@ func startServer(t *testing.T, cfg *config.Config, idGenerator func() string) *t
 	dnsServer, err := dnsserver.NewServer(dnsserver.ServerOptions{
 		Domain:       cfg.Server.Domain,
 		Port:         cfg.Server.DNS.Port,
-		PublicIP:     cfg.Server.PublicIP,
+		PublicIPs:    cfg.Server.PublicIPs,
 		BindAddress:  cfg.Server.DNS.BindAddress,
 		Storage:      storageManager,
 		ACMEProvider: acmeProvider,
