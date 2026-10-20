@@ -88,6 +88,7 @@ server:
     bind_address: ""            # bind a single IP to coexist with a stub resolver
     nameservers: []             # [{name, ip}] delegated NS names and glue; empty = the apex
     soa_minimum_ttl: "60s"      # negative-caching TTL (SOA MINIMUM)
+    max_tcp_connections: 256    # beyond it, new TCP connections are closed
   http:
     port: 80
   https:

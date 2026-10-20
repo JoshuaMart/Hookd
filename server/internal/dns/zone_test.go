@@ -146,7 +146,7 @@ func TestServer_NameserverLabelsAreNotHooks(t *testing.T) {
 	})
 	manager.CreateHook("example.com", storage.CreateOptions{})
 
-	for _, name := range []string{"ns1.example.com.", "NS1.example.com.", "x.ns1.example.com."} {
+	for _, name := range []string{"ns1.example.com.", "NS1.example.com."} {
 		for _, qtype := range []uint16{dns.TypeA, dns.TypeAAAA, dns.TypeTXT} {
 			query(s, name, qtype)
 		}
@@ -205,6 +205,14 @@ func TestServer_NODATACarriesSOA(t *testing.T) {
 
 	if r := query(s, "other.com.", dns.TypeAAAA); len(r.Ns) != 0 {
 		t.Errorf("an out-of-zone query must not carry our SOA, got %v", r.Ns)
+	}
+}
+
+func TestServer_ACMENODATAHasNoSOA(t *testing.T) {
+	s, _ := newZoneServer(t, ServerOptions{Nameservers: testNameservers})
+	r := query(s, "_acme-challenge.example.com.", dns.TypeTXT)
+	if len(r.Answer) != 0 || len(r.Ns) != 0 {
+		t.Fatalf("a missing challenge must not be negatively cacheable, got %v", r)
 	}
 }
 
@@ -310,6 +318,78 @@ func TestServer_ServesUDPAndTCP(t *testing.T) {
 				t.Errorf("ACME TXT = %v", r.Answer)
 			}
 		})
+	}
+}
+
+func TestServer_EchoesEDNS0OnBothTransports(t *testing.T) {
+	_, addr := startServer(t, ServerOptions{})
+	for _, network := range []string{"udp", "tcp"} {
+		m := new(dns.Msg)
+		m.SetQuestion("abc.example.com.", dns.TypeA)
+		m.SetEdns0(4096, false)
+		r, _, err := (&dns.Client{Net: network, Timeout: time.Second}).Exchange(m, addr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r.IsEdns0() == nil {
+			t.Errorf("%s: reply to an EDNS0 query has no OPT", network)
+		}
+	}
+}
+
+func TestServer_CapsTCPConnections(t *testing.T) {
+	_, addr := startServer(t, ServerOptions{MaxTCPConnections: 1})
+
+	// startServer's readiness probes have closed their connections, but the
+	// server releases the slot asynchronously.
+	var held net.Conn
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		c, err := net.Dial("tcp", addr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		conn := &dns.Conn{Conn: c}
+		m := new(dns.Msg)
+		m.SetQuestion("example.com.", dns.TypeSOA)
+		_ = conn.SetDeadline(time.Now().Add(time.Second))
+		if err := conn.WriteMsg(m); err == nil {
+			if _, err := conn.ReadMsg(); err == nil {
+				held = c
+				break
+			}
+		}
+		_ = c.Close()
+		if time.Now().After(deadline) {
+			t.Fatal("no TCP slot became free")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	extra, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = extra.SetReadDeadline(time.Now().Add(time.Second))
+	_, err = extra.Read(make([]byte, 1))
+	if ne, ok := err.(net.Error); err == nil || ok && ne.Timeout() {
+		t.Errorf("a connection over the cap must be closed, got %v", err)
+	}
+	_ = extra.Close()
+
+	_ = held.Close()
+	c := &dns.Client{Net: "tcp", Timeout: time.Second}
+	m := new(dns.Msg)
+	m.SetQuestion("example.com.", dns.TypeSOA)
+	deadline = time.Now().Add(2 * time.Second)
+	for {
+		if _, _, err := c.Exchange(m, addr); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the slot was not released after the held connection closed")
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 

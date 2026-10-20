@@ -48,6 +48,7 @@ server:
     bind_address: ""          # bind a single IP to coexist with a stub resolver
     nameservers: []           # delegated NS names and their glue IPs; empty = the apex
     soa_minimum_ttl: "60s"    # negative-caching TTL (SOA MINIMUM)
+    max_tcp_connections: 256  # beyond it, new TCP connections are closed
   http:
     port: 80
   https:
@@ -200,8 +201,10 @@ hookd.domain.tld.        NS      hookd.domain.tld.
 ```
 
 Hookd answers DNS on UDP and TCP (truncated UDP answers set TC so resolvers
-retry over TCP), and returns an SOA at the apex and in the authority section of
-empty answers.
+retry over TCP; open TCP connections are capped by
+`server.dns.max_tcp_connections`), and returns an SOA at the apex and in the
+authority section of empty answers, except for ACME challenge names, so a
+challenge is never cached as missing.
 
 #### Several addresses (load balancer, one IP per zone)
 
@@ -232,7 +235,7 @@ server:
 A answers for hook names then carry both IPs, so HTTP(S) and SMTP callbacks
 fall back to the other one; NS at the apex returns `ns1`/`ns2` with their glue,
 and `ns1`/`ns2` resolve to their own IP only, matching the parent zone. Name
-server labels are never treated as hooks. The load balancer must forward port
+server labels are never issued as hook IDs. The load balancer must forward port
 53 on both UDP and TCP (e.g. an NLB `TCP_UDP` listener).
 
 ### Running

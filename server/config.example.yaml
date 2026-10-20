@@ -33,8 +33,11 @@ server:
     #   - name: "ns2.hookd.domain.tld"
     #     ip: "198.51.100.9"
     # SOA MINIMUM and SOA TTL: how long resolvers cache an empty (NODATA)
-    # answer, such as AAAA for a hook name.
+    # answer, such as AAAA for a hook name. Between 1s and 24h.
     soa_minimum_ttl: "60s"
+    # Open TCP connections on the DNS port; beyond it, new ones are closed
+    # on accept. Resolvers mostly use UDP and fall back to TCP on truncation.
+    max_tcp_connections: 256
 
   http:
     # HTTP port

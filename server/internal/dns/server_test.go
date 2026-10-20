@@ -30,8 +30,8 @@ func TestNewServer(t *testing.T) {
 		t.Errorf("expected domain example.com, got %s", server.domain)
 	}
 
-	if server.port != 5353 {
-		t.Errorf("expected port 5353, got %d", server.port)
+	if server.addr != ":5353" {
+		t.Errorf("expected addr :5353, got %s", server.addr)
 	}
 
 	if len(server.publicIPs) != 1 {

@@ -48,6 +48,8 @@ func TestValidate_DNS(t *testing.T) {
 			c.Server.DNS.Nameservers = []NameserverConfig{{Name: "ns1.hookd.example.com", IP: "2001:db8::1"}}
 		}, "IPv4"},
 		{"zero soa_minimum_ttl", func(c *Config) { c.Server.DNS.SOAMinimumTTL = 0 }, "soa_minimum_ttl"},
+		{"soa_minimum_ttl over 24h", func(c *Config) { c.Server.DNS.SOAMinimumTTL = 1200000 * time.Hour }, "soa_minimum_ttl"},
+		{"zero max_tcp_connections", func(c *Config) { c.Server.DNS.MaxTCPConnections = 0 }, "max_tcp_connections"},
 	}
 
 	for _, tt := range tests {
@@ -108,7 +110,7 @@ server:
 
 func TestLoad_PublicIPsFromEnv(t *testing.T) {
 	viper.Reset()
-	t.Setenv("HOOKD_SERVER_PUBLIC_IPS", "203.0.113.7,198.51.100.9")
+	t.Setenv("HOOKD_SERVER_PUBLIC_IPS", "203.0.113.7, 198.51.100.9")
 	cfg, err := Load("")
 	if err != nil {
 		t.Fatal(err)

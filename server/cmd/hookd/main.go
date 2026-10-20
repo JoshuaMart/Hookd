@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/caddyserver/certmagic"
@@ -108,9 +109,7 @@ func runUntil(cfg *config.Config, stop <-chan os.Signal) error {
 		"api_listener_enabled", cfg.Server.API.Listener.Enabled)
 
 	// Create ID generator
-	idGenerator := func() string {
-		return generateID()
-	}
+	idGenerator := avoidLabels(generateID, nameserverLabels(cfg.Server))
 
 	opened, err := openBackend(cfg, logger, idGenerator)
 	if err != nil {
@@ -140,16 +139,17 @@ func runUntil(cfg *config.Config, stop <-chan os.Signal) error {
 	// Start DNS server if enabled
 	if cfg.Server.DNS.Enabled {
 		dnsServer, err := dns.NewServer(dns.ServerOptions{
-			Domain:        cfg.Server.Domain,
-			Port:          cfg.Server.DNS.Port,
-			PublicIPs:     cfg.Server.PublicIPs,
-			Nameservers:   nameservers(cfg.Server.DNS.Nameservers),
-			SOAMinimumTTL: cfg.Server.DNS.SOAMinimumTTL,
-			BindAddress:   cfg.Server.DNS.BindAddress,
-			Storage:       storageManager,
-			ACMEProvider:  acmeProvider,
-			Logger:        logger,
-			IDGenerator:   idGenerator,
+			Domain:            cfg.Server.Domain,
+			Port:              cfg.Server.DNS.Port,
+			PublicIPs:         cfg.Server.PublicIPs,
+			Nameservers:       nameservers(cfg.Server.DNS.Nameservers),
+			SOAMinimumTTL:     cfg.Server.DNS.SOAMinimumTTL,
+			MaxTCPConnections: cfg.Server.DNS.MaxTCPConnections,
+			BindAddress:       cfg.Server.DNS.BindAddress,
+			Storage:           storageManager,
+			ACMEProvider:      acmeProvider,
+			Logger:            logger,
+			IDGenerator:       idGenerator,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to create dns server: %w", err)
@@ -361,6 +361,31 @@ func nameservers(in []config.NameserverConfig) []dns.Nameserver {
 		out[i] = dns.Nameserver{Name: ns.Name, IP: ns.IP}
 	}
 	return out
+}
+
+// nameserverLabels lists the labels of the name servers below the domain.
+func nameserverLabels(srv config.ServerConfig) map[string]bool {
+	suffix := "." + strings.ToLower(strings.TrimSuffix(srv.Domain, "."))
+	labels := make(map[string]bool)
+	for _, ns := range srv.DNS.Nameservers {
+		name := strings.ToLower(strings.TrimSuffix(ns.Name, "."))
+		for _, label := range strings.Split(strings.TrimSuffix(name, suffix), ".") {
+			labels[label] = true
+		}
+	}
+	return labels
+}
+
+// avoidLabels keeps gen from issuing a reserved ID, so no collector can
+// attribute a name server's traffic to a hook.
+func avoidLabels(gen func() string, reserved map[string]bool) func() string {
+	return func() string {
+		for {
+			if id := gen(); !reserved[id] {
+				return id
+			}
+		}
+	}
 }
 
 // generateID generates a random alphanumeric ID

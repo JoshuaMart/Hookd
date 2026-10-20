@@ -18,6 +18,7 @@ var configKeys = []string{
 	"server.dns.port",
 	"server.dns.bind_address",
 	"server.dns.soa_minimum_ttl",
+	"server.dns.max_tcp_connections",
 	"server.http.port",
 	"server.https.enabled",
 	"server.https.port",
@@ -106,6 +107,11 @@ func Load(configPath string) (*Config, error) {
 
 	// Apply CLI flags (highest priority)
 	applyFlags(cfg)
+
+	// Env and flag lists are split on commas only: "a, b" keeps the space.
+	for i, ip := range cfg.Server.PublicIPs {
+		cfg.Server.PublicIPs[i] = strings.TrimSpace(ip)
+	}
 
 	// Validate configuration
 	if err := cfg.Validate(); err != nil {

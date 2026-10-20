@@ -47,7 +47,15 @@ type DNSConfig struct {
 	Nameservers []NameserverConfig `mapstructure:"nameservers"`
 	// SOAMinimumTTL is the SOA MINIMUM and TTL, which bounds negative caching.
 	SOAMinimumTTL time.Duration `mapstructure:"soa_minimum_ttl"`
+	// Connections beyond it are closed on accept.
+	MaxTCPConnections int `mapstructure:"max_tcp_connections"`
 }
+
+// DNS defaults, shared with the DNS server for callers that leave them unset.
+const (
+	DefaultSOAMinimumTTL     = 60 * time.Second
+	DefaultMaxTCPConnections = 256
+)
 
 // NameserverConfig is one delegated name server and the IPv4 of its glue record.
 type NameserverConfig struct {
@@ -190,9 +198,10 @@ func DefaultConfig() *Config {
 		Server: ServerConfig{
 			Domain: "hookd.example.com",
 			DNS: DNSConfig{
-				Enabled:       true,
-				Port:          53,
-				SOAMinimumTTL: 60 * time.Second,
+				Enabled:           true,
+				Port:              53,
+				SOAMinimumTTL:     DefaultSOAMinimumTTL,
+				MaxTCPConnections: DefaultMaxTCPConnections,
 			},
 			HTTP: HTTPConfig{
 				Port: 80,
@@ -393,8 +402,11 @@ func (s ServerConfig) validateDNS() error {
 	if d.BindAddress != "" && net.ParseIP(d.BindAddress) == nil {
 		return fmt.Errorf("server.dns.bind_address must be a valid IP address")
 	}
-	if d.SOAMinimumTTL < time.Second {
-		return fmt.Errorf("server.dns.soa_minimum_ttl must be at least 1s")
+	if d.SOAMinimumTTL < time.Second || d.SOAMinimumTTL > 24*time.Hour {
+		return fmt.Errorf("server.dns.soa_minimum_ttl must be between 1s and 24h")
+	}
+	if d.MaxTCPConnections <= 0 {
+		return fmt.Errorf("server.dns.max_tcp_connections must be positive")
 	}
 
 	zone := "." + strings.ToLower(strings.TrimSuffix(s.Domain, "."))
