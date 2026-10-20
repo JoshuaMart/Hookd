@@ -48,13 +48,26 @@ type DNSConfig struct {
 	// SOAMinimumTTL is the SOA MINIMUM and TTL, which bounds negative caching.
 	SOAMinimumTTL time.Duration `mapstructure:"soa_minimum_ttl"`
 	// Connections beyond it are closed on accept.
-	MaxTCPConnections int `mapstructure:"max_tcp_connections"`
+	MaxTCPConnections int                `mapstructure:"max_tcp_connections"`
+	RateLimit         DNSRateLimitConfig `mapstructure:"rate_limit"`
+}
+
+// DNSRateLimitConfig is response rate limiting (RRL) of UDP replies per source
+// prefix (/24 IPv4, /56 IPv6). Queries are recorded either way; replies beyond
+// the rate are truncated so real resolvers retry over TCP, which spoofed
+// sources cannot.
+type DNSRateLimitConfig struct {
+	Enabled            bool `mapstructure:"enabled"`
+	ResponsesPerSecond int  `mapstructure:"responses_per_second"`
+	Burst              int  `mapstructure:"burst"`
 }
 
 // DNS defaults, shared with the DNS server for callers that leave them unset.
 const (
-	DefaultSOAMinimumTTL     = 60 * time.Second
-	DefaultMaxTCPConnections = 256
+	DefaultSOAMinimumTTL      = 60 * time.Second
+	DefaultMaxTCPConnections  = 256
+	DefaultRateLimitPerSecond = 100
+	DefaultRateLimitBurst     = 500
 )
 
 // NameserverConfig is one delegated name server and the IPv4 of its glue record.
@@ -202,6 +215,11 @@ func DefaultConfig() *Config {
 				Port:              53,
 				SOAMinimumTTL:     DefaultSOAMinimumTTL,
 				MaxTCPConnections: DefaultMaxTCPConnections,
+				RateLimit: DNSRateLimitConfig{
+					Enabled:            true,
+					ResponsesPerSecond: DefaultRateLimitPerSecond,
+					Burst:              DefaultRateLimitBurst,
+				},
 			},
 			HTTP: HTTPConfig{
 				Port: 80,
@@ -407,6 +425,9 @@ func (s ServerConfig) validateDNS() error {
 	}
 	if d.MaxTCPConnections <= 0 {
 		return fmt.Errorf("server.dns.max_tcp_connections must be positive")
+	}
+	if rl := d.RateLimit; rl.Enabled && (rl.ResponsesPerSecond <= 0 || rl.Burst <= 0) {
+		return fmt.Errorf("server.dns.rate_limit.responses_per_second and burst must be positive")
 	}
 
 	zone := "." + strings.ToLower(strings.TrimSuffix(s.Domain, "."))

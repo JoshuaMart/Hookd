@@ -49,6 +49,10 @@ server:
     nameservers: []           # delegated NS names and their glue IPs; empty = the apex
     soa_minimum_ttl: "60s"    # negative-caching TTL (SOA MINIMUM)
     max_tcp_connections: 256  # beyond it, new TCP connections are closed
+    rate_limit:               # UDP replies per source /24 (IPv4) or /56 (IPv6)
+      enabled: true
+      responses_per_second: 100
+      burst: 500
   http:
     port: 80
   https:
@@ -205,6 +209,14 @@ retry over TCP; open TCP connections are capped by
 `server.dns.max_tcp_connections`), and returns an SOA at the apex and in the
 authority section of empty answers, except for ACME challenge names, so a
 challenge is never cached as missing.
+
+UDP replies are rate limited per source prefix (`server.dns.rate_limit`), so
+Hookd cannot be used to reflect traffic at a spoofed victim. A query over the
+limit is still recorded as an interaction; its reply is an empty truncated one,
+no larger than the query, so a real resolver retries over TCP, which is not
+limited and which a spoofed source cannot complete. Keep TCP/53 reachable and,
+behind a load balancer, preserve the client source IP: otherwise every query
+shares one bucket and falls back to TCP.
 
 #### Several addresses (load balancer, one IP per zone)
 

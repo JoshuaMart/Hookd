@@ -89,6 +89,10 @@ server:
     nameservers: []             # [{name, ip}] delegated NS names and glue; empty = the apex
     soa_minimum_ttl: "60s"      # negative-caching TTL (SOA MINIMUM)
     max_tcp_connections: 256    # beyond it, new TCP connections are closed
+    rate_limit:                 # UDP replies per source /24 or /56; beyond, TC=1 and TCP retry
+      enabled: true
+      responses_per_second: 100
+      burst: 500
   http:
     port: 80
   https:

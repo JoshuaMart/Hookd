@@ -27,6 +27,7 @@ type Server struct {
 	nsNames      []string          // FQDNs in config order; the first is the SOA MNAME
 	soaMinTTL    uint32
 	maxTCPConns  int
+	limiter      *rateLimiter // nil disables RRL
 	storage      storage.Manager
 	acmeProvider *acme.Provider
 	logger       *slog.Logger
@@ -56,6 +57,10 @@ type ServerOptions struct {
 	SOAMinimumTTL time.Duration
 	// MaxTCPConnections caps open TCP connections; zero means the config default.
 	MaxTCPConnections int
+	// RateLimitPerSecond caps UDP replies per source prefix; beyond it and the
+	// burst, replies are truncated so resolvers retry over TCP. Zero disables it.
+	RateLimitPerSecond int
+	RateLimitBurst     int
 	// BindAddress is the local address the UDP and TCP listeners bind to; empty
 	// binds all interfaces. Setting it to the host's public IP lets Hookd
 	// coexist with a loopback stub resolver (e.g. systemd-resolved on
@@ -117,6 +122,9 @@ func NewServer(opts ServerOptions) (*Server, error) {
 	if opts.MaxTCPConnections > 0 {
 		s.maxTCPConns = opts.MaxTCPConnections
 	}
+	if opts.RateLimitPerSecond > 0 {
+		s.limiter = newRateLimiter(opts.RateLimitPerSecond, max(opts.RateLimitBurst, 1))
+	}
 	for _, ns := range opts.Nameservers {
 		name := strings.ToLower(strings.TrimSuffix(ns.Name, "."))
 		ip := net.ParseIP(ns.IP).To4()
@@ -157,7 +165,8 @@ func (s *Server) Start(ctx context.Context) error {
 		"domain", s.domain,
 		"public_ips", s.publicIPs,
 		"nameservers", s.nsNames,
-		"max_tcp_connections", s.maxTCPConns)
+		"max_tcp_connections", s.maxTCPConns,
+		"rate_limit", s.limiter != nil)
 
 	// Shutdown refuses a server that has not started yet.
 	started := make(chan struct{}, 2)
@@ -314,11 +323,39 @@ func (s *Server) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 	if inZone && len(m.Answer) == 0 {
 		m.Ns = append(m.Ns, s.soa(s.domain+"."))
 	}
+	// After recording: a limited query is still an interaction.
+	if s.rateLimited(w) {
+		m = slipReply(r)
+	}
 	fitReply(w, r, m)
 
 	if err := w.WriteMsg(m); err != nil {
 		s.logger.Error("failed to write dns response", "error", err)
 	}
+}
+
+// rateLimited reports whether a UDP reply exceeds its source's rate.
+func (s *Server) rateLimited(w dns.ResponseWriter) bool {
+	if s.limiter == nil || w.LocalAddr().Network() != "udp" {
+		return false
+	}
+	if s.limiter.allow(w.RemoteAddr()) {
+		return false
+	}
+	if n, ok := s.limiter.report(); ok {
+		s.logger.Warn("dns rate limit truncated udp replies", "count", n)
+	}
+	return true
+}
+
+// slipReply is an empty, truncated reply: no larger than the query, so it
+// cannot amplify, and a real resolver retries over TCP.
+func slipReply(r *dns.Msg) *dns.Msg {
+	m := new(dns.Msg)
+	m.SetReply(r)
+	m.Authoritative = true
+	m.Truncated = true
+	return m
 }
 
 // answerNS lists the delegated name servers, with their glue as additional records.
