@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	_ "modernc.org/sqlite" // pure-Go SQLite driver (no cgo, cross-compiles cleanly)
@@ -41,7 +42,7 @@ func NewSQLiteManager(dbPath string, idGenerator func() string, maxBodyBytes int
 	// WAL, a busy timeout, and cascading deletes.
 	dsn := fmt.Sprintf(
 		"file:%s?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)&_pragma=synchronous(NORMAL)",
-		dbPath,
+		uriPathEscaper.Replace(dbPath),
 	)
 
 	db, err := openSQLiteWriter(dsn)
@@ -75,6 +76,10 @@ func NewSQLiteManager(dbPath string, idGenerator func() string, maxBodyBytes int
 	initialized = true
 	return m, nil
 }
+
+// uriPathEscaper keeps a path whole in a file: URI, where '?' starts the
+// query, '#' the fragment, and SQLite decodes %HH.
+var uriPathEscaper = strings.NewReplacer("%", "%25", "?", "%3F", "#", "%23")
 
 // openSQLiteWriter serializes read-modify-write transactions on one connection.
 // An unbounded pool can produce SQLITE_BUSY_SNAPSHOT when a deferred read
