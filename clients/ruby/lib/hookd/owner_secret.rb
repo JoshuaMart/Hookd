@@ -32,25 +32,29 @@ module Hookd
       self.secret = value
     end
 
-    # Until a secret is known, registrations run one at a time, so concurrent
-    # first calls end up under the one owner the server generates.
+    # Registers and returns the response with the secret its hooks belong to:
+    # the one sent, or the one the server generated, adopted when the client
+    # has none. Until a secret is known, registrations run one at a time, so
+    # concurrent first calls end up under the same owner.
     def post_register(body)
-      return adopt_secret(post('/register', body)) if @secret_lock.synchronize { @settled }
+      return register_as(body) if @secret_lock.synchronize { @settled }
 
-      @register_lock.synchronize { adopt_secret(post('/register', body)) }
+      @register_lock.synchronize { register_as(body) }
     end
 
-    def adopt_secret(response)
+    def register_as(body)
+      sent = secret
+      response = post('/register', body, as: sent)
+      owner = (response['secret'] if response.is_a?(Hash)) || sent
       @secret_lock.synchronize do
-        @secret ||= response['secret'] if response.is_a?(Hash)
+        @secret ||= owner
         @settled = true
       end
-      response
+      [response, owner]
     end
 
-    def secret_headers
-      current = secret
-      current ? { SECRET_HEADER => current } : {}
+    def secret_headers(value = secret)
+      value ? { SECRET_HEADER => value } : {}
     end
   end
 end

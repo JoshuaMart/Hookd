@@ -134,10 +134,14 @@ client = Hookd::Client.new(server: server, token: token, secret: secret)
 client.poll(hook.id)
 ```
 
+Every hook `#register` and `#register_batch` return also carries its owner
+secret in `hook.secret`, so it is never lost, even if the client's secret
+changes in the meantime.
+
 To use your own secret (32 to 256 visible ASCII characters, at least 128 random
 bits), pass `secret:` or set `client.secret =` before registering. For one owner
-per hook, set `client.secret = nil` before each registration and read
-`client.secret` after it. On a server without owner secrets, nothing changes and
+per hook, set `client.secret = nil` before each registration and keep each
+`hook.secret`. On a server without owner secrets, nothing changes and
 `client.secret` stays `nil`.
 
 ### API Reference

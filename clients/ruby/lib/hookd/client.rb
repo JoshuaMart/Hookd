@@ -49,7 +49,7 @@ module Hookd
     def register(count: nil, ttl: nil, metadata: nil)
       raise ArgumentError, 'count must be a positive integer' if count && (!count.is_a?(Integer) || count < 1)
 
-      parse_register_response(post_register(register_body(count, ttl, metadata)))
+      parse_register_response(*post_register(register_body(count, ttl, metadata)))
     end
 
     # Register one hook per spec in a single request, each with its own ttl and
@@ -61,7 +61,7 @@ module Hookd
       raise ArgumentError, 'specs must be a non-empty array' unless specs.is_a?(Array) && !specs.empty?
 
       body = specs.map { |spec| register_body(nil, spec[:ttl], spec[:metadata]) || {} }
-      hook_list(post_register({ hooks: body }))
+      hook_list(*post_register({ hooks: body }))
     end
 
     # List long-lived hooks, without interactions, whose metadata matches every
@@ -206,14 +206,14 @@ module Hookd
       body.empty? ? nil : body
     end
 
-    def parse_register_response(response)
+    def parse_register_response(response, secret)
       # Single hook response (backward compatible)
-      return Hook.from_hash(response) if response.key?('id')
+      return Hook.from_hash(response, secret: secret) if response.key?('id')
 
       # Multiple hooks response
       return [] if response['hooks'].nil? || response['hooks'].empty?
 
-      response['hooks'].map { |h| Hook.from_hash(h) }
+      response['hooks'].map { |h| Hook.from_hash(h, secret: secret) }
     end
 
     def get(path)
@@ -222,9 +222,9 @@ module Hookd
       handle_response(response)
     end
 
-    def post(path, body = nil)
+    def post(path, body = nil, as: secret)
       url = "#{@server}#{path}"
-      options = { headers: { 'Content-Type' => 'application/json' }.merge(secret_headers) }
+      options = { headers: { 'Content-Type' => 'application/json' }.merge(secret_headers(as)) }
       options[:json] = body if body
 
       response = @http.post(url, **options)
@@ -237,11 +237,11 @@ module Hookd
       "?#{URI.encode_www_form(metadata.to_h { |k, v| ["metadata.#{k}", v.to_s] })}"
     end
 
-    def hook_list(response)
+    def hook_list(response, secret = nil)
       hooks = response['hooks']
       raise Error, 'Invalid response format: missing hooks' unless hooks.is_a?(Array)
 
-      hooks.map { |h| Hook.from_hash(h) }
+      hooks.map { |h| Hook.from_hash(h, secret: secret) }
     end
 
     def validate_cursor(seq, name)

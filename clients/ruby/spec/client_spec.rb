@@ -784,6 +784,20 @@ RSpec.describe Hookd::Client do
       expect(client.secret).to be_nil
     end
 
+    it 'stamps registered hooks with the secret they belong to' do
+      stub_request(:post, "#{server}/register").to_return do |req|
+        # A secret set while the first registration is in flight.
+        client.secret = 'mine-instead' unless req.headers.key?('X-Hookd-Secret')
+        body = { 'hooks' => [hook] }
+        body['secret'] = 'generated' unless req.headers.key?('X-Hookd-Secret')
+        { status: 200, headers: json_headers, body: body.to_json }
+      end
+
+      expect(client.register(count: 2).map(&:secret)).to eq(['generated'])
+      expect(client.secret).to eq('mine-instead')
+      expect(client.register_batch([{}]).first.secret).to eq('mine-instead')
+    end
+
     it 'serializes concurrent first registrations under one owner' do
       generated = 0
       stub_request(:post, "#{server}/register").to_return do |req|
