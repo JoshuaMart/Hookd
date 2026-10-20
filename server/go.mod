@@ -19,7 +19,7 @@ require (
 	github.com/fsnotify/fsnotify v1.10.1 // indirect
 	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
-	github.com/klauspost/cpuid/v2 v2.4.0 // indirect
+	github.com/klauspost/cpuid/v2 v2.4.1 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/mholt/acmez/v3 v3.1.7 // indirect
 	github.com/ncruces/go-strftime v1.1.0 // indirect
