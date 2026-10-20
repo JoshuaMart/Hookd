@@ -319,7 +319,7 @@ func TestRedis_StorageErrorsDegrade(t *testing.T) {
 	if _, err := m.ReadInteractions(hook.ID, 0); err == nil || err == ErrHookNotFound {
 		t.Errorf("expected a storage error on read, got %v", err)
 	}
-	if _, err := m.LongLivedHooks(AnyOwner); err == nil {
+	if _, err := m.LongLivedHooks(AllOwners()); err == nil {
 		t.Error("expected a storage error when listing hooks")
 	}
 }

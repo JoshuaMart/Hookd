@@ -134,6 +134,9 @@ server:
     # and become unreachable through the API. Disabled by default.
     owner_secret:
       enabled: false
+      # Caps each owner's long-lived hooks, so one client cannot exhaust
+      # long_lived.max_hooks for the others (429 past it). 0 disables it.
+      max_long_lived_hooks: 0
 
 eviction:
   # TTL for interactions (interactions are deleted after this duration)

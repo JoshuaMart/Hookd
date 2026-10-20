@@ -186,6 +186,9 @@ func (h *APIHandler) creationError(err error) *apiError {
 	if errors.Is(err, storage.ErrHookLimitReached) {
 		return &apiError{http.StatusTooManyRequests, "long-lived hook limit reached"}
 	}
+	if errors.Is(err, storage.ErrOwnerHookLimitReached) {
+		return &apiError{http.StatusTooManyRequests, "long-lived hook limit reached for this owner"}
+	}
 	h.logger.Error("failed to create hooks", "error", err)
 	return &apiError{http.StatusInternalServerError, "failed to create hook"}
 }

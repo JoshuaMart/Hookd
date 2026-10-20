@@ -108,6 +108,7 @@ server:
     auth_token: ""              # auto-generated if empty, printed once on stderr
     owner_secret:
       enabled: false            # true: each hook is readable only with its owner secret
+      max_long_lived_hooks: 0   # per-owner share of long_lived.max_hooks; 0 = no per-owner cap
 
 eviction:
   interaction_ttl: "1h"
@@ -157,9 +158,12 @@ gates the API; the secret decides which hooks a request sees.
   top-level `secret` field. Reuse a secret to group hooks under one owner, or use
   a new one per hook.
 - `/poll`, `/read`, `/ack`, `/hooks` and `/activity` require the header: `401`
-  without it, `400` when malformed. A hook of another owner gets exactly the
-  answer of an unknown hook, and `/hooks` and `/activity` list only the
-  requester's hooks.
+  without it, `400` when malformed, checked before the body. A hook of another
+  owner gets exactly the answer of an unknown hook, and `/hooks` and
+  `/activity` list only the requester's hooks.
+- `max_long_lived_hooks` caps each owner's long-lived hooks (`429` "for this
+  owner" past it), so one client cannot exhaust `long_lived.max_hooks` for the
+  others.
 - The server stores only `SHA-256(secret)`, never the secret itself.
 - Hooks created before the option was enabled have no owner: they keep
   capturing until they expire but are unreachable through the API. Disabling the

@@ -121,6 +121,9 @@ type APIConfig struct {
 // clients sharing the API token cannot read each other's hooks.
 type OwnerSecretConfig struct {
 	Enabled bool `mapstructure:"enabled"`
+	// MaxLongLivedHooks caps each owner's share of long_lived.max_hooks, so
+	// one client cannot exhaust it for the others. Zero disables it.
+	MaxLongLivedHooks int `mapstructure:"max_long_lived_hooks"`
 }
 
 // TLS modes of the dedicated API listener.
@@ -304,6 +307,10 @@ func (c *Config) Validate() error {
 
 	if err := c.Server.validateDNS(); err != nil {
 		return err
+	}
+
+	if c.Server.API.OwnerSecret.MaxLongLivedHooks < 0 {
+		return fmt.Errorf("server.api.owner_secret.max_long_lived_hooks must not be negative")
 	}
 
 	if c.Server.HTTP.Port < 1 || c.Server.HTTP.Port > 65535 {

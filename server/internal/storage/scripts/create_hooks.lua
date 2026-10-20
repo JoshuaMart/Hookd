@@ -1,15 +1,20 @@
--- Creates a batch of hooks, all or nothing, under the long-lived cap.
--- ARGV: P, max_long_lived (0 = no cap), n, then per hook:
+-- Creates a batch of hooks, all or nothing, under the long-lived caps.
+-- ARGV: P, max_long_lived (0 = no cap), max_per_owner (0 = no cap), n, then
+-- per hook:
 --   kind (eph|ll), id, created_ns, expires_ns, created_us,
 --   expires_us (0 = none), expire_at_ms, dns, http, https, smtp, metadata,
 --   owner ('' = none)
-local max, n = tonumber(ARGV[2]), tonumber(ARGV[3])
+local max, per_owner, n = tonumber(ARGV[2]), tonumber(ARGV[3]), tonumber(ARGV[4])
 local W = 13
 
-local ll = 0
+local ll, owners = 0, {}
 for k = 0, n - 1 do
-  local b = 3 + k * W
-  if ARGV[b + 1] == 'll' then ll = ll + 1 end
+  local b = 4 + k * W
+  if ARGV[b + 1] == 'll' then
+    ll = ll + 1
+    local o = ARGV[b + 13]
+    if o ~= '' then owners[o] = (owners[o] or 0) + 1 end
+  end
   if redis.call('EXISTS', hkey(ARGV[b + 2])) == 1 then
     return redis.error_reply('HOOKD_COLLISION')
   end
@@ -17,9 +22,17 @@ end
 if ll > 0 and max > 0 and redis.call('ZCARD', P .. 'll') + ll > max then
   return redis.error_reply('HOOKD_LIMIT')
 end
+-- Entries whose hash expired before eviction count until /hooks prunes them.
+if per_owner > 0 then
+  for o, c in pairs(owners) do
+    if redis.call('ZCARD', P .. 'o:' .. o) + c > per_owner then
+      return redis.error_reply('HOOKD_OWNER_LIMIT')
+    end
+  end
+end
 
 for k = 0, n - 1 do
-  local b = 3 + k * W
+  local b = 4 + k * W
   local kind, id = ARGV[b + 1], ARGV[b + 2]
   local h = hkey(id)
   redis.call('HSET', h,

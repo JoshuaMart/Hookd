@@ -78,6 +78,7 @@ server:
       tls: "acme"               # acme, file (cert_file/key_file) or none
     owner_secret:
       enabled: false            # true: each hook is readable only with its owner secret
+      max_long_lived_hooks: 0   # per-owner share of long_lived.max_hooks; 0 = no per-owner cap
 
 eviction:
   interaction_ttl: "1h"      # TTL for interactions
@@ -167,9 +168,17 @@ acknowledge or list it. The API token is still required.
   field. The same secret on several registrations groups their hooks under one
   owner.
 - `GET`/`DELETE /poll/:id`, `POST /poll`, `/read`, `/ack`, `GET /hooks` and
-  `/activity` answer `401` without the header. A hook of another owner gets the
-  same response as an unknown one; `/hooks` and `/activity` list only the
-  requester's hooks, the metadata filter applying within them.
+  `/activity` answer `401` without the header, before looking at the body. A
+  hook of another owner gets the same response as an unknown one; `/hooks` and
+  `/activity` list only the requester's hooks, the metadata filter applying
+  within them.
+- `long_lived.max_hooks` is shared by every owner. Set
+  `server.api.owner_secret.max_long_lived_hooks` to cap each owner's share
+  (`429` "long-lived hook limit reached for this owner" past it), so one client
+  cannot exhaust it for the others. Hooks without an owner are not counted.
+- A secret sent over plaintext to a server that enforces HTTPS is refused and
+  logged as a warning: it cannot be revoked, so register new hooks under a new
+  secret.
 - Only `SHA-256(secret)` is stored (a hook field in memory, an indexed `owner`
   column in SQLite, an `owner` field plus an `o:<hash>` index in Redis). Logs show
   its first 8 hex characters at most.

@@ -14,12 +14,15 @@ type scanner interface {
 // hookColumns is the column list scanHook reads.
 const hookColumns = `id, dns, http, https, smtp, created_at, expires_at, metadata, owner`
 
-// ownerFilter is the WHERE clause narrowing hooks to owner, empty for AnyOwner.
-func ownerFilter(column, owner string) (string, []any) {
-	if owner == AnyOwner {
+// ownerFilter is the WHERE clause narrowing hooks to a scope.
+func ownerFilter(column string, scope Scope) (string, []any) {
+	switch {
+	case scope.all:
 		return "", nil
+	case scope.owner == "":
+		return " WHERE 0", nil
 	}
-	return " WHERE " + column + " = ?", []any{owner}
+	return " WHERE " + column + " = ?", []any{scope.owner}
 }
 
 // scanHook reads a full hook row.

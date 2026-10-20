@@ -21,7 +21,7 @@ func (h *APIHandler) HandleActivity(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	owner, ok := h.ownerOrReject(w, r)
+	scope, ok := h.scopeOrReject(w, r)
 	if !ok {
 		return
 	}
@@ -29,7 +29,7 @@ func (h *APIHandler) HandleActivity(w http.ResponseWriter, r *http.Request) {
 	filter := metadataFilter(r)
 	activity := []storage.HookActivity{}
 	if llm, ok := h.storage.(storage.LongLivedManager); ok {
-		for _, a := range llm.LongLivedActivity(owner) {
+		for _, a := range llm.LongLivedActivity(scope) {
 			if storage.MatchesMetadata(a.Hook.Metadata, filter) {
 				activity = append(activity, a)
 			}
@@ -52,7 +52,7 @@ func (h *APIHandler) HandleHooks(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	owner, ok := h.ownerOrReject(w, r)
+	scope, ok := h.scopeOrReject(w, r)
 	if !ok {
 		return
 	}
@@ -60,7 +60,7 @@ func (h *APIHandler) HandleHooks(w http.ResponseWriter, r *http.Request) {
 	filter := metadataFilter(r)
 	hooks := []*storage.Hook{}
 	if llm, ok := h.storage.(storage.LongLivedManager); ok {
-		all, err := llm.LongLivedHooks(owner)
+		all, err := llm.LongLivedHooks(scope)
 		if err != nil {
 			// An empty list would read as "no hooks" to a client recovering state.
 			h.logger.Error("failed to list long-lived hooks", "error", err)

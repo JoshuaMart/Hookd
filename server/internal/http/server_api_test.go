@@ -148,7 +148,7 @@ func TestAPIListener_PublicStillCaptures(t *testing.T) {
 			t.Fatalf("%s: expected capture 200, got %d", path, w.Code)
 		}
 	}
-	if got := len(s.storage.PollInteractions(hook.ID)); got != 3 {
+	if got := len(s.storage.PollOwned(storage.AllOwners(), []string{hook.ID})[hook.ID].Interactions); got != 3 {
 		t.Fatalf("expected 3 captured interactions, got %d", got)
 	}
 }
@@ -224,7 +224,7 @@ func TestAPIListener_PrivateNeverCaptures(t *testing.T) {
 			}
 		}
 	}
-	if got := len(s.storage.PollInteractions(hook.ID)); got != 0 {
+	if got := len(s.storage.PollOwned(storage.AllOwners(), []string{hook.ID})[hook.ID].Interactions); got != 0 {
 		t.Fatalf("private listener recorded %d interactions", got)
 	}
 }

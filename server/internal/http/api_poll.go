@@ -21,6 +21,11 @@ func (h *APIHandler) HandlePollBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	scope, ok := h.scopeOrReject(w, r)
+	if !ok {
+		return
+	}
+
 	r.Body = http.MaxBytesReader(w, r.Body, maxAPIBodyBytes)
 
 	// Parse request body as array of hook IDs
@@ -53,15 +58,10 @@ func (h *APIHandler) HandlePollBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	owner, ok := h.ownerOrReject(w, r)
-	if !ok {
-		return
-	}
-
 	// Hooks of another owner come back as not found, like unknown ones.
-	results := h.storage.PollOwned(owner, hookIDs)
+	results := h.storage.PollOwned(scope, hookIDs)
 
-	h.logger.Info("batch interactions polled", withOwner(owner,
+	h.logger.Info("batch interactions polled", withOwner(scope.Owner(),
 		"hook_count", len(hookIDs),
 		"client", r.RemoteAddr)...)
 
@@ -92,13 +92,13 @@ func (h *APIHandler) HandlePoll(w http.ResponseWriter, r *http.Request) {
 
 	hookID := parts[1]
 
-	owner, ok := h.ownerOrReject(w, r)
+	scope, ok := h.scopeOrReject(w, r)
 	if !ok {
 		return
 	}
 
 	if r.Method == http.MethodDelete {
-		h.ackOne(w, r, owner, hookID)
+		h.ackOne(w, r, scope, hookID)
 		return
 	}
 
@@ -109,7 +109,7 @@ func (h *APIHandler) HandlePoll(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// A hook of another owner gets the same answer as an unknown one.
-	hook, exists := h.storage.GetOwnedHook(owner, hookID)
+	hook, exists := h.storage.GetOwnedHook(scope, hookID)
 	if !exists {
 		respondJSON(w, http.StatusNotFound, map[string]string{
 			"error": "Hook not found",
@@ -119,19 +119,19 @@ func (h *APIHandler) HandlePoll(w http.ResponseWriter, r *http.Request) {
 
 	resp := map[string]interface{}{}
 	if cursor {
-		read, status := h.readCursor(owner, hookID, after)
+		read, status := h.readCursor(scope, hookID, after)
 		if status != http.StatusOK {
 			respondJSON(w, status, map[string]string{"error": read.Error})
 			return
 		}
 		resp["interactions"] = read.Interactions
 		resp["dropped_through"] = read.DroppedThrough
-		h.logger.Info("interactions read", withOwner(owner, "hook_id", hookID, "after", after, "count", len(read.Interactions), "client", r.RemoteAddr)...)
+		h.logger.Info("interactions read", withOwner(scope.Owner(), "hook_id", hookID, "after", after, "count", len(read.Interactions), "client", r.RemoteAddr)...)
 	} else {
 		// Atomic read-and-delete
-		interactions := h.drainOne(owner, hookID)
+		interactions := h.drainOne(scope, hookID)
 		resp["interactions"] = interactions
-		h.logger.Info("interactions polled", withOwner(owner, "hook_id", hookID, "count", len(interactions), "client", r.RemoteAddr)...)
+		h.logger.Info("interactions polled", withOwner(scope.Owner(), "hook_id", hookID, "count", len(interactions), "client", r.RemoteAddr)...)
 	}
 	// Echo the hook's metadata so a caller can correlate a fired hook back to
 	// its injection context without keeping its own registration bookkeeping.
@@ -141,10 +141,10 @@ func (h *APIHandler) HandlePoll(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, resp)
 }
 
-// drainOne drains a hook of owner. A failure yields an empty list, as
-// PollInteractions does.
-func (h *APIHandler) drainOne(owner, hookID string) []*storage.Interaction {
-	result := h.storage.PollOwned(owner, []string{hookID})[hookID]
+// drainOne drains a hook in scope. A failure yields an empty list, as the
+// unscoped PollInteractions does.
+func (h *APIHandler) drainOne(scope storage.Scope, hookID string) []*storage.Interaction {
+	result := h.storage.PollOwned(scope, []string{hookID})[hookID]
 	if result == nil || result.Error != "" {
 		return []*storage.Interaction{}
 	}

@@ -43,6 +43,7 @@ var configKeys = []string{
 	"server.api.listener.cert_file",
 	"server.api.listener.key_file",
 	"server.api.owner_secret.enabled",
+	"server.api.owner_secret.max_long_lived_hooks",
 	"eviction.interaction_ttl",
 	"eviction.hook_ttl",
 	"eviction.max_per_hook",

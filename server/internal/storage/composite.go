@@ -72,12 +72,12 @@ func (c *CompositeManager) CreateHook(domain string, opts CreateOptions) *Hook {
 
 // GetHook retrieves a hook from whichever store owns it.
 func (c *CompositeManager) GetHook(id string) (*Hook, bool) {
-	return c.routeFor(id).GetHook(id)
+	return c.GetOwnedHook(AllOwners(), id)
 }
 
-// GetOwnedHook retrieves a hook of owner from whichever store holds it.
-func (c *CompositeManager) GetOwnedHook(owner, id string) (*Hook, bool) {
-	return c.routeFor(id).GetOwnedHook(owner, id)
+// GetOwnedHook retrieves a hook in scope from whichever store holds it.
+func (c *CompositeManager) GetOwnedHook(scope Scope, id string) (*Hook, bool) {
+	return c.routeFor(id).GetOwnedHook(scope, id)
 }
 
 // AddInteraction records an interaction against the hook's owning store.
@@ -87,38 +87,41 @@ func (c *CompositeManager) AddInteraction(hookID string, interaction *Interactio
 
 // PollInteractions drains interactions from the hook's owning store.
 func (c *CompositeManager) PollInteractions(hookID string) []*Interaction {
-	return c.routeFor(hookID).PollInteractions(hookID)
+	if c.longLived != nil && c.longLived.Has(hookID) {
+		return c.longLived.PollInteractions(hookID)
+	}
+	return c.memory.PollInteractions(hookID)
 }
 
 // ReadInteractions reads past a cursor from the hook's owning store.
 func (c *CompositeManager) ReadInteractions(hookID string, after int64) (CursorRead, error) {
-	return c.ReadOwned(AnyOwner, hookID, after)
+	return c.ReadOwned(AllOwners(), hookID, after)
 }
 
-// ReadOwned reads past a cursor from the hook's owning store, for owner.
-func (c *CompositeManager) ReadOwned(owner, hookID string, after int64) (CursorRead, error) {
-	return c.routeFor(hookID).ReadOwned(owner, hookID, after)
+// ReadOwned reads past a cursor from the hook's owning store, in scope.
+func (c *CompositeManager) ReadOwned(scope Scope, hookID string, after int64) (CursorRead, error) {
+	return c.routeFor(hookID).ReadOwned(scope, hookID, after)
 }
 
 // AckInteractions acknowledges interactions in the hook's owning store.
 func (c *CompositeManager) AckInteractions(hookID string, through int64) (int, error) {
-	return c.AckOwned(AnyOwner, hookID, through)
+	return c.AckOwned(AllOwners(), hookID, through)
 }
 
-// AckOwned acknowledges interactions in the hook's owning store, for owner.
-func (c *CompositeManager) AckOwned(owner, hookID string, through int64) (int, error) {
-	return c.routeFor(hookID).AckOwned(owner, hookID, through)
+// AckOwned acknowledges interactions in the hook's owning store, in scope.
+func (c *CompositeManager) AckOwned(scope Scope, hookID string, through int64) (int, error) {
+	return c.routeFor(hookID).AckOwned(scope, hookID, through)
 }
 
 // PollInteractionsBatch polls several hooks, routing each to its owning store.
 func (c *CompositeManager) PollInteractionsBatch(hookIDs []string) map[string]*PollResult {
-	return c.PollOwned(AnyOwner, hookIDs)
+	return c.PollOwned(AllOwners(), hookIDs)
 }
 
-// PollOwned polls several hooks of owner, routing each to its owning store.
-func (c *CompositeManager) PollOwned(owner string, hookIDs []string) map[string]*PollResult {
+// PollOwned polls several hooks in scope, routing each to its owning store.
+func (c *CompositeManager) PollOwned(scope Scope, hookIDs []string) map[string]*PollResult {
 	if c.longLived == nil {
-		return c.memory.PollOwned(owner, hookIDs)
+		return c.memory.PollOwned(scope, hookIDs)
 	}
 	memoryIDs := make([]string, 0, len(hookIDs))
 	var durableIDs []string
@@ -129,9 +132,9 @@ func (c *CompositeManager) PollOwned(owner string, hookIDs []string) map[string]
 			memoryIDs = append(memoryIDs, id)
 		}
 	}
-	results := c.memory.PollOwned(owner, memoryIDs)
+	results := c.memory.PollOwned(scope, memoryIDs)
 	if len(durableIDs) > 0 {
-		for id, result := range c.longLived.PollOwned(owner, durableIDs) {
+		for id, result := range c.longLived.PollOwned(scope, durableIDs) {
 			results[id] = result
 		}
 	}
@@ -200,20 +203,20 @@ func (c *CompositeManager) CreateLongLivedHooks(domain string, opts []CreateOpti
 	return c.longLived.CreateLongLivedHooks(domain, opts, maxHooks)
 }
 
-// LongLivedHooks lists the long-lived hooks of owner.
-func (c *CompositeManager) LongLivedHooks(owner string) ([]*Hook, error) {
+// LongLivedHooks lists the long-lived hooks in scope.
+func (c *CompositeManager) LongLivedHooks(scope Scope) ([]*Hook, error) {
 	if c.longLived == nil {
 		return nil, nil
 	}
-	return c.longLived.LongLivedHooks(owner)
+	return c.longLived.LongLivedHooks(scope)
 }
 
-// LongLivedActivity lists the long-lived hooks of owner with pending interactions.
-func (c *CompositeManager) LongLivedActivity(owner string) []HookActivity {
+// LongLivedActivity lists the long-lived hooks in scope with pending interactions.
+func (c *CompositeManager) LongLivedActivity(scope Scope) []HookActivity {
 	if c.longLived == nil {
 		return nil
 	}
-	return c.longLived.LongLivedActivity(owner)
+	return c.longLived.LongLivedActivity(scope)
 }
 
 // LongLivedCount returns the number of long-lived hooks stored.

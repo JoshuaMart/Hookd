@@ -144,11 +144,17 @@ func TestLoad_OwnerSecret(t *testing.T) {
 		t.Fatal("expected owner secrets to be disabled by default")
 	}
 	t.Setenv("HOOKD_SERVER_API_OWNER_SECRET_ENABLED", "true")
+	t.Setenv("HOOKD_SERVER_API_OWNER_SECRET_MAX_LONG_LIVED_HOOKS", "50")
 	cfg, err := Load("")
 	if err != nil {
 		t.Fatalf("failed to load config: %v", err)
 	}
-	if !cfg.Server.API.OwnerSecret.Enabled {
-		t.Error("env override not applied")
+	if want := (OwnerSecretConfig{Enabled: true, MaxLongLivedHooks: 50}); cfg.Server.API.OwnerSecret != want {
+		t.Errorf("env override not applied: %+v", cfg.Server.API.OwnerSecret)
+	}
+
+	t.Setenv("HOOKD_SERVER_API_OWNER_SECRET_MAX_LONG_LIVED_HOOKS", "-1")
+	if _, err := Load(""); err == nil {
+		t.Error("expected a negative per-owner cap to be rejected")
 	}
 }

@@ -15,13 +15,13 @@ func (m *SQLiteManager) Has(id string) bool {
 	return ok
 }
 
-// owns reports whether owner holds the hook, from memory: unknown and foreign
+// owns reports whether the hook is in scope, from memory: unknown and foreign
 // hooks are both refused before any disk access.
-func (m *SQLiteManager) owns(owner, id string) bool {
+func (m *SQLiteManager) owns(scope Scope, id string) bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	have, ok := m.known[id]
-	return ok && ownedBy(have, owner)
+	return ok && scope.allows(have)
 }
 
 // LongLivedCount returns the number of long-lived hooks currently stored.
@@ -52,6 +52,13 @@ func (m *SQLiteManager) CreateLongLivedHooks(domain string, opts []CreateOptions
 	if maxHooks > 0 && len(m.known)+len(opts) > maxHooks {
 		return nil, ErrHookLimitReached
 	}
+	if m.maxPerOwner > 0 {
+		for owner, n := range ownerCounts(opts) {
+			if m.perOwner[owner]+n > m.maxPerOwner {
+				return nil, ErrOwnerHookLimitReached
+			}
+		}
+	}
 
 	tx, err := m.db.Begin()
 	if err != nil {
@@ -74,7 +81,7 @@ func (m *SQLiteManager) CreateLongLivedHooks(domain string, opts []CreateOptions
 		return nil, fmt.Errorf("commit hook batch: %w", err)
 	}
 	for _, hook := range hooks {
-		m.known[hook.ID] = hook.Owner
+		m.remember(hook.ID, hook.Owner)
 	}
 	return hooks, nil
 }
@@ -99,9 +106,9 @@ func insertHook(tx *sql.Tx, hook *Hook) error {
 	return nil
 }
 
-// LongLivedHooks returns the long-lived hooks of owner, oldest first.
-func (m *SQLiteManager) LongLivedHooks(owner string) ([]*Hook, error) {
-	where, args := ownerFilter("owner", owner)
+// LongLivedHooks returns the long-lived hooks in scope, oldest first.
+func (m *SQLiteManager) LongLivedHooks(scope Scope) ([]*Hook, error) {
+	where, args := ownerFilter("owner", scope)
 	rows, err := m.readDB.Query(`SELECT `+hookColumns+` FROM hooks`+where+` ORDER BY created_at, id`, args...)
 	if err != nil {
 		return nil, err
@@ -134,12 +141,12 @@ func (m *SQLiteManager) CreateHook(domain string, opts CreateOptions) *Hook {
 
 // GetHook retrieves a hook by ID.
 func (m *SQLiteManager) GetHook(id string) (*Hook, bool) {
-	return m.GetOwnedHook(AnyOwner, id)
+	return m.GetOwnedHook(AllOwners(), id)
 }
 
-// GetOwnedHook retrieves a hook by ID if owner holds it.
-func (m *SQLiteManager) GetOwnedHook(owner, id string) (*Hook, bool) {
-	if !m.owns(owner, id) {
+// GetOwnedHook retrieves a hook by ID if it is in scope.
+func (m *SQLiteManager) GetOwnedHook(scope Scope, id string) (*Hook, bool) {
+	if !m.owns(scope, id) {
 		return nil, false
 	}
 	row := m.readDB.QueryRow(`SELECT `+hookColumns+` FROM hooks WHERE id = ?`, id)

@@ -109,7 +109,7 @@ func TestSQLiteClosedStoreReportsFailures(t *testing.T) {
 	if n := m.EnforcePerHookLimit(0); n != 0 {
 		t.Fatal("reported unsuccessful trim")
 	}
-	if activity := m.LongLivedActivity(AnyOwner); activity != nil {
+	if activity := m.LongLivedActivity(AllOwners()); activity != nil {
 		t.Fatal("closed store returned activity")
 	}
 	if stats := m.Stats(); stats.InteractionsTotal != 0 || stats.HooksActive != 1 {

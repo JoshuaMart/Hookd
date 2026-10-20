@@ -41,10 +41,10 @@ func (m *SQLiteManager) Stats() Stats {
 	return stats
 }
 
-// LongLivedActivity returns the long-lived hooks of owner that currently have
+// LongLivedActivity returns the long-lived hooks in scope that currently have
 // pending interactions, with their pending count and most recent interaction time.
-func (m *SQLiteManager) LongLivedActivity(owner string) []HookActivity {
-	where, args := ownerFilter("h.owner", owner)
+func (m *SQLiteManager) LongLivedActivity(scope Scope) []HookActivity {
+	where, args := ownerFilter("h.owner", scope)
 	rows, err := m.readDB.Query(`
 		SELECT h.id, h.dns, h.http, h.https, h.smtp, h.created_at, h.expires_at, h.metadata, h.owner,
 		       COUNT(i.id), COALESCE(MAX(i.timestamp), 0), COALESCE(MAX(i.seq), 0)

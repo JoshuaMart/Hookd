@@ -18,11 +18,11 @@ local P = ARGV[1]
 local function hkey(id) return P .. 'h:' .. id end
 local function skey(id) return P .. 'i:' .. id end
 
--- Reports whether the hook exists and, unless want is '', belongs to want.
--- Both refusals cost the same single call.
-local function owned(h, want)
-  if want == '' then return redis.call('EXISTS', h) == 1 end
-  return redis.call('HGET', h, 'owner') == want
+-- Reports whether the hook exists and is in scope: '*' matches any owner,
+-- '' none. Unknown and foreign hooks cost the same single call.
+local function owned(h, scope)
+  if scope == '*' then return redis.call('EXISTS', h) == 1 end
+  return scope ~= '' and redis.call('HGET', h, 'owner') == scope
 end
 
 -- Stream entries arrive as {id, {k1, v1, k2, v2, ...}}.

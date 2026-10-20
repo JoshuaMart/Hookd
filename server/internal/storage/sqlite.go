@@ -22,8 +22,10 @@ type SQLiteManager struct {
 	maxBodyBytes int
 	logger       *slog.Logger
 
-	mu    sync.RWMutex
-	known map[string]string // id -> owner
+	mu          sync.RWMutex
+	known       map[string]string // id -> owner
+	perOwner    map[string]int
+	maxPerOwner int
 }
 
 // NewSQLiteManager opens (creating if needed) the database at dbPath and loads
@@ -61,6 +63,7 @@ func NewSQLiteManager(dbPath string, idGenerator func() string, maxBodyBytes int
 		maxBodyBytes: maxBodyBytes,
 		logger:       logger,
 		known:        make(map[string]string),
+		perOwner:     make(map[string]int),
 	}
 
 	if err := m.loadIndex(); err != nil {
@@ -120,9 +123,38 @@ func (m *SQLiteManager) loadIndex() error {
 		if err := rows.Scan(&id, &owner); err != nil {
 			return err
 		}
-		m.known[id] = owner
+		m.remember(id, owner)
 	}
 	return rows.Err()
+}
+
+// SetMaxPerOwner caps the long-lived hooks of each owner; zero disables it.
+func (m *SQLiteManager) SetMaxPerOwner(max int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.maxPerOwner = max
+}
+
+// remember and forget keep the index and per-owner counts in step. Callers
+// must hold m.mu.
+func (m *SQLiteManager) remember(id, owner string) {
+	m.known[id] = owner
+	if owner != "" {
+		m.perOwner[owner]++
+	}
+}
+
+func (m *SQLiteManager) forget(id string) {
+	owner, ok := m.known[id]
+	if !ok {
+		return
+	}
+	delete(m.known, id)
+	if owner != "" {
+		if m.perOwner[owner]--; m.perOwner[owner] <= 0 {
+			delete(m.perOwner, owner)
+		}
+	}
 }
 
 // Close closes the underlying database.

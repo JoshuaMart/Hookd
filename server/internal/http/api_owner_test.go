@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/jomar/hookd/internal/config"
+	"github.com/jomar/hookd/internal/credential"
 	"github.com/jomar/hookd/internal/storage"
 )
 
@@ -23,7 +24,12 @@ const (
 // newOwnerHandler is newLongLivedHandler with owner secrets on and a log sink.
 func newOwnerHandler(t *testing.T) (*APIHandler, *storage.CompositeManager, *bytes.Buffer) {
 	t.Helper()
-	h, store := newLongLivedHandler(t)
+	return newOwnerHandlerWith(t, func(*storage.SQLiteManager) {})
+}
+
+func newOwnerHandlerWith(t *testing.T, configure func(*storage.SQLiteManager)) (*APIHandler, *storage.CompositeManager, *bytes.Buffer) {
+	t.Helper()
+	h, store := newLongLivedHandlerWith(t, configure)
 	logs := &bytes.Buffer{}
 	h.logger = slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	h.ownerSecret = true
@@ -184,6 +190,26 @@ func TestOwner_MissingSecretIsRefused(t *testing.T) {
 			t.Errorf("%s %s without secret: %d %s", tc.method, tc.target, w.Code, w.Body.String())
 		}
 	}
+	// The secret is checked before the body, as documented.
+	for _, target := range []string{"/poll", "/read", "/ack"} {
+		if w := ownerRequest(h, http.MethodPost, target, "not json", ""); w.Code != http.StatusUnauthorized {
+			t.Errorf("POST %s with a bad body and no secret: %d", target, w.Code)
+		}
+	}
+}
+
+func TestOwner_PerOwnerLongLivedCap(t *testing.T) {
+	h, _, _ := newOwnerHandlerWith(t, func(s *storage.SQLiteManager) { s.SetMaxPerOwner(1) })
+	registerOwned(t, h, `{"ttl":"48h"}`, secretA)
+
+	w := ownerRequest(h, http.MethodPost, "/register", `{"ttl":"48h"}`, secretA)
+	if w.Code != http.StatusTooManyRequests || !strings.Contains(w.Body.String(), "for this owner") {
+		t.Errorf("second hook of A: %d %s", w.Code, w.Body.String())
+	}
+	registerOwned(t, h, `{"ttl":"48h"}`, secretB)
+	if w := ownerRequest(h, http.MethodPost, "/register", "", secretA); w.Code != http.StatusOK {
+		t.Errorf("ephemeral hooks are not capped per owner: %d", w.Code)
+	}
 }
 
 func TestOwner_SameSecretGroupsHooks(t *testing.T) {
@@ -329,7 +355,7 @@ func TestOwner_SecretNeverLeaks(t *testing.T) {
 	}
 
 	for _, secret := range []string{generated, secretA} {
-		owner := hashSecret(secret)
+		owner := credential.Hash(secret)
 		if strings.Contains(bodies.String(), secret) || strings.Contains(bodies.String(), owner) {
 			t.Error("a response leaked the secret or its hash")
 		}

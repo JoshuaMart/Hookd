@@ -2,11 +2,11 @@ package http
 
 import (
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"net/http"
 
+	"github.com/jomar/hookd/internal/credential"
 	"github.com/jomar/hookd/internal/storage"
 )
 
@@ -40,13 +40,6 @@ func validSecret(secret string) bool {
 	return true
 }
 
-// hashSecret derives the stored owner. A fast hash suffices for a secret of
-// this entropy.
-func hashSecret(secret string) string {
-	sum := sha256.Sum256([]byte(secret))
-	return hex.EncodeToString(sum[:])
-}
-
 // generateSecret returns 256 random bits as hex.
 func generateSecret() string {
 	b := make([]byte, generatedSecretBytes)
@@ -54,48 +47,54 @@ func generateSecret() string {
 	return hex.EncodeToString(b)
 }
 
-// requestOwner returns the owner a request acts for, AnyOwner when owner
+// requestScope returns the hooks a request may reach: every hook when owner
 // secrets are disabled. It does not depend on any hook, so it cannot reveal one.
-func (h *APIHandler) requestOwner(r *http.Request) (string, *apiError) {
+func (h *APIHandler) requestScope(r *http.Request) (storage.Scope, *apiError) {
 	if !h.ownerSecret {
-		return storage.AnyOwner, nil
+		return storage.AllOwners(), nil
 	}
 	secret := r.Header.Get(ownerSecretHeader)
 	if secret == "" {
-		return "", errMissingSecret
+		return storage.Scope{}, errMissingSecret
 	}
 	if !validSecret(secret) {
-		return "", errInvalidSecret
+		return storage.Scope{}, errInvalidSecret
 	}
-	return hashSecret(secret), nil
+	return storage.OwnerScope(credential.Hash(secret)), nil
 }
 
-// registrationOwner is requestOwner for POST /register, where a missing secret
-// is generated and returned once.
+// registrationOwner returns the owner new hooks get, empty when owner secrets
+// are disabled. A missing secret is generated and returned once.
 func (h *APIHandler) registrationOwner(r *http.Request) (owner, generated string, errResp *apiError) {
-	if h.ownerSecret && r.Header.Get(ownerSecretHeader) == "" {
-		generated = generateSecret()
-		return hashSecret(generated), generated, nil
+	if !h.ownerSecret {
+		return "", "", nil
 	}
-	owner, errResp = h.requestOwner(r)
-	return owner, "", errResp
+	secret := r.Header.Get(ownerSecretHeader)
+	if secret == "" {
+		generated = generateSecret()
+		return credential.Hash(generated), generated, nil
+	}
+	if !validSecret(secret) {
+		return "", "", errInvalidSecret
+	}
+	return credential.Hash(secret), "", nil
 }
 
-// ownerOrReject resolves the request's owner, answering the error itself.
-func (h *APIHandler) ownerOrReject(w http.ResponseWriter, r *http.Request) (string, bool) {
-	owner, errResp := h.requestOwner(r)
+// scopeOrReject resolves the request's scope, answering the error itself.
+func (h *APIHandler) scopeOrReject(w http.ResponseWriter, r *http.Request) (storage.Scope, bool) {
+	scope, errResp := h.requestScope(r)
 	if errResp != nil {
 		respondJSON(w, errResp.status, map[string]string{"error": errResp.message})
-		return "", false
+		return storage.Scope{}, false
 	}
-	return owner, true
+	return scope, true
 }
 
-// withOwner appends a short owner fingerprint to log attributes, like the
-// token fingerprint; the secret and the full hash are never logged.
+// withOwner appends the owner's fingerprint to log attributes, like the token
+// fingerprint; the secret and the full hash are never logged.
 func withOwner(owner string, attrs ...any) []any {
-	if owner == storage.AnyOwner {
+	if owner == "" {
 		return attrs
 	}
-	return append(attrs, "owner", owner[:8])
+	return append(attrs, "owner", credential.HashFingerprint(owner))
 }

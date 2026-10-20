@@ -36,11 +36,11 @@ func (m *SQLiteManager) PollInteractions(hookID string) []*Interaction {
 // PollInteractionsBatch polls several hooks. Unknown hooks yield a not-found
 // error, matching the in-memory manager's contract.
 func (m *SQLiteManager) PollInteractionsBatch(hookIDs []string) map[string]*PollResult {
-	return m.PollOwned(AnyOwner, hookIDs)
+	return m.PollOwned(AllOwners(), hookIDs)
 }
 
-// PollOwned is PollInteractionsBatch restricted to the hooks of owner.
-func (m *SQLiteManager) PollOwned(owner string, hookIDs []string) map[string]*PollResult {
+// PollOwned is PollInteractionsBatch restricted to the hooks in scope.
+func (m *SQLiteManager) PollOwned(scope Scope, hookIDs []string) map[string]*PollResult {
 	results := make(map[string]*PollResult, len(hookIDs))
 	ids := make([]string, 0, len(hookIDs))
 	for _, id := range hookIDs {
@@ -48,7 +48,7 @@ func (m *SQLiteManager) PollOwned(owner string, hookIDs []string) map[string]*Po
 			continue
 		}
 		// The same body as the other backends, or a foreign hook would stand out.
-		if !m.owns(owner, id) {
+		if !m.owns(scope, id) {
 			results[id] = &PollResult{Error: "Hook not found"}
 			continue
 		}

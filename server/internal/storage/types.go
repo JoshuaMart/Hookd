@@ -34,12 +34,34 @@ type Hook struct {
 	Owner string `json:"-"`
 }
 
-// AnyOwner disables the owner check of the owner-scoped operations.
-const AnyOwner = ""
+// Scope restricts the API's per-hook operations to one owner. The zero value
+// matches no hook, so a forgotten owner fails closed.
+type Scope struct {
+	owner string
+	all   bool
+}
 
-// ownedBy reports whether a hook owned by have may be served to want.
-func ownedBy(have, want string) bool {
-	return want == AnyOwner || subtle.ConstantTimeCompare([]byte(have), []byte(want)) == 1
+// AllOwners matches every hook, for when owner secrets are disabled.
+func AllOwners() Scope { return Scope{all: true} }
+
+// OwnerScope matches the hooks of owner; an empty owner matches none.
+func OwnerScope(owner string) Scope { return Scope{owner: owner} }
+
+// Owner returns the owner hash, empty for AllOwners.
+func (s Scope) Owner() string { return s.owner }
+
+// allows reports whether a hook owned by have is in scope.
+func (s Scope) allows(have string) bool {
+	return s.all || (s.owner != "" && subtle.ConstantTimeCompare([]byte(have), []byte(s.owner)) == 1)
+}
+
+// scriptArg encodes the scope for the Lua scripts: "*" for every owner, which
+// a hex hash cannot be.
+func (s Scope) scriptArg() string {
+	if s.all {
+		return "*"
+	}
+	return s.owner
 }
 
 // CreateOptions carries the per-hook parameters supplied at registration time.

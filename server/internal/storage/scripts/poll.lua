@@ -1,5 +1,5 @@
 -- Drains several hooks. Returns one reply per id: nil for an unknown hook or
--- one of another owner, else its entries. ARGV: P, owner ('' = any), id...
+-- one out of scope, else its entries. ARGV: P, scope ('*' = any owner), id...
 local out = {}
 for i = 3, #ARGV do
   local id = ARGV[i]
