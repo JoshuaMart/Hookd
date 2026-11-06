@@ -181,6 +181,10 @@ func TestPendingCountsTrackAllRemovals(t *testing.T) {
 					want.HooksActive++
 					for _, it := range read.Interactions {
 						want.InteractionsTotal++
+						if backend == "memory" {
+							// The byte total must track every removal path too.
+							want.StoredBytes += it.memSize
+						}
 						switch it.Type {
 						case InteractionTypeDNS:
 							want.InteractionsDNS++

@@ -25,7 +25,8 @@ func (h *APIHandler) HandleMetrics(w http.ResponseWriter, r *http.Request) {
 			"active": stats.HooksActive,
 		},
 		"interactions": map[string]interface{}{
-			"total": stats.InteractionsTotal,
+			"total":        stats.InteractionsTotal,
+			"stored_bytes": stats.StoredBytes,
 			"by_type": map[string]interface{}{
 				"dns":  stats.InteractionsDNS,
 				"http": stats.InteractionsHTTP,
@@ -33,11 +34,12 @@ func (h *APIHandler) HandleMetrics(w http.ResponseWriter, r *http.Request) {
 			},
 		},
 		"evictions": map[string]interface{}{
-			"total": evictionMetrics.EvictionsTTL + evictionMetrics.EvictionsLimit + evictionMetrics.EvictionsMemory + evictionMetrics.EvictionsHookTTL,
+			"total": evictionMetrics.EvictionsTTL + evictionMetrics.EvictionsLimit + evictionMetrics.EvictionsMemory + evictionMetrics.EvictionsBudget + evictionMetrics.EvictionsHookTTL,
 			"by_strategy": map[string]interface{}{
 				"expired":         evictionMetrics.EvictionsTTL,
 				"overflow":        evictionMetrics.EvictionsLimit,
 				"memory_pressure": evictionMetrics.EvictionsMemory,
+				"memory_budget":   evictionMetrics.EvictionsBudget,
 				"hook_expired":    evictionMetrics.EvictionsHookTTL,
 			},
 		},

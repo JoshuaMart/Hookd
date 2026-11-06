@@ -250,6 +250,7 @@ func openLocalStorage(cfg *config.Config, logger *slog.Logger, idGenerator func(
 	// long-lived hooks are persisted to SQLite so they survive restarts.
 	memoryManager := storage.NewMemoryManager(idGenerator)
 	memoryManager.SetMaxPerHook(cfg.Eviction.MaxPerHook)
+	memoryManager.SetMemoryBudget(cfg.Eviction.MemoryBudget())
 	var err error
 	var longLived *storage.SQLiteManager
 	if cfg.LongLived.Enabled {

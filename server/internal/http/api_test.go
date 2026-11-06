@@ -2,6 +2,7 @@ package http
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -1058,5 +1059,43 @@ func TestCaptureHandler_KeepsRepeatedHeaders(t *testing.T) {
 	}
 	if headers["X-Payload"] != "first, second" {
 		t.Errorf("expected both values kept, got %q", headers["X-Payload"])
+	}
+}
+
+func TestCaptureHandler_BodySlots(t *testing.T) {
+	idGen := func() string { return "event-id" }
+	manager := storage.NewMemoryManager(idGen)
+	hook := manager.CreateHook("example.com", storage.CreateOptions{})
+	handler := NewCaptureHandler(manager, "example.com", slog.Default(), idGen, 0)
+	handler.SetBodySlots(1)
+
+	post := func(ctx context.Context) {
+		req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("payload")).WithContext(ctx)
+		req.Host = hook.ID + ".example.com"
+		handler.ServeHTTP(httptest.NewRecorder(), req)
+	}
+
+	// A free slot: the body is read and the slot handed back.
+	post(context.Background())
+	if len(handler.bodySlots) != 0 {
+		t.Fatal("expected the body slot released after the read")
+	}
+
+	// Every slot busy and the client gone: the callback is kept without body.
+	handler.bodySlots <- struct{}{}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	post(ctx)
+	<-handler.bodySlots
+
+	got := manager.PollInteractions(hook.ID)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 interactions, got %d", len(got))
+	}
+	if got[0].Data["body"] != "payload" || got[0].Data["body_skipped"] != nil {
+		t.Errorf("first capture should carry its body: %+v", got[0].Data)
+	}
+	if got[1].Data["body"] != "" || got[1].Data["body_skipped"] != true {
+		t.Errorf("second capture should be flagged body_skipped: %+v", got[1].Data)
 	}
 }

@@ -73,6 +73,59 @@ func TestConfig_Validate(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name: "explicit max hook memory within budget",
+			modify: func(c *Config) {
+				c.Eviction.MaxHookMemoryMB = 128
+			},
+			wantErr: false,
+		},
+		{
+			name: "max hook memory above the stored budget",
+			modify: func(c *Config) {
+				c.Eviction.MaxHookMemoryMB = c.Eviction.MaxMemoryMB
+			},
+			wantErr: true,
+		},
+		{
+			name: "negative max hook memory",
+			modify: func(c *Config) {
+				c.Eviction.MaxHookMemoryMB = -1
+			},
+			wantErr: true,
+		},
+		{
+			name: "body larger than the per-hook cap",
+			modify: func(c *Config) {
+				c.Eviction.MaxHookMemoryMB = 1
+				c.Eviction.MaxInteractionBodyBytes = 2 << 20
+			},
+			wantErr: true,
+		},
+		{
+			name: "per-hook cap equal to the body cannot hold a full capture",
+			modify: func(c *Config) {
+				c.Eviction.MaxHookMemoryMB = 1
+				c.Eviction.MaxInteractionBodyBytes = 1 << 20
+			},
+			wantErr: true,
+		},
+		{
+			name: "redis backend ignores the in-memory budget",
+			modify: func(c *Config) {
+				c.Storage.Backend = StorageBackendRedis
+				c.Storage.Redis.Addr = "127.0.0.1:6379"
+				c.Eviction.MaxMemoryMB = 16
+			},
+			wantErr: false,
+		},
+		{
+			name: "small max memory derives a cap too small for the body",
+			modify: func(c *Config) {
+				c.Eviction.MaxMemoryMB = 16 // 9.6 MB stored budget, 0.6 MB per hook
+			},
+			wantErr: true,
+		},
+		{
 			name: "zero max per hook",
 			modify: func(c *Config) {
 				c.Eviction.MaxPerHook = 0
@@ -207,5 +260,36 @@ func TestGenerateRandomToken(t *testing.T) {
 
 	if token1 == token2 {
 		t.Error("expected tokens to be different")
+	}
+}
+
+func TestEvictionConfig_MemoryBudget(t *testing.T) {
+	e := DefaultConfig().Eviction
+	perHook, total := e.MemoryBudget()
+	if want := int64(1800 * 0.6 * (1 << 20)); total != want {
+		t.Errorf("total = %d, want %d", total, want)
+	}
+	if perHook != total/16 {
+		t.Errorf("auto per-hook = %d, want %d", perHook, total/16)
+	}
+	e.MaxHookMemoryMB = 32
+	if perHook, _ = e.MemoryBudget(); perHook != 32<<20 {
+		t.Errorf("explicit per-hook = %d, want %d", perHook, 32<<20)
+	}
+}
+
+func TestEvictionConfig_CaptureBodySlots(t *testing.T) {
+	e := DefaultConfig().Eviction
+	// 20% of 1800 MB in 1 MiB (+1 byte) bodies.
+	if got := e.CaptureBodySlots(); got != 359 {
+		t.Errorf("default slots = %d, want 359", got)
+	}
+	e.MaxMemoryMB = 1
+	if got := e.CaptureBodySlots(); got != 1 {
+		t.Errorf("tiny memory slots = %d, want at least 1", got)
+	}
+	e.MaxInteractionBodyBytes = 0
+	if got := e.CaptureBodySlots(); got != 0 {
+		t.Errorf("unset body cap slots = %d, want 0 (unbounded)", got)
 	}
 }
