@@ -107,9 +107,14 @@ func (m *MemoryManager) heapAbove(threshold int) (int, bool) {
 // left: it deletes hooks oldest first until the heap is below target,
 // recording what it removed and the final heap reading in result.
 func (m *MemoryManager) evictOldestUntil(target int, result *MemoryEvictionResult) {
+	// result.HeapInUseMB is already a post-GC reading, so the first batch
+	// starts from it instead of forcing another collection.
 	heap := result.HeapInUseMB
+	if heap < target {
+		return
+	}
 	for _, hook := range m.hooksOldestFirst() {
-		if result.HooksEvicted%pressureBatch == 0 {
+		if result.HooksEvicted > 0 && result.HooksEvicted%pressureBatch == 0 {
 			m.forceGC()
 			if heap = m.heapInUseMB(); heap < target {
 				break

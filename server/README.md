@@ -790,7 +790,10 @@ store evicts with indexed SQL rather than loading everything into memory.
      lighter hooks keep everything.
 
    Capture traffic is anonymous, so this is what keeps a flood sent to one
-   hook ID from pushing out other hooks' data. Dropped interactions show up
+   hook ID from pushing out other hooks' data. HTTP bodies still being read
+   are bounded too: at most 20% of `max_memory_mb` worth of them at once. A
+   request that waits more than 5 s for room is captured without its body,
+   flagged `"body_skipped": true`. Dropped interactions show up
    as a gap in the cursor (`dropped_through`), in the `memory_budget` metric
    and in a warning log.
 5. **Memory pressure**: A safety net for when the heap nears the limit anyway

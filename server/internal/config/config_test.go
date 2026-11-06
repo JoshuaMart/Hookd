@@ -102,6 +102,23 @@ func TestConfig_Validate(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name: "per-hook cap equal to the body cannot hold a full capture",
+			modify: func(c *Config) {
+				c.Eviction.MaxHookMemoryMB = 1
+				c.Eviction.MaxInteractionBodyBytes = 1 << 20
+			},
+			wantErr: true,
+		},
+		{
+			name: "redis backend ignores the in-memory budget",
+			modify: func(c *Config) {
+				c.Storage.Backend = StorageBackendRedis
+				c.Storage.Redis.Addr = "127.0.0.1:6379"
+				c.Eviction.MaxMemoryMB = 16
+			},
+			wantErr: false,
+		},
+		{
 			name: "small max memory derives a cap too small for the body",
 			modify: func(c *Config) {
 				c.Eviction.MaxMemoryMB = 16 // 9.6 MB stored budget, 0.6 MB per hook
@@ -258,5 +275,21 @@ func TestEvictionConfig_MemoryBudget(t *testing.T) {
 	e.MaxHookMemoryMB = 32
 	if perHook, _ = e.MemoryBudget(); perHook != 32<<20 {
 		t.Errorf("explicit per-hook = %d, want %d", perHook, 32<<20)
+	}
+}
+
+func TestEvictionConfig_CaptureBodySlots(t *testing.T) {
+	e := DefaultConfig().Eviction
+	// 20% of 1800 MB in 1 MiB (+1 byte) bodies.
+	if got := e.CaptureBodySlots(); got != 359 {
+		t.Errorf("default slots = %d, want 359", got)
+	}
+	e.MaxMemoryMB = 1
+	if got := e.CaptureBodySlots(); got != 1 {
+		t.Errorf("tiny memory slots = %d, want at least 1", got)
+	}
+	e.MaxInteractionBodyBytes = 0
+	if got := e.CaptureBodySlots(); got != 0 {
+		t.Errorf("unset body cap slots = %d, want 0 (unbounded)", got)
 	}
 }

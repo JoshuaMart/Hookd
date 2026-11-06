@@ -162,6 +162,11 @@ func (e *Evictor) MaxInteractionBodyBytes() int {
 	return e.config.MaxInteractionBodyBytes
 }
 
+// CaptureBodySlots returns how many HTTP bodies may be read at once.
+func (e *Evictor) CaptureBodySlots() int {
+	return e.config.CaptureBodySlots()
+}
+
 // GetMetrics returns a snapshot of the eviction metrics
 func (e *Evictor) GetMetrics() Metrics {
 	return Metrics{

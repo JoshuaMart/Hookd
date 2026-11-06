@@ -164,9 +164,18 @@ type EvictionConfig struct {
 
 const (
 	// storedMemoryFraction is the share of max_memory_mb that captured data
-	// in the in-memory store may hold; the rest is headroom for the runtime,
-	// in-flight requests and the estimate's error.
+	// in the in-memory store may hold.
 	storedMemoryFraction = 0.6
+	// inFlightMemoryFraction is the share of max_memory_mb that HTTP bodies
+	// being read may hold. The remaining 20% is headroom for the runtime and
+	// the estimate's error.
+	inFlightMemoryFraction = 0.2
+	// minHookInteractions is how many full-size captures a per-hook cap must
+	// hold, so a hook keeps some history rather than one entry at a time.
+	minHookInteractions = 4
+	// captureOverheadBytes bounds what a capture stores beside its body: the
+	// headers (MaxHeaderBytes is 64 KiB), the 8 KiB target, the bookkeeping.
+	captureOverheadBytes = 128 << 10
 	// autoHookShare divides the stored budget into the default per-hook cap,
 	// so it takes that many flooded hooks to fill the store.
 	autoHookShare = 16
@@ -398,8 +407,12 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("eviction.max_memory_mb must be positive")
 	}
 
-	if err := c.Eviction.validateMemoryBudget(); err != nil {
-		return err
+	// The byte budget bounds the in-memory store; with Redis, hook data lives
+	// off the Go heap and max_memory_mb bounds nothing it could hold.
+	if c.Storage.Backend != StorageBackendRedis {
+		if err := c.Eviction.validateMemoryBudget(); err != nil {
+			return err
+		}
 	}
 
 	if c.Eviction.CleanupInterval <= 0 {
@@ -589,8 +602,20 @@ func generateRandomToken() string {
 	return hex.EncodeToString(b)
 }
 
+// CaptureBodySlots is how many HTTP bodies may be read at once: each can hold
+// up to MaxInteractionBodyBytes before it is stored or truncated, so their
+// number, not only their size, has to be bounded. Zero, for an unset body
+// cap or memory limit, leaves reads unbounded.
+func (e EvictionConfig) CaptureBodySlots() int {
+	if e.MaxInteractionBodyBytes <= 0 || e.MaxMemoryMB <= 0 {
+		return 0
+	}
+	budget := int64(float64(e.MaxMemoryMB) * inFlightMemoryFraction * (1 << 20))
+	return int(max(1, budget/(int64(e.MaxInteractionBodyBytes)+1)))
+}
+
 // validateMemoryBudget rejects byte bounds that cannot hold: a per-hook cap
-// above the store's budget, or one too small for a single captured body.
+// above the store's budget, or one too small for a few full-size captures.
 func (e EvictionConfig) validateMemoryBudget() error {
 	if e.MaxHookMemoryMB < 0 {
 		return fmt.Errorf("eviction.max_hook_memory_mb must not be negative (0 derives it from max_memory_mb)")
@@ -600,9 +625,11 @@ func (e EvictionConfig) validateMemoryBudget() error {
 		return fmt.Errorf("eviction.max_hook_memory_mb (%d) must not exceed %d MB, the share of max_memory_mb captured data may hold",
 			e.MaxHookMemoryMB, total>>20)
 	}
-	if int64(e.MaxInteractionBodyBytes) > perHook {
-		return fmt.Errorf("eviction.max_interaction_body_bytes (%d) must not exceed the per-hook memory cap (%d bytes); lower it or raise max_hook_memory_mb / max_memory_mb",
-			e.MaxInteractionBodyBytes, perHook)
+	// A capture stores headers and the target beside its body, so the body
+	// size alone would accept caps that cannot hold a single full capture.
+	if need := minHookInteractions * (int64(e.MaxInteractionBodyBytes) + captureOverheadBytes); perHook < need {
+		return fmt.Errorf("the per-hook memory cap (%d bytes) must hold %d full-size captures (%d bytes with max_interaction_body_bytes %d); lower max_interaction_body_bytes or raise max_hook_memory_mb / max_memory_mb",
+			perHook, minHookInteractions, need, e.MaxInteractionBodyBytes)
 	}
 	return nil
 }

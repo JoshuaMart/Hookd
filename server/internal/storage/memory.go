@@ -22,6 +22,7 @@ type MemoryManager struct {
 	// Byte accounting (see memory_budget.go): what each hook holds, what the
 	// store holds, their bounds, and insert-time evictions not yet reported.
 	hookBytes       map[string]int64
+	bodyRefs        map[bodyRef]int
 	totalBytes      int64
 	maxHookBytes    int64
 	maxTotalBytes   int64
@@ -41,6 +42,7 @@ func NewMemoryManager(idGenerator func() string) *MemoryManager {
 		lastSeq:        make(map[string]int64),
 		droppedThrough: make(map[string]int64),
 		hookBytes:      make(map[string]int64),
+		bodyRefs:       make(map[bodyRef]int),
 		idGenerator:    idGenerator,
 		forceGC:        runtime.GC,
 		heapInUseMB:    readHeapInUseMB,
@@ -102,6 +104,8 @@ func (m *MemoryManager) Has(id string) bool {
 // AddInteraction adds an interaction to a hook. Interactions for non-existent
 // hooks are silently ignored (e.g. bots probing random subdomains).
 func (m *MemoryManager) AddInteraction(hookID string, interaction *Interaction) {
+	// Sizing walks the headers; it needs no lock, so captures do not wait on it.
+	size, body := interactionSize(interaction)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -110,7 +114,7 @@ func (m *MemoryManager) AddInteraction(hookID string, interaction *Interaction) 
 		return
 	}
 
-	m.retain(hookID, interaction)
+	m.retain(hookID, interaction, size, body)
 	m.lastSeq[hookID]++
 	interaction.Seq = m.lastSeq[hookID]
 	m.interactions[hookID] = append(m.interactions[hookID], interaction)
@@ -161,19 +165,20 @@ func (m *MemoryManager) AckOwned(scope Scope, hookID string, through int64) (int
 	if _, exists := m.owned(scope, hookID); !exists {
 		return 0, ErrHookNotFound
 	}
-	interactions := m.interactions[hookID]
-	kept := make([]*Interaction, 0, len(interactions))
-	acked := make([]*Interaction, 0)
-	for _, interaction := range interactions {
-		if interaction.Seq > through {
-			kept = append(kept, interaction)
-		} else {
-			acked = append(acked, interaction)
-		}
+	// Entries are in seq order, so the acknowledged ones are a prefix.
+	entries := m.interactions[hookID]
+	n := 0
+	for n < len(entries) && entries[n].Seq <= through {
+		n++
 	}
-	m.release(hookID, acked)
-	m.interactions[hookID] = kept
-	return len(interactions) - len(kept), nil
+	if n == 0 {
+		return 0, nil
+	}
+	m.release(hookID, entries[:n])
+	// As in dropOldest: read results never alias this array.
+	clear(entries[:n])
+	m.interactions[hookID] = entries[n:]
+	return n, nil
 }
 
 // noteDropped records that interactions up to seq were evicted unacknowledged.
@@ -279,7 +284,6 @@ func (m *MemoryManager) EvictExpiredHooks(now time.Time) int {
 // deleteHook removes a hook and all its state. Callers must hold m.mu.
 func (m *MemoryManager) deleteHook(id string) {
 	m.release(id, m.interactions[id])
-	delete(m.hookBytes, id)
 	delete(m.hooks, id)
 	delete(m.interactions, id)
 	delete(m.lastSeq, id)
