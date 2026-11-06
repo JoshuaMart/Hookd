@@ -73,6 +73,42 @@ func TestConfig_Validate(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name: "explicit max hook memory within budget",
+			modify: func(c *Config) {
+				c.Eviction.MaxHookMemoryMB = 128
+			},
+			wantErr: false,
+		},
+		{
+			name: "max hook memory above the stored budget",
+			modify: func(c *Config) {
+				c.Eviction.MaxHookMemoryMB = c.Eviction.MaxMemoryMB
+			},
+			wantErr: true,
+		},
+		{
+			name: "negative max hook memory",
+			modify: func(c *Config) {
+				c.Eviction.MaxHookMemoryMB = -1
+			},
+			wantErr: true,
+		},
+		{
+			name: "body larger than the per-hook cap",
+			modify: func(c *Config) {
+				c.Eviction.MaxHookMemoryMB = 1
+				c.Eviction.MaxInteractionBodyBytes = 2 << 20
+			},
+			wantErr: true,
+		},
+		{
+			name: "small max memory derives a cap too small for the body",
+			modify: func(c *Config) {
+				c.Eviction.MaxMemoryMB = 16 // 9.6 MB stored budget, 0.6 MB per hook
+			},
+			wantErr: true,
+		},
+		{
 			name: "zero max per hook",
 			modify: func(c *Config) {
 				c.Eviction.MaxPerHook = 0
@@ -207,5 +243,20 @@ func TestGenerateRandomToken(t *testing.T) {
 
 	if token1 == token2 {
 		t.Error("expected tokens to be different")
+	}
+}
+
+func TestEvictionConfig_MemoryBudget(t *testing.T) {
+	e := DefaultConfig().Eviction
+	perHook, total := e.MemoryBudget()
+	if want := int64(1800 * 0.6 * (1 << 20)); total != want {
+		t.Errorf("total = %d, want %d", total, want)
+	}
+	if perHook != total/16 {
+		t.Errorf("auto per-hook = %d, want %d", perHook, total/16)
+	}
+	e.MaxHookMemoryMB = 32
+	if perHook, _ = e.MemoryBudget(); perHook != 32<<20 {
+		t.Errorf("explicit per-hook = %d, want %d", perHook, 32<<20)
 	}
 }

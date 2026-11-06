@@ -160,6 +160,14 @@ eviction:
   # Emergency eviction occurs when approaching this limit
   max_memory_mb: 1800
 
+  # Maximum captured data (bodies, headers...) one in-memory hook may hold, in
+  # MB. Past it, the hook's own oldest interactions are dropped, so a flood
+  # sent to one hook ID cannot push out other hooks' data. All hooks together
+  # hold at most 60% of max_memory_mb; past that, the heaviest hooks are
+  # trimmed first. 0 derives it as 1/16th of that budget (~67 MB here). Must
+  # hold at least one max_interaction_body_bytes.
+  max_hook_memory_mb: 0
+
   # Interval for cleanup of expired interactions
   cleanup_interval: "10s"
 

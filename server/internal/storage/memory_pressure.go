@@ -14,20 +14,78 @@ const (
 	// batches: each batch boundary forces one GC and checks a fresh reading.
 	// This bounds both the number of forced GCs and how far we can over-evict.
 	pressureBatch = 10
+	// minShedBytes is the smallest round of data shedding: below it, a round
+	// sheds everything left rather than forcing yet another GC for crumbs.
+	minShedBytes = 1 << 20
+	// maxShedRounds bounds one pass of data shedding.
+	maxShedRounds = 32
 )
 
-// EvictByMemoryPressure performs emergency eviction of the oldest hooks when
-// heap usage approaches the configured limit.
+// EvictByMemoryPressure is the safety net behind the byte budget, for when
+// the heap nears the configured limit anyway (the budget is an estimate). It
+// sheds captured data from the heaviest hooks first, so the pressure falls on
+// whoever holds the memory; registrations are deleted only as a last resort,
+// once no captured data is left to shed. It also reports, and resets, the
+// interactions the byte budget dropped at insert time since the last call.
 func (m *MemoryManager) EvictByMemoryPressure(maxMemoryMB int) MemoryEvictionResult {
+	m.mu.Lock()
+	result := MemoryEvictionResult{BudgetEvicted: m.budgetEvictions}
+	m.budgetEvictions = 0
+	m.mu.Unlock()
+
 	heap, pressured := m.heapAbove(int(float64(maxMemoryMB) * pressureThreshold))
 	if !pressured {
-		return MemoryEvictionResult{}
+		return result
 	}
 	// Genuine pressure: report it even if nothing turns out to be evictable, so
 	// the evictor can log an early-warning before a possible OOM.
-	result := MemoryEvictionResult{Triggered: true, HeapInUseMB: heap}
-	m.evictOldestUntil(int(float64(maxMemoryMB)*pressureTarget), &result)
+	result.Triggered = true
+	result.HeapInUseMB = heap
+	target := int(float64(maxMemoryMB) * pressureTarget)
+	if m.shedDataUntil(target, &result) || m.storedBytes() > 0 {
+		// Below target, or data is still arriving: shedding resumes next
+		// tick, and registrations are left alone while data remains.
+		return result
+	}
+	m.evictOldestUntil(target, &result)
 	return result
+}
+
+// shedDataUntil sheds captured data heaviest-first, half of what is stored per
+// round, re-measuring the heap after each, and reports whether the heap got
+// below target. Halving bounds the rounds (and forced GCs) logarithmically
+// while never shedding much more than needed.
+func (m *MemoryManager) shedDataUntil(target int, result *MemoryEvictionResult) bool {
+	// Captures keep arriving between rounds; the cap keeps a sustained flood
+	// from pinning the evictor here. The next tick resumes.
+	for round := 0; round < maxShedRounds; round++ {
+		m.mu.Lock()
+		stored := m.totalBytes
+		if stored <= 0 {
+			m.mu.Unlock()
+			return false
+		}
+		chunk := stored / 2
+		if chunk < minShedBytes {
+			chunk = stored
+		}
+		result.InteractionsEvicted += m.shedHeaviest(chunk)
+		m.mu.Unlock()
+
+		m.forceGC()
+		result.HeapInUseMB = m.heapInUseMB()
+		if result.HeapInUseMB < target {
+			return true
+		}
+	}
+	return false
+}
+
+// storedBytes reads the bytes held by captured interactions.
+func (m *MemoryManager) storedBytes() int64 {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.totalBytes
 }
 
 // heapAbove reports the heap and whether it exceeds threshold after a GC.
@@ -45,7 +103,8 @@ func (m *MemoryManager) heapAbove(threshold int) (int, bool) {
 	return heap, heap >= threshold
 }
 
-// evictOldestUntil deletes hooks oldest first until the heap is below target,
+// evictOldestUntil is the last resort, reached only once no captured data is
+// left: it deletes hooks oldest first until the heap is below target,
 // recording what it removed and the final heap reading in result.
 func (m *MemoryManager) evictOldestUntil(target int, result *MemoryEvictionResult) {
 	heap := result.HeapInUseMB

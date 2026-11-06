@@ -27,6 +27,7 @@ type counters struct {
 	evictionsTTL     atomic.Int64
 	evictionsLimit   atomic.Int64
 	evictionsMemory  atomic.Int64
+	evictionsBudget  atomic.Int64
 	evictionsHookTTL atomic.Int64
 }
 
@@ -35,6 +36,7 @@ type Metrics struct {
 	EvictionsTTL     int64
 	EvictionsLimit   int64
 	EvictionsMemory  int64
+	EvictionsBudget  int64
 	EvictionsHookTTL int64
 }
 
@@ -57,7 +59,8 @@ func (e *Evictor) Start(ctx context.Context) {
 		"interaction_ttl", e.config.InteractionTTL,
 		"hook_ttl", e.config.HookTTL,
 		"max_per_hook", e.config.MaxPerHook,
-		"max_memory_mb", e.config.MaxMemoryMB)
+		"max_memory_mb", e.config.MaxMemoryMB,
+		"max_hook_memory_mb", hookMB(e.config))
 
 	for {
 		select {
@@ -118,11 +121,19 @@ func (e *Evictor) evictByLimit() {
 	}
 }
 
-// evictByMemory performs emergency eviction when approaching the memory limit.
-// The heap-pressure algorithm lives in the in-memory store; disk-backed stores
-// are unaffected since their data is not held on the Go heap.
+// evictByMemory reports the byte budget's insert-time evictions and performs
+// emergency eviction when approaching the memory limit. Both live in the
+// in-memory store; disk-backed stores are unaffected since their data is not
+// held on the Go heap.
 func (e *Evictor) evictByMemory() {
 	r := e.storage.EvictByMemoryPressure(e.config.MaxMemoryMB)
+	if r.BudgetEvicted > 0 {
+		e.metrics.evictionsBudget.Add(int64(r.BudgetEvicted))
+		// At most one line per tick, however hard a hook is being flooded.
+		e.logger.Warn("memory budget dropped interactions",
+			"evicted_interactions", r.BudgetEvicted,
+			"max_hook_memory_mb", hookMB(e.config))
+	}
 	if !r.Triggered {
 		return
 	}
@@ -157,6 +168,13 @@ func (e *Evictor) GetMetrics() Metrics {
 		EvictionsTTL:     e.metrics.evictionsTTL.Load(),
 		EvictionsLimit:   e.metrics.evictionsLimit.Load(),
 		EvictionsMemory:  e.metrics.evictionsMemory.Load(),
+		EvictionsBudget:  e.metrics.evictionsBudget.Load(),
 		EvictionsHookTTL: e.metrics.evictionsHookTTL.Load(),
 	}
+}
+
+// hookMB is the effective per-hook memory cap in MB, for logs.
+func hookMB(cfg config.EvictionConfig) int64 {
+	perHook, _ := cfg.MemoryBudget()
+	return perHook >> 20
 }

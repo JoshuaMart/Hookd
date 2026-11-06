@@ -154,9 +154,32 @@ type EvictionConfig struct {
 	MaxPerHook     int           `mapstructure:"max_per_hook"`
 	// MaxInteractionBodyBytes caps a captured HTTP body. Ephemeral bodies are
 	// held whole in memory, so with MaxPerHook this bounds a hook's footprint.
-	MaxInteractionBodyBytes int           `mapstructure:"max_interaction_body_bytes"`
-	MaxMemoryMB             int           `mapstructure:"max_memory_mb"`
-	CleanupInterval         time.Duration `mapstructure:"cleanup_interval"`
+	MaxInteractionBodyBytes int `mapstructure:"max_interaction_body_bytes"`
+	MaxMemoryMB             int `mapstructure:"max_memory_mb"`
+	// MaxHookMemoryMB caps the captured data one in-memory hook may hold;
+	// 0 derives it from MaxMemoryMB (see MemoryBudget).
+	MaxHookMemoryMB int           `mapstructure:"max_hook_memory_mb"`
+	CleanupInterval time.Duration `mapstructure:"cleanup_interval"`
+}
+
+const (
+	// storedMemoryFraction is the share of max_memory_mb that captured data
+	// in the in-memory store may hold; the rest is headroom for the runtime,
+	// in-flight requests and the estimate's error.
+	storedMemoryFraction = 0.6
+	// autoHookShare divides the stored budget into the default per-hook cap,
+	// so it takes that many flooded hooks to fill the store.
+	autoHookShare = 16
+)
+
+// MemoryBudget returns the byte bounds of the in-memory store: what one hook
+// may hold and what every hook together may hold.
+func (e EvictionConfig) MemoryBudget() (perHook, total int64) {
+	total = int64(float64(e.MaxMemoryMB) * storedMemoryFraction * (1 << 20))
+	if e.MaxHookMemoryMB > 0 {
+		return int64(e.MaxHookMemoryMB) << 20, total
+	}
+	return total / autoHookShare, total
 }
 
 // LongLivedConfig holds configuration for durable, long-lived hooks. These are
@@ -375,6 +398,10 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("eviction.max_memory_mb must be positive")
 	}
 
+	if err := c.Eviction.validateMemoryBudget(); err != nil {
+		return err
+	}
+
 	if c.Eviction.CleanupInterval <= 0 {
 		return fmt.Errorf("eviction.cleanup_interval must be positive")
 	}
@@ -560,4 +587,22 @@ func generateRandomToken() string {
 		panic(fmt.Sprintf("failed to generate random token: %v", err))
 	}
 	return hex.EncodeToString(b)
+}
+
+// validateMemoryBudget rejects byte bounds that cannot hold: a per-hook cap
+// above the store's budget, or one too small for a single captured body.
+func (e EvictionConfig) validateMemoryBudget() error {
+	if e.MaxHookMemoryMB < 0 {
+		return fmt.Errorf("eviction.max_hook_memory_mb must not be negative (0 derives it from max_memory_mb)")
+	}
+	perHook, total := e.MemoryBudget()
+	if perHook > total {
+		return fmt.Errorf("eviction.max_hook_memory_mb (%d) must not exceed %d MB, the share of max_memory_mb captured data may hold",
+			e.MaxHookMemoryMB, total>>20)
+	}
+	if int64(e.MaxInteractionBodyBytes) > perHook {
+		return fmt.Errorf("eviction.max_interaction_body_bytes (%d) must not exceed the per-hook memory cap (%d bytes); lower it or raise max_hook_memory_mb / max_memory_mb",
+			e.MaxInteractionBodyBytes, perHook)
+	}
+	return nil
 }

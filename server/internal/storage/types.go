@@ -118,6 +118,10 @@ type Interaction struct {
 	Timestamp time.Time              `json:"timestamp"`
 	SourceIP  string                 `json:"source_ip"`
 	Data      map[string]interface{} `json:"data"`
+
+	// memSize is the in-memory store's estimate of this entry's heap
+	// footprint, fixed when it is stored so releasing it is exact.
+	memSize int64
 }
 
 // MemoryStats represents detailed memory statistics

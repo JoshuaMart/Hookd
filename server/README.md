@@ -85,6 +85,7 @@ eviction:
   hook_ttl: "24h"            # TTL for hooks (ephemeral threshold)
   max_per_hook: 1000         # Max interactions per hook
   max_memory_mb: 1800        # Memory limit
+  max_hook_memory_mb: 0      # Captured data one in-memory hook may hold; 0 = auto
 
 long_lived:
   enabled: true                       # Persist long-lived hooks to SQLite
@@ -627,6 +628,7 @@ curl -H "X-API-Key: YOUR_TOKEN" https://hookd.domain.tld/metrics
     "by_strategy": {
       "expired": 2,
       "hook_expired": 1,
+      "memory_budget": 0,
       "memory_pressure": 0,
       "overflow": 0
     },
@@ -641,6 +643,7 @@ curl -H "X-API-Key: YOUR_TOKEN" https://hookd.domain.tld/metrics
       "http": 24,
       "smtp": 3
     },
+    "stored_bytes": 81920,
     "total": 39
   },
   "memory": {
@@ -777,10 +780,26 @@ store evicts with indexed SQL rather than loading everything into memory.
    hook expires.
 2. **Hook TTL-based**: Removes hooks whose `expires_at` has passed (both stores).
 3. **Per-hook limit**: Enforces max interactions per hook (oldest dropped first).
-4. **Memory pressure**: Emergency eviction of the oldest in-memory hooks when
-   heap usage is high (long-lived data lives on disk and is unaffected).
+4. **Memory budget**: The in-memory store counts the bytes each hook holds and
+   enforces two bounds on every capture, before the data can pile up:
+   - A hook never holds more than `max_hook_memory_mb`; past it, its own
+     oldest interactions are dropped. With `0` (the default) the cap is 1/16th
+     of the store budget, about 67 MB at the default `max_memory_mb`.
+   - All hooks together hold at most 60% of `max_memory_mb`; past it, the
+     heaviest hooks are cut down to a common level (oldest first) while
+     lighter hooks keep everything.
+
+   Capture traffic is anonymous, so this is what keeps a flood sent to one
+   hook ID from pushing out other hooks' data. Dropped interactions show up
+   as a gap in the cursor (`dropped_through`), in the `memory_budget` metric
+   and in a warning log.
+5. **Memory pressure**: A safety net for when the heap nears the limit anyway
+   (the budget is an estimate; long-lived data lives on disk and is unaffected).
    - Triggers at 90% of max_memory_mb (based on heap memory in use)
-   - Deletes oldest hooks (by creation time) until memory drops to 80%
+   - Sheds captured data from the heaviest hooks first until memory drops
+     to 80%
+   - Deletes hooks (oldest first) only as a last resort, once no captured
+     data is left
    - Forces garbage collection for accurate measurements
 
 ## Security
@@ -886,6 +905,7 @@ sudo chown hookd:hookd /var/lib/hookd/certs
 - Reduce `max_memory_mb` in config
 - Lower `interaction_ttl` and `hook_ttl` to evict faster
 - Decrease `max_per_hook` limit
+- Lower `max_hook_memory_mb` or `max_interaction_body_bytes`
 
 ### Check logs
 
