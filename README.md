@@ -115,6 +115,7 @@ eviction:
   hook_ttl: "24h"
   max_per_hook: 1000
   max_memory_mb: 1800
+  max_hook_memory_mb: 0         # captured data per in-memory hook; 0 = auto
 
 observability:
   metrics_enabled: true

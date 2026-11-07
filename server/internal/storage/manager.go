@@ -67,6 +67,9 @@ type MemoryEvictionResult struct {
 	HeapInUseMB         int
 	HooksEvicted        int
 	InteractionsEvicted int
+	// BudgetEvicted counts interactions the byte budget dropped at insert
+	// time since the previous call, whether or not the heap was pressured.
+	BudgetEvicted int
 }
 
 // ErrHookNotFound is returned by cursor operations on an unknown hook.
@@ -172,7 +175,10 @@ type Stats struct {
 	InteractionsDNS   int
 	InteractionsHTTP  int
 	InteractionsSMTP  int
-	Memory            MemoryStats
+	// StoredBytes estimates the bytes held by in-memory interactions; zero for
+	// stores whose data lives off the Go heap.
+	StoredBytes int64
+	Memory      MemoryStats
 }
 
 // runtimeMemoryStats samples this process's memory from the Go runtime.

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -383,5 +384,29 @@ func TestEvictor_SkipsPassWithoutLease(t *testing.T) {
 	evictor.runEviction()
 	if manager.Has("hook") {
 		t.Error("the lease holder must evict")
+	}
+}
+
+// TestEvictor_ReportsBudgetEvictions checks that interactions the byte budget
+// drops at insert time reach the metrics, without counting as memory pressure.
+func TestEvictor_ReportsBudgetEvictions(t *testing.T) {
+	manager := storage.NewMemoryManager(func() string { return "flooded" })
+	manager.SetMemoryBudget(1<<20, 0)
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
+	evictor := NewEvictor(manager, config.EvictionConfig{MaxMemoryMB: 10000, MaxPerHook: 1000}, logger)
+
+	hook := manager.CreateHook("example.com", storage.CreateOptions{})
+	for i := 0; i < 10; i++ {
+		manager.AddInteraction(hook.ID, storage.HTTPInteraction("i", "1.2.3.4", "POST", "/", nil, strings.Repeat("a", 256<<10)))
+	}
+
+	evictor.evictByMemory()
+
+	m := evictor.GetMetrics()
+	if m.EvictionsBudget == 0 {
+		t.Error("expected budget evictions in the metrics")
+	}
+	if m.EvictionsMemory != 0 {
+		t.Errorf("expected no memory-pressure evictions, got %d", m.EvictionsMemory)
 	}
 }

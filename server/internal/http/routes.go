@@ -32,6 +32,7 @@ func (s *Server) newHandlers() (public, private http.Handler) {
 		Logger:      s.logger,
 	})
 	capture := NewCaptureHandler(s.storage, s.config.Domain, s.logger, s.idGenerator, s.evictor.MaxInteractionBodyBytes())
+	capture.SetBodySlots(s.evictor.CaptureBodySlots())
 
 	if !s.config.API.Listener.Enabled {
 		return s.publicHandler(api, capture), nil
