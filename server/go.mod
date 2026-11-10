@@ -7,7 +7,7 @@ require (
 	github.com/libdns/libdns v1.1.1
 	github.com/miekg/dns v1.1.73
 	github.com/redis/go-redis/v9 v9.23.0
-	github.com/spf13/pflag v1.0.10
+	github.com/spf13/pflag v1.1.0
 	github.com/spf13/viper v1.21.0
 	modernc.org/sqlite v1.61.0
 )
