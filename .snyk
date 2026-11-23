@@ -1,0 +1,8 @@
+# Snyk (https://snyk.io) policy file.
+version: v1.25.0
+
+# Snyk Code only: the integration tests build URLs to the server they start on
+# localhost, which the SSRF rule (go/Ssrf/test) reports. They are not shipped.
+exclude:
+  global:
+    - server/test/**
