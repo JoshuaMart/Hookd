@@ -51,6 +51,15 @@ func (m *RedisManager) writeLoop() {
 	defer close(m.done)
 	batch := make([]pendingCapture, 0, asyncBatch)
 	for {
+		// Stop wins over a non-empty queue: select picks at random among ready
+		// cases, and each batch it kept taking would wait asyncTimeout on a
+		// stalled server before drain could bound the shutdown.
+		select {
+		case <-m.stop:
+			m.drain(batch)
+			return
+		default:
+		}
 		select {
 		case first := <-m.queue:
 			ctx, cancel := context.WithTimeout(context.Background(), asyncTimeout)
