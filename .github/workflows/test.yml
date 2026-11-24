@@ -47,7 +47,7 @@ jobs:
           go test -v -coverprofile=cover.out ./...
 
       - name: Upload coverage to Qlty
-        uses: qltysh/qlty-action/coverage@357cd88be7c73c5dc45cf7cf8f99a46ec0b62b73 # v2.6.0
+        uses: qltysh/qlty-action/coverage@a46e29cfd54065ae8a2c6b1fd3446aed1b1a4257 # v2.8.0
         with:
           token: ${{ secrets.QLTY_COVERAGE_TOKEN }}
           files: server/cover.out
@@ -105,7 +105,7 @@ jobs:
 
       - name: Upload coverage to Qlty
         if: always()
-        uses: qltysh/qlty-action/coverage@357cd88be7c73c5dc45cf7cf8f99a46ec0b62b73 # v2.6.0
+        uses: qltysh/qlty-action/coverage@a46e29cfd54065ae8a2c6b1fd3446aed1b1a4257 # v2.8.0
         with:
           token: ${{ secrets.QLTY_COVERAGE_TOKEN }}
           files: clients/ruby/coverage/.resultset.json
